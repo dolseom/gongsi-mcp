@@ -194,7 +194,15 @@ export function extractBoardDate(xml: string): string | null {
   if (nextSection >= 0) after = after.slice(0, nextSection);
 
   const date = /(\d{4})\s*[.\-년]\s*(\d{1,2})\s*[.\-월]\s*(\d{1,2})/.exec(after);
-  if (!date) return null;
-  const [, y, mo, d] = date;
-  return `${y}${String(Number(mo)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}`;
+  if (date) {
+    const [, y, mo, d] = date;
+    return `${y}${String(Number(mo)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}`;
+  }
+  // 아포스트로피 2자리 연도 — "'26. 7.23" (삼성생명 등에서 실측). 오인 방지를 위해 ' 필수
+  const short = /'(\d{2})\s*[.\-]\s*(\d{1,2})\s*[.\-]\s*(\d{1,2})/.exec(after);
+  if (short) {
+    const [, y, mo, d] = short;
+    return `20${y}${String(Number(mo)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}`;
+  }
+  return null;
 }
