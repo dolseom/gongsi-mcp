@@ -71,6 +71,7 @@ const DDL = [
   `CREATE INDEX IF NOT EXISTS idx_corps_name ON corps(corp_name)`,
   // 법인등록번호는 기업집단포털 조인 키다 — 이 프로젝트 최대의 기술 자산
   `CREATE INDEX IF NOT EXISTS idx_corps_jurir ON corps(jurir_no)`,
+  `CREATE INDEX IF NOT EXISTS idx_corps_stock ON corps(stock_code)`,
   `CREATE TABLE IF NOT EXISTS call_log (
      date  TEXT NOT NULL,
      api   TEXT NOT NULL,
@@ -198,6 +199,12 @@ export class Store {
   /** 법인등록번호로 조회 — 기업집단포털 `jurirno` 와의 조인 키 */
   findCorpsByJurirNo(jurirNo: string): CorpRecord[] {
     const rows = this.db.prepare(`SELECT * FROM corps WHERE jurir_no = ?`).all(jurirNo);
+    return rows.map(toCorp);
+  }
+
+  /** 종목코드(6자리)로 조회 */
+  findCorpsByStockCode(stockCode: string): CorpRecord[] {
+    const rows = this.db.prepare(`SELECT * FROM corps WHERE stock_code = ?`).all(stockCode);
     return rows.map(toCorp);
   }
 

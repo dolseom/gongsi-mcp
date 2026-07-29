@@ -16,6 +16,8 @@ data/cache/
 *.sqlite
 *.sqlite-journal
 *.db
+*.db-shm
+*.db-wal
 tmp/
 scratch/
 

@@ -9,11 +9,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadDotEnv, getConfig, unknownEnvVars } from './lib/config.js';
 import { getLogger } from './lib/logger.js';
-import { toErrorResponse } from './lib/errors.js';
+import { ToolError, toErrorResponse } from './lib/errors.js';
 import {
   checkDisclosureDuty,
   checkDisclosureDutyInput,
 } from './tools/check-disclosure-duty.js';
+import { resolveEntity, resolveEntityInput } from './tools/resolve-entity.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -30,7 +31,13 @@ function wrap<T>(name: string, fn: (input: T) => unknown | Promise<unknown>) {
       const result = await fn(input);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
-      log.error(`${name} 실패`, err instanceof Error ? err.stack : String(err));
+      // 도메인 에러(회사 없음·한도 도달 등)는 예상된 흐름이다 — 스택 없이 짧게 남긴다.
+      // 스택트레이스는 진짜 예상 밖 예외에만 쓴다.
+      if (err instanceof ToolError) {
+        log.warn(`${name}: ${err.code}`, err.message);
+      } else {
+        log.error(`${name} 실패`, err instanceof Error ? err.stack : String(err));
+      }
       return {
         content: [
           { type: 'text' as const, text: JSON.stringify(toErrorResponse(err), null, 2) },
@@ -57,6 +64,25 @@ server.registerTool(
     inputSchema: checkDisclosureDutyInput.shape,
   },
   wrap('check_disclosure_duty', checkDisclosureDuty),
+);
+
+server.registerTool(
+  'resolve_entity',
+  {
+    title: '회사·기업집단 식별',
+    description:
+      '회사명, 종목코드(6자리), 법인코드(8자리), 법인등록번호(13자리), 기업집단명을 받아 ' +
+      'corp_code·stock_code·법인등록번호·소속 기업집단으로 풀어줍니다. ' +
+      '다른 도구를 쓰기 전 회사를 특정할 때 먼저 호출하세요.\n\n' +
+      '동명 법인이 여럿이면 임의로 고르지 않고 status="ambiguous" 와 후보 목록을 돌려줍니다 — ' +
+      '상호가 같아도 별개 법인일 수 있습니다(합병 전후 법인이 대표적). ' +
+      '이때는 후보의 corp_code 로 다시 호출하세요.\n\n' +
+      '기업집단포털과 대사하려면 fetchJurirNo=true 로 법인등록번호를 먼저 채워야 합니다 (DART 호출 1회). ' +
+      'includeGroup=true 는 EGROUP_API_KEY 가 필요하며, 최초 1회는 전 기업집단을 순회하므로 ' +
+      '포털 호출 ~103회를 소비합니다 (이후 1년간 캐시).',
+    inputSchema: resolveEntityInput.shape,
+  },
+  wrap('resolve_entity', resolveEntity),
 );
 
 async function main(): Promise<void> {
