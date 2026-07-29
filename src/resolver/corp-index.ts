@@ -94,12 +94,20 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, '&');
 }
 
-/** 상호 정규화 — 법인격 표기·공백 차이를 흡수한다 */
+/**
+ * 상호 정규화 — 법인격 표기·공백 차이를 흡수한다.
+ * 법인격은 **앞·뒤에서만** 걷어낸다 — 상호 중간에 "주식회사"가 들어간 회사가 실재할 수 있어
+ * 위치 무관 제거는 서로 다른 법인을 같은 이름으로 뭉갤 위험이 있다(Codex 지적).
+ */
+const CORP_SUFFIX =
+  '(?:주식회사|유한회사|유한책임회사|합자회사|합명회사|재단법인|사단법인|\\(주\\)|㈜|\\(유\\)|\\(재\\)|\\(사\\))';
+const CORP_LEAD_RE = new RegExp(`^${CORP_SUFFIX}`);
+const CORP_TAIL_RE = new RegExp(`${CORP_SUFFIX}$`);
+
 export function normalizeName(name: string): string {
-  return name
-    .replace(/\(주\)|㈜|주식회사|\(유\)|유한회사|\(재\)|재단법인|\(사\)|사단법인/g, '')
-    .replace(/\s+/g, '')
-    .toLowerCase();
+  let s = name.replace(/\s+/g, '');
+  s = s.replace(CORP_LEAD_RE, '').replace(CORP_TAIL_RE, '');
+  return s.toLowerCase();
 }
 
 export type IdentifierKind = 'corp_code' | 'stock_code' | 'jurir_no' | 'name';
@@ -170,6 +178,13 @@ export async function resolveCorp(
       }
       break;
     }
+  }
+
+  // 숫자 형식은 "추정"일 뿐이다 — 상호가 숫자로만 된 회사가 있을 수 있으므로(Codex 지적)
+  // 코드 조회가 비면 이름으로 한 번 더 본다
+  if (matches.length === 0 && kind !== 'name') {
+    const byName = store.findCorpsByName(q);
+    if (byName.length) matches = byName;
   }
 
   if (matches.length === 0) {

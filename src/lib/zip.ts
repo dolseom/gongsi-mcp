@@ -51,10 +51,12 @@ export function listEntries(data: Uint8Array): ZipEntry[] {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
   // EOCD 는 파일 끝에 있다. 주석 때문에 최대 65535+22 바이트를 역방향 탐색한다.
+  // 시그니처만 믿지 않는다 — 주석 안에 가짜 EOCD 를 심어 빈 ZIP 으로 오독시키는
+  // 공격이 가능하므로(Codex 지적), 중앙 디렉터리 오프셋이 자기 앞에 있는 후보만 채택한다.
   let eocd = -1;
   const scanFrom = Math.max(0, data.length - (0xffff + 22));
   for (let i = data.length - 22; i >= scanFrom; i--) {
-    if (u32(view, i) === SIG_EOCD) {
+    if (u32(view, i) === SIG_EOCD && u32(view, i + 16) <= i && u16(view, i + 8) === u16(view, i + 10)) {
       eocd = i;
       break;
     }
@@ -62,6 +64,10 @@ export function listEntries(data: Uint8Array): ZipEntry[] {
   if (eocd < 0) throw new ZipError('ZIP 중앙 디렉터리를 찾지 못했습니다 (손상된 파일).');
 
   const count = u16(view, eocd + 10);
+  // ZIP64 sentinel — 지원하지 않음을 명시적으로 알린다 (오진 방지)
+  if (count === 0xffff || u32(view, eocd + 16) === 0xffffffff) {
+    throw new ZipError('ZIP64 형식은 지원하지 않습니다.');
+  }
   if (count > MAX_FILES) {
     throw new ZipError(`ZIP 파일 수가 상한을 초과합니다 (${count} > ${MAX_FILES}).`);
   }
@@ -82,6 +88,12 @@ export function listEntries(data: Uint8Array): ZipEntry[] {
     const commentLen = u16(view, offset + 32);
     const localHeaderOffset = u32(view, offset + 42);
 
+    if (offset + 46 + nameLen + extraLen + commentLen > data.length) {
+      throw new ZipError('ZIP 중앙 디렉터리 항목이 파일 범위를 벗어납니다.');
+    }
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
+      throw new ZipError('ZIP64 형식은 지원하지 않습니다.');
+    }
     const name = new TextDecoder('utf-8').decode(
       data.subarray(offset + 46, offset + 46 + nameLen),
     );
@@ -133,17 +145,41 @@ export function readEntry(data: Uint8Array, entry: ZipEntry): Uint8Array {
   const nameLen = u16(view, off + 26);
   const extraLen = u16(view, off + 28);
   const start = off + 30 + nameLen + extraLen;
+  // 압축 데이터가 파일 밖으로 나가면 subarray 가 조용히 잘린다 — 명시적으로 거부한다
+  if (start + entry.compressedSize > data.length) {
+    throw new ZipError(`ZIP 항목 데이터가 파일 범위를 벗어납니다: ${entry.name}`);
+  }
   const raw = data.subarray(start, start + entry.compressedSize);
 
-  if (entry.compressionMethod === 0) return raw;
+  if (entry.compressionMethod === 0) {
+    if (raw.length !== entry.uncompressedSize) {
+      throw new ZipError(`ZIP 항목 크기가 신고값과 다릅니다: ${entry.name}`);
+    }
+    return raw;
+  }
   if (entry.compressionMethod === 8) {
+    let out: Uint8Array;
     try {
-      return new Uint8Array(inflateRawSync(raw));
+      // ⚠️ 신고 크기(중앙 디렉터리)는 위조될 수 있다. 크기를 1로 신고하고 실제로는
+      // 수백 MB 로 팽창하는 zip bomb 이 사전 검사를 전부 통과하므로(Codex 지적),
+      // inflate 자체에 출력 상한을 건다. 신고값과 다르면 위조로 보고 거부한다.
+      out = new Uint8Array(
+        inflateRawSync(raw, {
+          maxOutputLength: Math.min(entry.uncompressedSize, MAX_TOTAL_UNCOMPRESSED) + 1,
+        }),
+      );
     } catch (err) {
       throw new ZipError(
         `ZIP 항목 압축 해제에 실패했습니다: ${entry.name} (${err instanceof Error ? err.name : '오류'})`,
       );
     }
+    if (out.length !== entry.uncompressedSize) {
+      throw new ZipError(
+        `ZIP 항목 해제 크기가 신고값과 다릅니다 (위조 의심): ${entry.name} ` +
+          `(신고 ${entry.uncompressedSize} / 실제 ${out.length})`,
+      );
+    }
+    return out;
   }
   throw new ZipError(`지원하지 않는 ZIP 압축 방식입니다: ${entry.compressionMethod} (${entry.name})`);
 }

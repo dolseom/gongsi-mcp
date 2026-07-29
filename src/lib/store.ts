@@ -267,12 +267,22 @@ export class Store {
     const kw = keyword.trim();
     if (!kw) return [];
     if (rceptNos && rceptNos.length === 0) return [];
+    // SQLite 바인딩 변수 한도(구버전 999) 방어 — 대상 집합이 크면 잘라서 처리한다
+    if (rceptNos && rceptNos.length > 500) {
+      const out: Array<{ rceptNo: string; snippet: string }> = [];
+      for (let i = 0; i < rceptNos.length && out.length < limit; i += 500) {
+        out.push(...this.searchBodies(kw, rceptNos.slice(i, i + 500), limit - out.length));
+      }
+      return out;
+    }
 
     const filter = rceptNos ? ` AND rcept_no IN (${rceptNos.map(() => '?').join(',')})` : '';
     const params: unknown[] = [];
 
     if (kw.length >= 3) {
-      params.push(kw);
+      // MATCH 는 자체 질의 문법이 있어 `"`·`OR` 같은 입력이 구문 오류를 일으킨다(Codex 지적).
+      // 사용자 키워드는 항상 구문 요소가 아닌 **문자열 리터럴(구문)** 로 감싼다.
+      params.push(`"${kw.replace(/"/g, '""')}"`);
       if (rceptNos) params.push(...rceptNos);
       params.push(limit);
       const rows = this.db

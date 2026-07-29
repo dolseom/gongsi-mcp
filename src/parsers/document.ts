@@ -90,31 +90,52 @@ function parseTable(tableXml: string): string[][] {
     if (cells.length) rows.push(cells);
   }
 
-  // 병합 셀을 그리드에 펼친다
+  // 병합 셀을 그리드에 펼친다.
+  // ⚠️ "현재 열에 이월분이 있는가"만 보면, 이월분이 더 뒤 열에만 남았을 때 루프가
+  // 조기 종료되어 열이 통째로 어긋난다(Codex 지적). 셀 배치 전마다 점유 열을 소비하고,
+  // 행이 끝나면 남은 이월분까지 빈 칸으로 메워 소비한다.
   const grid: string[][] = [];
   /** rowspan 이월분: carry[colIndex] = { text, remaining } */
   const carry = new Map<number, { text: string; remaining: number }>();
 
   for (const cells of rows) {
     const row: string[] = [];
-    const queue = [...cells];
     let col = 0;
-    while (queue.length || carry.has(col)) {
-      const carried = carry.get(col);
-      if (carried) {
-        row.push(carried.text);
-        carried.remaining--;
-        if (carried.remaining <= 0) carry.delete(col);
+
+    const consumeCarryAt = () => {
+      while (carry.has(col)) {
+        const c = carry.get(col)!;
+        row.push(c.text);
+        c.remaining--;
+        if (c.remaining <= 0) carry.delete(col);
         col++;
-        continue;
       }
-      const cell = queue.shift();
-      if (!cell) break;
+    };
+
+    for (const cell of cells) {
+      consumeCarryAt(); // 새 셀은 점유되지 않은 첫 열부터 시작한다 (HTML 표 규칙)
       for (let i = 0; i < cell.colspan; i++) {
         // 병합 첫 칸에만 값, 나머지는 빈 칸 — 표 폭을 유지한다
         row.push(i === 0 ? cell.text : '');
         if (cell.rowspan > 1) {
           carry.set(col, { text: i === 0 ? cell.text : '', remaining: cell.rowspan - 1 });
+        }
+        col++;
+      }
+    }
+    consumeCarryAt();
+
+    // 뒤 열에만 남은 이월분: 사이를 빈 칸으로 메우고 마저 소비한다
+    if (carry.size) {
+      const maxCol = Math.max(...carry.keys());
+      while (col <= maxCol) {
+        const c = carry.get(col);
+        if (c) {
+          row.push(c.text);
+          c.remaining--;
+          if (c.remaining <= 0) carry.delete(col);
+        } else {
+          row.push('');
         }
         col++;
       }
@@ -143,8 +164,16 @@ function renderTable(grid: string[][]): string {
   return lines.join('\n');
 }
 
+/** XML 주석·CDATA 를 정리한다 — 주석 안의 <TABLE> 이 가짜 표로 파싱되는 것을 막는다 */
+function stripCommentsAndCdata(xml: string): string {
+  return xml
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+}
+
 /** 본문 XML → 마크다운 + 평문 */
-export function parseDocument(xml: string): ParsedDocument {
+export function parseDocument(rawXml: string): ParsedDocument {
+  const xml = stripCommentsAndCdata(rawXml);
   const acode = /ACODE\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
   const aregcik = /AREGCIK\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
   const formulaVersion = /FORMULA-VERSION\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
@@ -181,8 +210,8 @@ export function parseDocument(xml: string): ParsedDocument {
  * 정밀 추출 — 판정에 쓰는 필드만.
  * 서식마다 "이사회 의결일"/"이사회의결일" 표기가 섞여 있으므로 글자 사이 공백을 허용해 매칭한다.
  */
-export function extractBoardDate(xml: string): string | null {
-  const plain = xml.replace(/<[^>]+>/g, ' ');
+export function extractBoardDate(rawXml: string): string | null {
+  const plain = stripCommentsAndCdata(rawXml).replace(/<[^>]+>/g, ' ');
   const m = /이\s*사\s*회\s*의\s*결\s*일/.exec(plain);
   if (!m) return null;
 
@@ -193,16 +222,18 @@ export function extractBoardDate(xml: string): string | null {
   const nextSection = after.search(/\s\d{1,2}\.\s*[가-힣]/);
   if (nextSection >= 0) after = after.slice(0, nextSection);
 
+  const valid = (y: string, mo: string, d: string): string | null => {
+    const moN = Number(mo);
+    const dN = Number(d);
+    // 달력 유효성 — "2026.99.99" 같은 오타를 날짜로 반환하지 않는다
+    if (moN < 1 || moN > 12 || dN < 1 || dN > 31) return null;
+    return `${y}${String(moN).padStart(2, '0')}${String(dN).padStart(2, '0')}`;
+  };
+
   const date = /(\d{4})\s*[.\-년]\s*(\d{1,2})\s*[.\-월]\s*(\d{1,2})/.exec(after);
-  if (date) {
-    const [, y, mo, d] = date;
-    return `${y}${String(Number(mo)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}`;
-  }
+  if (date) return valid(date[1]!, date[2]!, date[3]!);
   // 아포스트로피 2자리 연도 — "'26. 7.23" (삼성생명 등에서 실측). 오인 방지를 위해 ' 필수
   const short = /'(\d{2})\s*[.\-]\s*(\d{1,2})\s*[.\-]\s*(\d{1,2})/.exec(after);
-  if (short) {
-    const [, y, mo, d] = short;
-    return `20${y}${String(Number(mo)).padStart(2, '0')}${String(Number(d)).padStart(2, '0')}`;
-  }
+  if (short) return valid(`20${short[1]!}`, short[2]!, short[3]!);
   return null;
 }

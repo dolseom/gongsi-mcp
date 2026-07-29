@@ -131,12 +131,16 @@ export class DartClient {
   }
 
   /**
-   * 재시도 포함 요청.
+   * 재시도 포함 요청. **본문 수신까지** 재시도 범위에 넣는다 —
+   * 헤더만 받고 반환하면 body 읽기 중의 timeout/절단이 재시도되지 않는다(Codex 지적).
    * 대상: 네트워크 오류 · 429 · 5xx. 백오프 min(2^n, 8)초, 최대 3회.
    *
    * ⚠️ 예외 메시지에 URL을 절대 넣지 않는다 — 쿼리스트링에 인증키가 들어 있다.
    */
-  private async request(path: string, params: Record<string, unknown>): Promise<Response> {
+  private async request(
+    path: string,
+    params: Record<string, unknown>,
+  ): Promise<{ status: number; contentType: string; bytes: Uint8Array }> {
     const cfg = getConfig();
     const url = this.buildUrl(path, params);
     let lastErrName = '';
@@ -156,9 +160,14 @@ export class DartClient {
           continue;
         }
 
-        // 실제 응답을 받은 시점에만 카운트한다 (재시도는 성공분만)
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        // 본문까지 온전히 받은 시점에만 카운트한다 (재시도는 성공분만)
         this.store.incrementCall('dart', 1);
-        return res;
+        return {
+          status: res.status,
+          contentType: res.headers.get('content-type')?.toLowerCase() ?? '',
+          bytes,
+        };
       } catch (err) {
         lastErrName = err instanceof Error ? err.name : 'UnknownError';
         log.warn('요청 실패', { path, error: lastErrName, attempt: attempt + 1 });
@@ -170,13 +179,34 @@ export class DartClient {
     });
   }
 
+  /** 응답 바이트 → JSON. 파싱 실패는 규격 에러로 바꾼다. */
+  private parseJson(bytes: Uint8Array): Record<string, unknown> {
+    try {
+      const data: unknown = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      if (data && typeof data === 'object') return data as Record<string, unknown>;
+    } catch {
+      // 아래로
+    }
+    throw new DartApiError('invalid_json', 'DART 응답이 JSON 형식이 아닙니다.');
+  }
+
+  /**
+   * 외부에서 온 메시지를 응답에 싣기 전 인증키 흔적을 걷어낸다.
+   * 프록시·서버가 요청 URL 을 메시지에 반사하는 경우를 대비한 방어다(Codex 지적).
+   */
+  private sanitize(message: string): string {
+    let out = message.split(this.apiKey).join('***');
+    out = out.replace(/crtfc_key=[^&\s"']+/g, 'crtfc_key=***');
+    return out;
+  }
+
   private handleStatus(status: string, message: string, allowEmpty: boolean): void {
     if (status === '000') return;
     if (status === '013' && allowEmpty) return;
     if (status === '020') {
       throw new RateLimitError(this.todayCalls(), DAILY_LIMIT, nextKstMidnightIso());
     }
-    throw new DartApiError(status, message || '(메시지 없음)', STATUS_HINT[status]);
+    throw new DartApiError(status, this.sanitize(message || '(메시지 없음)'), STATUS_HINT[status]);
   }
 
   /** 공시 목록 한 페이지 */
@@ -185,7 +215,7 @@ export class DartClient {
     const cfg = getConfig();
     const lastOnly = p.lastReportOnly ?? cfg.lastReportOnly;
 
-    const res = await this.request('list.json', {
+    const { bytes } = await this.request('list.json', {
       corp_code: p.corpCode,
       bgn_de: p.bgnDe,
       end_de: p.endDe,
@@ -200,7 +230,7 @@ export class DartClient {
       sort_mth: 'desc',
     });
 
-    const data = (await res.json()) as Record<string, unknown>;
+    const data = this.parseJson(bytes);
     const status = String(data['status'] ?? '');
     this.handleStatus(status, String(data['message'] ?? ''), true);
 
@@ -231,7 +261,7 @@ export class DartClient {
    * 상한에 걸리면 `truncated: true` 와 실제 `totalPage` 를 함께 돌려준다.
    */
   async collect(p: ListParams, maxPages?: number): Promise<CollectResult> {
-    const limit = maxPages ?? getConfig().maxPages;
+    const limit = Math.max(1, maxPages ?? getConfig().maxPages);
     const rows: Disclosure[] = [];
     let pageNo = 1;
     let totalPage = 1;
@@ -248,9 +278,11 @@ export class DartClient {
       pageNo++;
     } while (pageNo <= Math.min(totalPage, limit));
 
-    const truncated = totalPage > limit;
+    // 상한 초과만 보면 중간 빈 페이지로 인한 조기 종료를 놓친다(Codex 지적) —
+    // 수집 건수가 서버 신고 총건수에 못 미치면 그것도 절단이다.
+    const truncated = totalPage > limit || rows.length < totalCount;
     if (truncated) {
-      log.warn('페이지 상한에 걸려 결과가 잘렸습니다', {
+      log.warn('결과가 완전하지 않습니다 (페이지 상한 또는 조기 종료)', {
         totalPage,
         maxPages: limit,
         collected: rows.length,
@@ -266,19 +298,18 @@ export class DartClient {
    */
   async downloadDocument(rceptNo: string): Promise<Uint8Array> {
     this.checkRateLimit(true);
-    const res = await this.request('document.xml', { rcept_no: rceptNo });
-    const buf = new Uint8Array(await res.arrayBuffer());
+    const { bytes } = await this.request('document.xml', { rcept_no: rceptNo });
 
-    if (buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4b) return buf; // 'PK'
+    if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return bytes; // 'PK'
 
     // ZIP 이 아니면 오류 페이로드다
-    const text = new TextDecoder('utf-8').decode(buf.slice(0, 2000));
+    const text = new TextDecoder('utf-8').decode(bytes.slice(0, 2000));
     const m = /"status"\s*:\s*"(\d+)"/.exec(text);
     const msg = /"message"\s*:\s*"([^"]*)"/.exec(text);
     if (m?.[1]) this.handleStatus(m[1], msg?.[1] ?? '', false);
     throw new DartApiError(
       'invalid_payload',
-      `원문이 ZIP 형식이 아닙니다 (${buf.length} bytes)`,
+      `원문이 ZIP 형식이 아닙니다 (${bytes.length} bytes)`,
       `접수번호 ${rceptNo} 를 확인하세요.`,
     );
   }
@@ -286,11 +317,10 @@ export class DartClient {
   /** 법인코드 전체 ZIP (CORPCODE.xml) */
   async downloadCorpCode(): Promise<Uint8Array> {
     this.checkRateLimit(false);
-    const res = await this.request('corpCode.xml', {});
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4b) return buf;
+    const { bytes } = await this.request('corpCode.xml', {});
+    if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) return bytes;
 
-    const text = new TextDecoder('utf-8').decode(buf.slice(0, 2000));
+    const text = new TextDecoder('utf-8').decode(bytes.slice(0, 2000));
     const m = /"status"\s*:\s*"(\d+)"/.exec(text);
     const msg = /"message"\s*:\s*"([^"]*)"/.exec(text);
     if (m?.[1]) this.handleStatus(m[1], msg?.[1] ?? '', false);
@@ -300,8 +330,8 @@ export class DartClient {
   /** 기업개황 — `jurir_no`(법인등록번호)를 얻는 유일한 경로다 */
   async companyProfile(corpCode: string): Promise<Record<string, unknown>> {
     this.checkRateLimit(false);
-    const res = await this.request('company.json', { corp_code: corpCode });
-    const data = (await res.json()) as Record<string, unknown>;
+    const { bytes } = await this.request('company.json', { corp_code: corpCode });
+    const data = this.parseJson(bytes);
     this.handleStatus(String(data['status'] ?? ''), String(data['message'] ?? ''), false);
     return data;
   }

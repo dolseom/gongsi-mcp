@@ -69,9 +69,10 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
   const kind = detectIdentifier(input.query);
   const results: Record<string, unknown> = { query: input.query, detectedAs: kind };
 
-  // 숫자 식별자는 회사로만 해석된다 — 기업집단 시도는 의미가 없다
   const tryCompany = type === 'company' || type === 'auto';
-  const tryGroup = (type === 'group' || type === 'auto') && kind === 'name';
+  // type=group 을 명시했으면 형식 판정과 무관하게 그룹을 조회한다 (Codex 지적 — 숫자 상호 대비).
+  // auto 에서는 숫자 입력을 기업집단으로 볼 이유가 없어 이름일 때만 시도한다.
+  const tryGroup = type === 'group' || (type === 'auto' && kind === 'name');
 
   let company: Awaited<ReturnType<typeof resolveCorp>> | null = null;
   let companyError: ToolError | null = null;

@@ -204,6 +204,14 @@ describe('저장소 (node:sqlite 어댑터)', () => {
     expect(store.searchBodies('없는말')).toHaveLength(0);
   });
 
+  it('FTS 문법 문자가 섞인 키워드도 구문 오류 없이 처리한다 (Codex 지적)', () => {
+    store.storeBody('20260101000002', '따옴표 "포함" 본문과 OR 조건', '');
+    // 이전 구현: MATCH 문법으로 해석돼 SQLITE_ERROR 로 검색 전체가 죽었다
+    expect(() => store.searchBodies('foo OR')).not.toThrow();
+    expect(() => store.searchBodies('키워드"')).not.toThrow();
+    expect(store.searchBodies('"포함"')).toHaveLength(1); // 리터럴로 매칭
+  });
+
   it('파싱 실패한 원문도 빈 값으로 캐시해 재다운로드를 막는다', () => {
     store.storeBody('20260101000001', '');
     expect(store.hasBody('20260101000001')).toBe(true);

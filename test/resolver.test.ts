@@ -154,6 +154,11 @@ describe('식별자 판정·상호 정규화', () => {
     expect(normalizeName('삼성전자 주식회사')).toBe('삼성전자');
     expect(normalizeName('㈜ 한화')).toBe('한화');
   });
+
+  it('상호 중간의 법인격 문자열은 지우지 않는다 (Codex 지적)', () => {
+    // 앞뒤에서만 제거 — 중간을 지우면 서로 다른 법인이 같은 이름으로 뭉개진다
+    expect(normalizeName('한국주식회사연구소')).toBe('한국주식회사연구소');
+  });
 });
 
 describe('resolveCorp (사전 적재된 인덱스)', () => {
@@ -207,5 +212,14 @@ describe('resolveCorp (사전 적재된 인덱스)', () => {
 
   it('매칭 없으면 후보 제안과 함께 CorpNotFoundError', async () => {
     await expect(resolveCorp('없는회사명', dummy)).rejects.toThrow(CorpNotFoundError);
+  });
+
+  it('숫자 형식은 추정일 뿐 — 코드 조회가 비면 이름으로 폴백한다 (Codex 지적)', async () => {
+    // 상호가 6자리 숫자인 회사: 종목코드로 오분류되지만 이름 폴백으로 찾아진다
+    store.upsertCorps([
+      { corpCode: '99999901', corpName: '123456', stockCode: null, jurirNo: null, modifyDate: null },
+    ]);
+    const r = await resolveCorp('123456', dummy);
+    expect(r).toMatchObject({ corpCode: '99999901' });
   });
 });

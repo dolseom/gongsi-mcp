@@ -43,6 +43,25 @@ describe('원문 파서 — 표 구조 보존', () => {
     expect(markdown).toContain('| 구분 | 2행 |');
   });
 
+  it('뒤 열에만 남은 ROWSPAN 이월분을 잃지 않는다 (Codex 지적 회귀)', () => {
+    // 이전 구현: 다음 행에 1열 셀만 있으면 3열의 이월분이 소비되지 않고 사라져 열이 어긋났다
+    const xml = `<TABLE>
+      <TR><TD>a</TD><TD>b</TD><TD ROWSPAN="2">이월</TD></TR>
+      <TR><TD>c</TD></TR>
+    </TABLE>`;
+    const { markdown } = parseDocument(xml);
+    expect(markdown).toContain('| a | b | 이월 |');
+    expect(markdown).toContain('| c |  | 이월 |');
+  });
+
+  it('XML 주석 안의 TABLE 은 표로 파싱하지 않는다 (Codex 지적)', () => {
+    const xml = `<!-- <TABLE><TR><TD>가짜</TD></TR></TABLE> -->
+      <TABLE><TR><TD>진짜</TD></TR></TABLE>`;
+    const { markdown } = parseDocument(xml);
+    expect(markdown).toContain('| 진짜 |');
+    expect(markdown).not.toContain('가짜');
+  });
+
   it('표 밖 TITLE 은 제목으로, 셀 안 파이프는 이스케이프한다', () => {
     const xml = `<TITLE>대규모내부거래에 대한 이사회 의결 및 공시</TITLE>
       <TABLE><TR><TD>조건</TD><TD>A|B</TD></TR></TABLE>`;
@@ -118,5 +137,11 @@ describe('이사회 의결일 정밀 추출', () => {
     expect(extractBoardDate("<TD>7. 이사회 의결일</TD><TD>'26. 7.23</TD>")).toBe('20260723');
     // 아포스트로피 없는 2자리 숫자 나열은 날짜로 오인하지 않는다
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>- 참석 12. 3.45 아님</TD>')).toBeNull();
+  });
+
+  it('달력에 없는 날짜는 반환하지 않는다 (Codex 지적)', () => {
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.99.99</TD>')).toBeNull();
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.13.01</TD>')).toBeNull();
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.12.31</TD>')).toBe('20261231');
   });
 });
