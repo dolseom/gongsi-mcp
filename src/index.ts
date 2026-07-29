@@ -15,6 +15,7 @@ import {
   checkDisclosureDutyInput,
 } from './tools/check-disclosure-duty.js';
 import { resolveEntity, resolveEntityInput } from './tools/resolve-entity.js';
+import { readDisclosure, readDisclosureInput } from './tools/read-disclosure.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -83,6 +84,22 @@ server.registerTool(
     inputSchema: resolveEntityInput.shape,
   },
   wrap('resolve_entity', resolveEntity),
+);
+
+server.registerTool(
+  'read_disclosure',
+  {
+    title: '공시 원문 읽기',
+    description:
+      '공시 원문을 표 구조를 보존한 마크다운으로 돌려줍니다. ' +
+      '다른 회사의 기재 사례·문안을 참고하거나 공시 내용을 분석할 때 사용하세요.\n\n' +
+      '- 표가 그대로 마크다운 표로 나오므로 항목별 기재 내용을 바로 비교할 수 있습니다\n' +
+      '- board_date(이사회 의결일)가 추출되면 check_disclosure_duty 의 boardDate 로 그대로 쓸 수 있습니다\n' +
+      '- 원문은 영구 캐시됩니다 (접수된 공시는 불변, 정정은 새 접수번호)\n' +
+      '- HWP 첨부만 있는 공시는 body_unparsable 에러와 함께 뷰어 URL 을 안내합니다',
+    inputSchema: readDisclosureInput.shape,
+  },
+  wrap('read_disclosure', readDisclosure),
 );
 
 async function main(): Promise<void> {
