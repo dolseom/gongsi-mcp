@@ -1,0 +1,39 @@
+# 환경변수 (API 키 — 절대 커밋 금지)
+.env
+.env.local
+.env.*.local
+
+# 의존성
+node_modules/
+
+# 빌드 산출물
+dist/
+build/
+*.tsbuildinfo
+
+# 캐시 / 로컬 데이터
+data/cache/
+*.sqlite
+*.sqlite-journal
+*.db
+tmp/
+scratch/
+
+# 로그
+*.log
+npm-debug.log*
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 도구 로컬 캐시
+.codegraph/
+
+# 로컬 작업 기록
+CLAUDE.local.md
+
+# 외부 참고 소스 (타 프로젝트 코드 — 라이선스 불명, 커밋 금지)
+(참고)소스/
