@@ -1,0 +1,188 @@
+/**
+ * 환경설정 로딩
+ *
+ * 원칙 두 가지 (docs/absorbed-from-dart-mcp.md §2-6):
+ * 1. 운영 파라미터 접두사는 `DARTFTC_` 로 통일한다.
+ * 2. 인식하지 못한 `DARTFTC_*` 변수는 **기동 시 경고**한다.
+ *    참고 MCP는 config와 코드의 변수명이 달라 설정 3개가 조용히 무시되고 있었다.
+ */
+
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 프로젝트 루트 = `package.json` 이 있는 최상위 디렉터리.
+ *
+ * 개발 시엔 `src/lib/` 에서, 빌드 후엔 `dist/src/lib/` 에서 실행되므로
+ * 고정 상대경로(`../..`)로는 루트를 못 찾는다. `.env` 를 조용히 놓치면
+ * "키를 넣었는데 인식이 안 된다"는 진단하기 어려운 증상이 된다.
+ */
+function findProjectRoot(): string {
+  let dir = HERE;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return join(HERE, '..', '..');
+}
+
+const PROJECT_ROOT = findProjectRoot();
+
+/**
+ * `.env` 를 읽어 process.env 에 채운다. Node 21.7+ 내장 — 의존성 없음.
+ * 이미 설정된 환경변수를 덮어쓰지는 않는다.
+ */
+export function loadDotEnv(): void {
+  const path = join(PROJECT_ROOT, '.env');
+  if (!existsSync(path)) return;
+  try {
+    process.loadEnvFile(path);
+  } catch {
+    // 형식 오류는 무시하고 실제 환경변수만 쓴다
+  }
+}
+
+/** 진단용 — 어느 경로를 루트로 잡았는지 */
+export function projectRoot(): string {
+  return PROJECT_ROOT;
+}
+
+/** 인식하는 운영 파라미터 전체. 여기 없는 `DARTFTC_*` 는 경고 대상이다. */
+const KNOWN = [
+  'DARTFTC_RATE_WARN',
+  'DARTFTC_RATE_HARD_STOP',
+  'DARTFTC_CONCURRENCY',
+  'DARTFTC_HTTP_CONNECT_TIMEOUT',
+  'DARTFTC_HTTP_READ_TIMEOUT',
+  'DARTFTC_PER_TASK_TIMEOUT',
+  'DARTFTC_MAX_PAGES',
+  'DARTFTC_LAST_REPORT_ONLY',
+  'DARTFTC_ADAPTIVE_THRESHOLD',
+  'DARTFTC_ADAPTIVE_MIN_DAYS',
+  'DARTFTC_ADAPTIVE_FALLBACK_DAYS',
+  'DARTFTC_ADAPTIVE_MEASURE_CONCURRENCY',
+  'DARTFTC_ADAPTIVE_MAX_MEASURE_CALLS',
+  'DARTFTC_BODY_FETCH_LIMIT',
+  'DARTFTC_CACHE_DB',
+  'DARTFTC_LOG_LEVEL',
+] as const;
+
+/** 인식 못 한 DARTFTC_* 변수명 목록. 기동 시 경고용. */
+export function unknownEnvVars(): string[] {
+  const known = new Set<string>(KNOWN);
+  return Object.keys(process.env)
+    .filter((k) => k.startsWith('DARTFTC_') && !known.has(k))
+    .sort();
+}
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return raw === 'true' || raw === '1';
+}
+
+export interface Config {
+  dartApiKey: string | undefined;
+  egroupApiKey: string | undefined;
+
+  /** 일일 호출 경고 임계 */
+  rateWarn: number;
+  /** 하드스톱 임계 — 원문 다운로드만 거부하고 목록 조회는 허용한다 */
+  rateHardStop: number;
+
+  concurrency: number;
+  connectTimeoutMs: number;
+  readTimeoutMs: number;
+  perTaskTimeoutMs: number;
+
+  /**
+   * 페이지네이션 상한.
+   * ⚠️ 낮추면 결과가 조용히 잘린다. 상한값보다 중요한 건 절단을 `truncated` 로 알리는 것.
+   */
+  maxPages: number;
+
+  /**
+   * 최종보고서만 조회할지 (DART `last_reprt_at`).
+   * ⚠️ 반드시 false 기본. true 면 정정으로 대체된 **원본 제출분이 사라져**
+   * "의결일 대비 기한 초과" 판정이 원천적으로 불가능해진다.
+   * 실측: 전체 N=14,597 / Y=12,794, J는 N=3,505 / Y=3,430 (Y ⊂ N, Y에만 있는 건 0)
+   */
+  lastReportOnly: boolean;
+
+  adaptiveThreshold: number;
+  adaptiveMinDays: number;
+  adaptiveFallbackDays: number;
+  adaptiveMeasureConcurrency: number;
+  /** 미지정 시 코드 수 비례로 계산한다 (100 + 50 × 코드수) */
+  adaptiveMaxMeasureCalls: number | undefined;
+
+  bodyFetchLimit: number;
+  cacheDbPath: string;
+  logLevel: string;
+}
+
+let cached: Config | null = null;
+
+export function getConfig(): Config {
+  if (cached) return cached;
+  const concurrency = Math.max(1, envInt('DARTFTC_CONCURRENCY', 10));
+  const explicitMeasureCalls = process.env['DARTFTC_ADAPTIVE_MAX_MEASURE_CALLS'];
+
+  cached = {
+    dartApiKey: process.env['DART_API_KEY'],
+    egroupApiKey: process.env['EGROUP_API_KEY'],
+
+    rateWarn: envInt('DARTFTC_RATE_WARN', 18_000),
+    rateHardStop: envInt('DARTFTC_RATE_HARD_STOP', 19_000),
+
+    concurrency,
+    connectTimeoutMs: envInt('DARTFTC_HTTP_CONNECT_TIMEOUT', 10) * 1000,
+    readTimeoutMs: envInt('DARTFTC_HTTP_READ_TIMEOUT', 100) * 1000,
+    perTaskTimeoutMs: envInt('DARTFTC_PER_TASK_TIMEOUT', 180) * 1000,
+
+    maxPages: Math.max(1, envInt('DARTFTC_MAX_PAGES', 100)),
+    lastReportOnly: envBool('DARTFTC_LAST_REPORT_ONLY', false),
+
+    adaptiveThreshold: Math.max(1, envInt('DARTFTC_ADAPTIVE_THRESHOLD', 1000)),
+    adaptiveMinDays: Math.max(1, envInt('DARTFTC_ADAPTIVE_MIN_DAYS', 3)),
+    adaptiveFallbackDays: Math.max(1, envInt('DARTFTC_ADAPTIVE_FALLBACK_DAYS', 30)),
+    // 측정 동시성은 검색 동시성을 넘지 않는다
+    adaptiveMeasureConcurrency: Math.min(
+      Math.max(1, envInt('DARTFTC_ADAPTIVE_MEASURE_CONCURRENCY', 5)),
+      concurrency,
+    ),
+    adaptiveMaxMeasureCalls:
+      explicitMeasureCalls === undefined || explicitMeasureCalls === ''
+        ? undefined
+        : Math.max(1, envInt('DARTFTC_ADAPTIVE_MAX_MEASURE_CALLS', 150)),
+
+    bodyFetchLimit: Math.max(1, envInt('DARTFTC_BODY_FETCH_LIMIT', 50)),
+    cacheDbPath: process.env['DARTFTC_CACHE_DB'] || join(PROJECT_ROOT, 'data', 'cache.db'),
+    logLevel: (process.env['DARTFTC_LOG_LEVEL'] || 'INFO').toUpperCase(),
+  };
+  return cached;
+}
+
+/** 테스트용 — 캐시된 설정을 버린다 */
+export function __resetConfig(): void {
+  cached = null;
+}
+
+/** 측정 호출 예산. env 명시가 있으면 그 값이 우선한다. */
+export function measureCallBudget(codeCount: number): number {
+  const cfg = getConfig();
+  if (cfg.adaptiveMaxMeasureCalls !== undefined) return cfg.adaptiveMaxMeasureCalls;
+  return 100 + 50 * Math.max(1, codeCount);
+}

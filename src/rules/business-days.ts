@@ -7,14 +7,32 @@
  * ⚠️ 일요일은 공휴일(관공서의 공휴일에 관한 규정)이므로 별도 제외 대상이다.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { YMD } from './types.js';
 
-// TODO(build): 빌드 산출물(dist)에서도 data/를 찾도록 복사 단계 추가 필요.
 const HERE = dirname(fileURLToPath(import.meta.url));
-const HOLIDAY_PATH = join(HERE, '..', '..', 'data', 'holidays.json');
+
+/**
+ * `data/holidays.json` 을 찾는다.
+ * 개발 시엔 `src/rules/` 에서, 빌드 후엔 `dist/src/rules/` 에서 실행되므로
+ * 상위로 올라가며 탐색한다 (빌드에 data 복사 단계를 두지 않아도 되게).
+ */
+function resolveHolidayPath(): string {
+  let dir = HERE;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, 'data', 'holidays.json');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // 못 찾으면 개발 기준 경로를 돌려주고, 읽기 시점에 명확히 실패하게 둔다
+  return join(HERE, '..', '..', 'data', 'holidays.json');
+}
+
+const HOLIDAY_PATH = resolveHolidayPath();
 
 interface HolidayEntry {
   date: string;
