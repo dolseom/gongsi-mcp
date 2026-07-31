@@ -16,6 +16,7 @@ import {
 } from './tools/check-disclosure-duty.js';
 import { resolveEntity, resolveEntityInput } from './tools/resolve-entity.js';
 import { readDisclosure, readDisclosureInput } from './tools/read-disclosure.js';
+import { searchDisclosures, searchDisclosuresInput } from './tools/search-disclosures.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -100,6 +101,25 @@ server.registerTool(
     inputSchema: readDisclosureInput.shape,
   },
   wrap('read_disclosure', readDisclosure),
+);
+
+server.registerTool(
+  'search_disclosures',
+  {
+    title: '공시 검색',
+    description:
+      '공시를 검색합니다. 공정위 기업집단 공시 프리셋이 내장되어 있습니다 ' +
+      '(ftc_all=공정위 전체, internal_transaction=대규모내부거래, group_status=기업집단현황, ' +
+      'unlisted_material=비상장사 중요사항, public_interest_corp=공익법인, subcontract=하도급 결제조건).\n\n' +
+      '- mode:"page"(기본) = 한 페이지씩 조회. mode:"batch" = 기간 전체 전수 수집 (중복 제거·건수 집계 포함)\n' +
+      '- batch 가 한 번에 처리하기 큰 범위면 range_too_large 에러와 함께 분할 구간을 안내합니다 — ' +
+      '안내된 구간대로 나눠 다시 호출하세요\n' +
+      '- report_name_contains 로 보고서명을 거를 수 있습니다 (선례 검색: preset+["자금차입" 등])\n' +
+      '- 응답의 diagnostics 를 반드시 확인하세요 — truncated/partial_results 가 true 면 결과가 불완전합니다\n' +
+      '- 정정 이전 원본 접수분을 포함합니다 (last_report_only 기본 false — 지연 판정에 필수)',
+    inputSchema: searchDisclosuresInput.shape,
+  },
+  wrap('search_disclosures', searchDisclosures),
 );
 
 async function main(): Promise<void> {
