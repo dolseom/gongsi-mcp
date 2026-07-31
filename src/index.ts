@@ -17,6 +17,7 @@ import {
 import { resolveEntity, resolveEntityInput } from './tools/resolve-entity.js';
 import { readDisclosure, readDisclosureInput } from './tools/read-disclosure.js';
 import { searchDisclosures, searchDisclosuresInput } from './tools/search-disclosures.js';
+import { findPrecedents, findPrecedentsInput } from './tools/find-precedents.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -120,6 +121,23 @@ server.registerTool(
     inputSchema: searchDisclosuresInput.shape,
   },
   wrap('search_disclosures', searchDisclosures),
+);
+
+server.registerTool(
+  'find_precedents',
+  {
+    title: '타사 선례·문안 참고',
+    description:
+      '"다른 회사는 이 항목을 어떻게 썼나"에 답합니다. 키워드로 같은 유형의 최근 공시를 찾아 ' +
+      '회사당 1건씩 골라 원문(표 구조 보존 마크다운)을 함께 돌려줍니다.\n\n' +
+      '- 키워드는 보고서명 부분일치입니다: "자금차입", "담보제공", "수익증권", "부동산임차" 등\n' +
+      '- 기본은 대규모내부거래(J001)에서 찾습니다. preset 으로 다른 공정위 공시로 바꿀 수 있습니다\n' +
+      '- corp_cls 로 자사와 같은 상장구분의 문안만 볼 수 있고, exclude_corp 로 자사를 뺄 수 있습니다\n' +
+      '- 이 도구는 정정이 반영된 최종본 기준입니다 (문안 참고 목적 — 지연 판정에는 search_disclosures 사용)\n' +
+      '- 선례 1건당 원문 다운로드 1회를 소비합니다 (이미 읽은 공시는 캐시)',
+    inputSchema: findPrecedentsInput.shape,
+  },
+  wrap('find_precedents', findPrecedents),
 );
 
 async function main(): Promise<void> {
