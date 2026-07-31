@@ -39,3 +39,7 @@ CLAUDE.local.md
 
 # 외부 참고 소스 (타 프로젝트 코드 — 라이선스 불명, 커밋 금지)
 (참고)소스/
+
+# 리서치 수집 원본 (커뮤니티 스크랩 — 저작권·개인글 노출 위험, 결과물만 커밋)
+RESEARCH/**/artifacts/
+RESEARCH/**/state.json
