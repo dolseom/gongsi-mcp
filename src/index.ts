@@ -18,6 +18,7 @@ import { resolveEntity, resolveEntityInput } from './tools/resolve-entity.js';
 import { readDisclosure, readDisclosureInput } from './tools/read-disclosure.js';
 import { searchDisclosures, searchDisclosuresInput } from './tools/search-disclosures.js';
 import { findPrecedents, findPrecedentsInput } from './tools/find-precedents.js';
+import { getGroupStructure, getGroupStructureInput } from './tools/get-group-structure.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -138,6 +139,24 @@ server.registerTool(
     inputSchema: findPrecedentsInput.shape,
   },
   wrap('find_precedents', findPrecedents),
+);
+
+server.registerTool(
+  'get_group_structure',
+  {
+    title: '기업집단 구조 조회',
+    description:
+      '공정위 지정 기업집단의 개요(동일인·대표회사·소속회사 수)와 소속회사 전수를 돌려줍니다. ' +
+      '소속회사 목록이 곧 공정위 공시의무의 모집단입니다. EGROUP_API_KEY 가 필요합니다.\n\n' +
+      '- include_financials=true 면 계열사별 자산·자본총액·자본금·부채·매출·당기순이익(단위: 원)을 함께 줍니다 — ' +
+      '자본총액·자본금은 check_disclosure_duty 의 기준금액 입력으로 그대로 쓸 수 있습니다\n' +
+      '- DART corp_code 조인은 법인등록번호 기준입니다 (이름 매칭은 표기 체계가 달라 불가능). ' +
+      '미조인 회사는 resolve_entity(fetchJurirNo=true) 로 채워집니다\n' +
+      '- 포털 데이터는 연 1회(매년 5/1) 갱신되며 연단위로 캐시됩니다\n' +
+      '- 집단명은 공정위 표기를 씁니다: "SK" 가 아니라 "에스케이", "삼성" 등',
+    inputSchema: getGroupStructureInput.shape,
+  },
+  wrap('get_group_structure', getGroupStructure),
 );
 
 async function main(): Promise<void> {

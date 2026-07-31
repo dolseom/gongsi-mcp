@@ -91,9 +91,21 @@ export class EgroupClient {
     return this.store.todayCallCount('egroup');
   }
 
-  private async call<T>(service: ServiceName, params: Record<string, unknown>): Promise<T[]> {
+  /**
+   * 한 페이지 호출.
+   * ⚠️ 실측(2026-07-31) 세 가지 — 오진 주의:
+   *  - **`pageNo` 는 필수다.** 빼면 resultCode 97 ("pageNo ::: not current!!") 이 온다.
+   *  - `resultType=json` 은 무시된다 — 응답은 **항상 XML** 이다.
+   *  - 항목 태그는 `<item>` 이 아니라 **서비스명에서 List 를 뗀 이름**이다
+   *    (appnGroupSttusList → `<appnGroupSttus>`). `<item>` 만 찾으면 성공 응답도 빈 배열이 된다.
+   */
+  private async callPage<T>(
+    service: ServiceName,
+    params: Record<string, unknown>,
+    pageNo: number,
+  ): Promise<{ items: T[]; totalCount: number }> {
     const cfg = getConfig();
-    const sp = new URLSearchParams({ serviceKey: this.serviceKey, resultType: 'json' });
+    const sp = new URLSearchParams({ serviceKey: this.serviceKey, pageNo: String(pageNo) });
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === null || v === '') continue;
       sp.set(k, String(v));
@@ -125,16 +137,27 @@ export class EgroupClient {
     }
 
     const text = await res.text();
-    // resultType=json 을 줘도 XML 로 돌아오는 경우가 있다
-    if (!text.trimStart().startsWith('{')) {
-      return parseXmlItems<T>(text);
+    const parsed = parsePortalXml<T>(text, service);
+    // 오류 응답을 빈 배열로 조용히 넘기면 "집단이 없다"로 오진한다 — 반드시 던진다
+    if (parsed.resultCode !== '00') {
+      throw new ToolError(
+        'egroup_api_error',
+        `기업집단포털 오류 [${parsed.resultCode}] ${parsed.resultMsg || '(메시지 없음)'}`,
+        { service, resultCode: parsed.resultCode },
+      );
     }
-    const data = JSON.parse(text) as Record<string, unknown>;
-    const body = (data['response'] as Record<string, unknown> | undefined)?.['body'] ?? data;
-    const items = (body as Record<string, unknown>)?.['items'];
-    if (!items) return [];
-    const item = (items as Record<string, unknown>)['item'] ?? items;
-    return (Array.isArray(item) ? item : [item]) as T[];
+    return { items: parsed.items, totalCount: parsed.totalCount };
+  }
+
+  /** 전 페이지 수집 — totalCount 에 도달할 때까지 pageNo 를 올린다 */
+  private async call<T>(service: ServiceName, params: Record<string, unknown>): Promise<T[]> {
+    const out: T[] = [];
+    for (let pageNo = 1; pageNo <= 20; pageNo++) {
+      const { items, totalCount } = await this.callPage<T>(service, params, pageNo);
+      out.push(...items);
+      if (items.length === 0 || out.length >= totalCount) break;
+    }
+    return out;
   }
 
   /** 공개년월 목록. jobSeCode: 0001 지정현황 / 0003 지주회사 */
@@ -185,10 +208,23 @@ export class EgroupClient {
   }
 }
 
-/** XML 응답에서 <item> 들을 뽑는다 (정규식 — 스키마가 단순하고 평면적이다) */
-function parseXmlItems<T>(xml: string): T[] {
-  const out: T[] = [];
-  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+/**
+ * 포털 XML 파싱 (정규식 — 스키마가 단순하고 평면적이다).
+ * 항목 태그는 서비스명에서 `List` 를 뗀 이름이다 (실측 4종 전부 이 규칙).
+ */
+export function parsePortalXml<T>(
+  xml: string,
+  service: string,
+): { items: T[]; totalCount: number; resultCode: string; resultMsg: string } {
+  const scalar = (name: string): string =>
+    new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(xml)?.[1]?.trim() ?? '';
+  const resultCode = scalar('resultCode');
+  const resultMsg = decodeXmlEntities(scalar('resultMsg'));
+  const totalCount = Number(scalar('totalCount')) || 0;
+
+  const itemTag = service.replace(/List$/, '');
+  const items: T[] = [];
+  const itemRe = new RegExp(`<${itemTag}>([\\s\\S]*?)</${itemTag}>`, 'g');
   let m: RegExpExecArray | null;
   while ((m = itemRe.exec(xml)) !== null) {
     const inner = m[1] ?? '';
@@ -199,9 +235,9 @@ function parseXmlItems<T>(xml: string): T[] {
       const key = f[1];
       if (key) obj[key] = decodeXmlEntities((f[2] ?? '').trim());
     }
-    out.push(obj as T);
+    items.push(obj as T);
   }
-  return out;
+  return { items, totalCount, resultCode, resultMsg };
 }
 
 function decodeXmlEntities(s: string): string {
