@@ -19,6 +19,7 @@ import { readDisclosure, readDisclosureInput } from './tools/read-disclosure.js'
 import { searchDisclosures, searchDisclosuresInput } from './tools/search-disclosures.js';
 import { findPrecedents, findPrecedentsInput } from './tools/find-precedents.js';
 import { getGroupStructure, getGroupStructureInput } from './tools/get-group-structure.js';
+import { getFinancials, getFinancialsInput } from './tools/get-financials.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -157,6 +158,23 @@ server.registerTool(
     inputSchema: getGroupStructureInput.shape,
   },
   wrap('get_group_structure', getGroupStructure),
+);
+
+server.registerTool(
+  'get_financials',
+  {
+    title: '재무제표 조회',
+    description:
+      '단일회사 재무제표를 조회합니다 (기본: 직전 연도 사업보고서의 재무상태표, 연결 없으면 별도로 자동 폴백).\n\n' +
+      '- key_metrics 의 total_equity(자본총계)·paid_in_capital(자본금)은 check_disclosure_duty 의 ' +
+      'totalEquity/paidInCapital 입력으로 그대로 쓸 수 있습니다 (단위: 원)\n' +
+      '- 금액은 raw(원문)/value(정수 원)/display(표시 단위 환산) 세 값을 함께 줍니다\n' +
+      '- change 는 전기 대비 증감입니다 (손익·현금흐름은 누적 필드가 있을 때만 누적 기준)\n' +
+      '- 외부감사 대상이 아닌 회사는 DART 에 재무제표가 없을 수 있습니다 — ' +
+      '기업집단 소속사는 get_group_structure(include_financials=true)로 포털 재무를 확인하세요',
+    inputSchema: getFinancialsInput.shape,
+  },
+  wrap('get_financials', getFinancials),
 );
 
 async function main(): Promise<void> {

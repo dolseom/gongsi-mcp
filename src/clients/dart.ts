@@ -327,6 +327,31 @@ export class DartClient {
     throw new DartApiError('invalid_payload', '법인코드 응답이 ZIP 형식이 아닙니다.');
   }
 
+  /**
+   * 단일회사 전체 재무제표 (fnlttSinglAcntAll).
+   * reprt_code: 11011 사업 / 11012 반기 / 11013 1분기 / 11014 3분기
+   * 데이터 없음(013)은 빈 배열로 돌려준다 — CFS→OFS 폴백 판단은 호출부가 한다.
+   */
+  async financialStatements(p: {
+    corpCode: string;
+    bsnsYear: string;
+    reprtCode: string;
+    fsDiv: 'CFS' | 'OFS';
+  }): Promise<Array<Record<string, unknown>>> {
+    this.checkRateLimit(false);
+    const { bytes } = await this.request('fnlttSinglAcntAll.json', {
+      corp_code: p.corpCode,
+      bsns_year: p.bsnsYear,
+      reprt_code: p.reprtCode,
+      fs_div: p.fsDiv,
+    });
+    const data = this.parseJson(bytes);
+    const status = String(data['status'] ?? '');
+    this.handleStatus(status, String(data['message'] ?? ''), true);
+    if (status === '013') return [];
+    return (data['list'] as Array<Record<string, unknown>> | undefined) ?? [];
+  }
+
   /** 기업개황 — `jurir_no`(법인등록번호)를 얻는 유일한 경로다 */
   async companyProfile(corpCode: string): Promise<Record<string, unknown>> {
     this.checkRateLimit(false);
