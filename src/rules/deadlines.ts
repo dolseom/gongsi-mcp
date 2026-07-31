@@ -144,6 +144,40 @@ export function goodsServicesReducedDeadline(quarterEnd: YMD): DeadlineResult {
   return finalize(raw, `분기 종료(${quarterEnd}) 후 45일 이내 (달력일)`, 0, REF_GOODS_45);
 }
 
+const REF_SUBCONTRACT: LegalRef[] = [
+  {
+    source: '하도급거래 공정화에 관한 법률 제13조의3제1항',
+    summary:
+      '공시대상기업집단 소속 원사업자는 하도급대금 지급수단·지급기간·분쟁조정기구 등 결제조건을 공시하여야 한다.',
+  },
+  {
+    source: '하도급거래 공정화에 관한 법률 시행령 제8조의2제2항',
+    summary:
+      '매 반기가 끝난 날의 다음 날부터 45일 이내에 공정거래위원회가 고시하는 정보시스템을 통해 공시해야 한다.',
+  },
+];
+
+/**
+ * 하도급대금 결제조건 반기별 공시기한 (J009) — 하도급법 시행령 §8의2②
+ * 매 반기가 끝난 날의 다음 날부터 45일 이내 (달력일)
+ * 상반기(6/30 종료) → 8/14, 하반기(12/31 종료) → 익년 2/14
+ *
+ * @param halfEnd 반기 종료일 ('YYYY0630' 또는 'YYYY1231')
+ */
+export function subcontractPaymentDeadline(halfEnd: YMD): DeadlineResult {
+  const mmdd = halfEnd.slice(4);
+  if (mmdd !== '0630' && mmdd !== '1231') {
+    throw new Error(`반기 종료일은 6월 30일 또는 12월 31일이어야 합니다: ${halfEnd}`);
+  }
+  const raw = toYMD(new Date(toDate(halfEnd).getTime() + 45 * 86_400_000));
+  return finalize(
+    raw,
+    `반기 종료일(${halfEnd}) 다음 날부터 45일 이내 (달력일)`,
+    0,
+    REF_SUBCONTRACT,
+  );
+}
+
 /** 기업집단현황공시 연1회 기한 — 매년 5월 31일 */
 export function groupStatusAnnualDeadline(year: number): DeadlineResult {
   return finalize(`${year}0531`, `연1회 공시: 매년 5월 31일`, 0, REF_GROUP_STATUS);

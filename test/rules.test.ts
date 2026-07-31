@@ -12,6 +12,7 @@ import {
   groupStatusQuarterlyDeadline,
   litDeadline,
   omnibusQuarterlyDeadline,
+  subcontractPaymentDeadline,
   unlistedMaterialDeadline,
 } from '../src/rules/deadlines.js';
 import { estimatePenalty } from '../src/rules/penalties.js';
@@ -123,6 +124,22 @@ describe('기한 — 유형별', () => {
     // 2분기 종료 6/30(화) → 7/1부터 10영업일째 = 7/14(화)
     const d = omnibusQuarterlyDeadline('20260630');
     expect(d.deadline).toBe('20260714');
+  });
+
+  it('하도급 결제조건은 반기 종료일 다음 날부터 45일 (가이드라인 명시 8/14와 일치)', () => {
+    const d = subcontractPaymentDeadline('20260630');
+    expect(d.deadline).toBe('20260814'); // 금요일, 조정 없음
+    expect(d.adjustedToNextBusinessDay).toBe(false);
+  });
+
+  it('하도급 하반기분 기한 익년 2/14가 일요일이면 다음 영업일로 민다', () => {
+    const d = subcontractPaymentDeadline('20261231');
+    expect(d.deadline).toBe('20270215'); // 2027-02-14(일) → 2/15(월)
+    expect(d.adjustedToNextBusinessDay).toBe(true);
+  });
+
+  it('하도급 반기 종료일이 6/30·12/31이 아니면 던진다', () => {
+    expect(() => subcontractPaymentDeadline('20260331')).toThrow('반기 종료일');
   });
 
   it('기업집단현황 분기공시는 분기 종료 후 2개월', () => {

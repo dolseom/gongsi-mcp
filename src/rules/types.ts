@@ -19,7 +19,9 @@ export type DutyType =
   /** 특수관계인인 공익법인 — 법 §29 / 령 §36 */
   | 'public_interest_corp'
   /** 약관에 의한 금융거래 특례 — 고시 §9 */
-  | 'omnibus_financial';
+  | 'omnibus_financial'
+  /** 하도급대금 결제조건 (J009) — 하도급법 §13의3 / 하도급법 시행령 §8의2 */
+  | 'subcontract_payment_terms';
 
 /** 상장 여부 — 공시기한이 갈린다 */
 export type ListingStatus = 'listed' | 'unlisted';
