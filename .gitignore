@@ -36,6 +36,7 @@ Thumbs.db
 
 # 로컬 작업 기록
 CLAUDE.local.md
+CLAUDE.local.md.bak-*
 
 # 외부 참고 소스 (타 프로젝트 코드 — 라이선스 불명, 커밋 금지)
 (참고)소스/
