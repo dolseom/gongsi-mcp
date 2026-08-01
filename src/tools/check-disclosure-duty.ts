@@ -33,6 +33,7 @@ import { estimatePenalty } from '../rules/penalties.js';
 import { toYMD } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
+import { searchQna, type QnaCategory } from '../kb/qna.js';
 
 const YMD = z
   .string()
@@ -100,6 +101,14 @@ export const checkDisclosureDutyInput = z.object({
     .boolean()
     .optional()
     .describe('지연이 확인되면 예상 과태료도 함께 산정할지 (기본 true)'),
+
+  situation: z
+    .string()
+    .optional()
+    .describe(
+      '거래 상황 서술 (예: "계열사 발행어음이 만기 후 자동연장됨"). 주면 유사한 공정위 공식 Q&A를 ' +
+        'relatedOfficialQna 로 함께 돌려줍니다 — 규칙만으로 판정하기 어려운 경계사례(대상 여부·거래 성격)에 유용합니다',
+    ),
 });
 
 export type CheckDisclosureDutyInput = z.infer<typeof checkDisclosureDutyInput>;
@@ -117,9 +126,25 @@ interface DutyResult {
   deadline?: DeadlineResult & { dDay?: number };
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: unknown;
+  relatedOfficialQna?: Array<{
+    question: string;
+    answer: string | null;
+    source: { doc: string; docYear: number | null; url: string };
+    caveats: string[];
+  }>;
   notes: string[];
   disclaimer: string;
 }
+
+/** duty → Q&A 지식베이스 카테고리. 약관특례·상품용역감소·공익법인은 전부 대규모내부거래 문서권이다 */
+const DUTY_TO_QNA_CATEGORY: Record<CheckDisclosureDutyInput['duty'], QnaCategory> = {
+  large_internal_transaction: 'internal_transaction',
+  public_interest_corp: 'internal_transaction',
+  omnibus_financial: 'internal_transaction',
+  goods_services_reduced: 'internal_transaction',
+  unlisted_material: 'unlisted_material',
+  group_status: 'group_status',
+};
 
 const DISCLAIMER =
   '본 판정은 공개된 법령·고시에 기반한 참고 정보이며 공정거래위원회의 공식 유권해석이 아닙니다. ' +
@@ -313,6 +338,30 @@ export function checkDisclosureDuty(
 
   if (deadline?.warnings.length) notes.push(...deadline.warnings);
 
+  // ── 유사 공정위 공식 Q&A 동봉 ──
+  // 규칙 엔진은 금액·기한만 판정한다. "이 거래가 애초에 대상인가"(특수관계인 여부·거래 성격)는
+  // 규칙으로 환원되지 않는 경계사례가 많아, 상황 서술이 오면 공정위 공식 답변을 근거로 붙인다.
+  let relatedOfficialQna: DutyResult['relatedOfficialQna'];
+  if (input.situation) {
+    const matches = searchQna(input.situation, {
+      category: DUTY_TO_QNA_CATEGORY[input.duty],
+      limit: 3,
+    });
+    if (matches.length) {
+      relatedOfficialQna = matches.map((m) => ({
+        question: m.entry.question,
+        answer: m.entry.answer,
+        source: { doc: m.entry.doc, docYear: m.entry.docYear, url: m.entry.url },
+        caveats: m.entry.caveats,
+      }));
+      notes.push(
+        '상황 서술과 유사한 공정위 공식 Q&A를 relatedOfficialQna 로 첨부했습니다. ' +
+          '옛 문서의 답변은 caveats(폐지된 기준금액·기한)를 함께 읽어야 하며, 현행 수치는 본 판정 결과가 우선합니다. ' +
+          '더 찾으려면 search_ftc_qna 를 사용하세요.',
+      );
+    }
+  }
+
   return {
     duty: input.duty,
     verdict,
@@ -321,6 +370,7 @@ export function checkDisclosureDuty(
     ...(deadlineOut ? { deadline: deadlineOut } : {}),
     ...(compliance ? { compliance } : {}),
     ...(penalty ? { penalty } : {}),
+    ...(relatedOfficialQna ? { relatedOfficialQna } : {}),
     notes,
     disclaimer: DISCLAIMER,
   };

@@ -20,6 +20,7 @@ import { searchDisclosures, searchDisclosuresInput } from './tools/search-disclo
 import { findPrecedents, findPrecedentsInput } from './tools/find-precedents.js';
 import { getGroupStructure, getGroupStructureInput } from './tools/get-group-structure.js';
 import { getFinancials, getFinancialsInput } from './tools/get-financials.js';
+import { searchFtcQna, searchFtcQnaInput } from './tools/search-ftc-qna.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -175,6 +176,24 @@ server.registerTool(
     inputSchema: getFinancialsInput.shape,
   },
   wrap('get_financials', getFinancials),
+);
+
+server.registerTool(
+  'search_ftc_qna',
+  {
+    title: '공정위 공식 Q&A 검색',
+    description:
+      '공정위가 배포한 해설서·FAQ에서 추출한 공식 질의응답 351건(전문 330 + 폐지 게시판 복원 제목 21)을 검색합니다. ' +
+      '"이런 거래도 공시 대상인가?" 같은 경계사례에서 규칙만으로 판정할 수 없을 때, ' +
+      '유사한 공정위 공식 답변을 근거로 제시하는 용도입니다. 로컬 데이터라 인증키 없이 동작합니다.\n\n' +
+      '- 검색어는 핵심 명사 위주가 잘 맞습니다: "발행어음 자동연장", "자회사 설립 출자", "퇴직연금 거래금액"\n' +
+      '- category 로 공시유형(대규모내부거래/비상장사 중요사항/기업집단현황/하도급)을 좁힐 수 있습니다\n' +
+      '- ⚠️ 원본 문서 상당수가 2008~2015년 자료입니다 — 각 결과의 caveats(폐지된 기준금액 50억·기한 1일 등)를 ' +
+      '반드시 함께 읽으세요. 현행 수치 판정은 check_disclosure_duty 가 담당합니다\n' +
+      '- check_disclosure_duty 의 situation 입력으로도 같은 지식베이스가 검색됩니다',
+    inputSchema: searchFtcQnaInput.shape,
+  },
+  wrap('search_ftc_qna', searchFtcQna),
 );
 
 async function main(): Promise<void> {
