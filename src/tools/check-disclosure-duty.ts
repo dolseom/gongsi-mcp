@@ -29,8 +29,9 @@ import {
   evaluateCompliance,
   businessDaysRemaining,
 } from '../rules/deadlines.js';
-import { estimatePenalty } from '../rules/penalties.js';
-import { toYMD } from '../rules/business-days.js';
+import { estimatePenalty, type PenaltyRegime } from '../rules/penalties.js';
+import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
+import { toYMD, toDate } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
 import { searchQna, type QnaCategory } from '../kb/qna.js';
@@ -126,6 +127,7 @@ interface DutyResult {
   deadline?: DeadlineResult & { dDay?: number };
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: unknown;
+  selfCorrection?: SelfCorrectionResult;
   relatedOfficialQna?: Array<{
     question: string;
     answer: string | null;
@@ -301,6 +303,11 @@ export function checkDisclosureDuty(
   }
 
   // ── 기한 준수·과태료 ──
+  const regime: PenaltyRegime =
+    input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
+      ? 'art26_29'
+      : 'art27_28';
+
   let compliance: DutyResult['compliance'];
   let penalty: unknown;
 
@@ -314,10 +321,6 @@ export function checkDisclosureDuty(
         : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.`);
 
     if (!c.onTime && (input.estimatePenaltyIfLate ?? true)) {
-      const regime =
-        input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
-          ? 'art26_29'
-          : 'art27_28';
       penalty = estimatePenalty({
         regime,
         boardResolution: true,
@@ -337,6 +340,40 @@ export function checkDisclosureDuty(
     : undefined;
 
   if (deadline?.warnings.length) notes.push(...deadline.warnings);
+
+  // ── 자진시정 골든타임 ──
+  // 리서치 결론의 포지셔닝: "위반 통보"가 아니라 "면제 골든타임 내 구조".
+  // 기한이 지났는데 아직 공시 전인 상황이 이 블록의 존재 이유다.
+  let selfCorrection: DutyResult['selfCorrection'];
+  if (deadline && verdict !== 'not_required') {
+    if (!input.actualDisclosureDate && toDate(today) > toDate(deadline.deadline)) {
+      selfCorrection = selfCorrectionWindow(deadline.deadline, regime, today);
+      if (selfCorrection.status === 'open') {
+        notes.push(
+          `⚠️ 공시기한(${deadline.deadline})이 지났고 아직 공시 전입니다. ` +
+            `자진시정 골든타임이 ${selfCorrection.windowEnd}까지 열려 있습니다 ` +
+            `(남은 영업일 ${selfCorrection.businessDaysRemaining}일). ` +
+            `selfCorrection 의 면제 사유와 주의사항을 확인하고 즉시 공시하세요.`,
+        );
+      } else {
+        notes.push(
+          `공시기한(${deadline.deadline})과 자진시정 10영업일(${selfCorrection.windowEnd})이 모두 지났습니다. ` +
+            `그래도 지연일수 감경 구간(30일 이하 20% 등, 달력일 기준)이 남아 있으므로 즉시 공시가 여전히 손실을 최소화합니다.`,
+        );
+      }
+    } else if (compliance && !compliance.onTime) {
+      // 이미 지연 공시한 사안 — 실제 공시일이 골든타임 안이었다면 면제 검토 여지를 알린다
+      const w = selfCorrectionWindow(deadline.deadline, regime, input.actualDisclosureDate!);
+      if (w.status === 'open') {
+        selfCorrection = w;
+        notes.push(
+          '실제 공시일이 자진시정 10영업일 이내입니다 — 신규 지정·편입 30일 이내 위반이거나 ' +
+            '사소한 부주의(계산 실수·오기)로 인정되는 등 고시 Ⅴ의 사유에 해당하면 과태료 면제를 검토할 수 있습니다 ' +
+            '(selfCorrection 의 exemptionGrounds 참조).',
+        );
+      }
+    }
+  }
 
   // ── 유사 공정위 공식 Q&A 동봉 ──
   // 규칙 엔진은 금액·기한만 판정한다. "이 거래가 애초에 대상인가"(특수관계인 여부·거래 성격)는
@@ -370,6 +407,7 @@ export function checkDisclosureDuty(
     ...(deadlineOut ? { deadline: deadlineOut } : {}),
     ...(compliance ? { compliance } : {}),
     ...(penalty ? { penalty } : {}),
+    ...(selfCorrection ? { selfCorrection } : {}),
     ...(relatedOfficialQna ? { relatedOfficialQna } : {}),
     notes,
     disclaimer: DISCLAIMER,
