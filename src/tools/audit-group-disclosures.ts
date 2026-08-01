@@ -360,7 +360,7 @@ export async function auditGroupDisclosures(
           status: w.status,
           window_end: w.windowEnd,
           ...(w.businessDaysRemaining !== undefined
-            ? { business_days_remaining: w.businessDaysRemaining }
+            ? { business_days_remaining: w.businessDaysRemaining, is_last_day: w.isLastDay }
             : {}),
         },
         viewer_url: viewerUrl(r.rcept_no),
@@ -378,7 +378,9 @@ export async function auditGroupDisclosures(
   ];
   if (lateCandidates.some((l) => l.self_correction.status === 'open')) {
     notes.push(
-      '⚠️ 자진시정 골든타임이 열려 있는 건이 있습니다 — check_disclosure_duty 로 해당 건의 면제 사유를 확인하세요.',
+      '⚠️ 자진시정 10영업일 기간이 아직 열려 있는 건이 있습니다. 단, 지연 공시 자체는 면제 대상이 아닙니다 — ' +
+        '면제는 위반공시사항을 **시정하여 다시 공시**하고 고시 Ⅴ의 사유(신규 지정·편입 30일 내, 사소한 부주의 등)가 ' +
+        '함께 성립할 때만 검토됩니다(공정위 재량). 지연일수 감경(3일 이하 75% 등)은 별개로 적용됩니다.',
     );
   }
   if (population.unjoined.length > 0) {

@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -25,23 +26,27 @@ export type QnaCategory =
   | 'group_status' // 기업집단현황 (J004)
   | 'subcontract'; // 하도급대금 결제조건 (J009)
 
-export interface QnaEntry {
-  id: string;
-  category: QnaCategory;
-  question: string;
+/** 로드 시 전체 검증 — 필드 누락·손상이 도구 응답 단계에서 터지지 않게 신뢰경계를 여기 둔다 */
+const qnaEntrySchema = z.object({
+  id: z.string().min(1),
+  category: z.enum(['internal_transaction', 'unlisted_material', 'group_status', 'subcontract']),
+  question: z.string().min(1),
   /** null = 폐지 게시판 아카이브 복원분 (제목만 남음) */
-  answer: string | null;
-  doc: string;
-  docYear: number | null;
-  url: string;
-  caveats: string[];
-}
+  answer: z.string().nullable(),
+  doc: z.string().min(1),
+  docYear: z.number().int().nullable(),
+  url: z.string().url(),
+  caveats: z.array(z.string()),
+});
 
-interface QnaFile {
-  version: string;
-  source: string;
-  entries: QnaEntry[];
-}
+const qnaFileSchema = z.object({
+  version: z.string(),
+  source: z.string(),
+  entries: z.array(qnaEntrySchema).min(1),
+});
+
+export type QnaEntry = z.infer<typeof qnaEntrySchema>;
+type QnaFile = z.infer<typeof qnaFileSchema>;
 
 /** holidays.json 과 같은 방식 — dist 실행 시에도 상위 탐색으로 data/ 를 찾는다 */
 function resolveKbPath(): string {
@@ -60,7 +65,19 @@ let cache: QnaFile | null = null;
 
 export function loadQnaKb(): QnaFile {
   if (!cache) {
-    cache = JSON.parse(readFileSync(resolveKbPath(), 'utf-8')) as QnaFile;
+    const raw = JSON.parse(readFileSync(resolveKbPath(), 'utf-8'));
+    const parsed = qnaFileSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        `data/ftc-qna.json 형식이 올바르지 않습니다 — 빌드 스크립트(scripts/build-ftc-qna.mjs)로 재생성하세요: ` +
+          parsed.error.issues.slice(0, 3).map((i) => `${i.path.join('.')}: ${i.message}`).join(' / '),
+      );
+    }
+    const ids = new Set(parsed.data.entries.map((e) => e.id));
+    if (ids.size !== parsed.data.entries.length) {
+      throw new Error('data/ftc-qna.json 에 중복 id 가 있습니다 — 빌드 스크립트로 재생성하세요.');
+    }
+    cache = parsed.data;
   }
   return cache;
 }
@@ -105,8 +122,11 @@ export function searchQna(
 ): QnaMatch[] {
   const kb = loadQnaKb();
   const limit = opts.limit ?? 5;
-  const tokens = tokenize(query);
-  const grams = bigrams(query);
+  // 도구 입력 스키마와 별개로 직접 호출 경계에서도 길이를 막는다 —
+  // bigram 생성이 O(질의 길이 × 코퍼스)라 무제한 입력은 이벤트 루프를 점유한다 (Codex 지적)
+  const trimmed = query.length > 500 ? query.slice(0, 500) : query;
+  const tokens = tokenize(trimmed);
+  const grams = bigrams(trimmed);
   if (!tokens.length && !grams.length) return [];
 
   const matches: QnaMatch[] = [];
@@ -127,7 +147,10 @@ export function searchQna(
     }
     score += gramHits * 0.05;
 
-    if (score > 0) matches.push({ entry, score });
+    // 신뢰 하한 — 토큰이 하나도 안 맞으면 bigram 우연 일치(예: "강아지 예방접종"의 '접종' 1개)만으로
+    // "공정위 공식 근거"처럼 반환되면 안 된다. bigram 뭉치가 실질적으로 겹칠 때만 통과시킨다.
+    const tokenMatched = score >= 1;
+    if (tokenMatched || gramHits >= 8) matches.push({ entry, score });
   }
 
   matches.sort((x, y) => {
@@ -147,8 +170,8 @@ export function searchQna(
   const seen = new Set<string>();
   const out: QnaMatch[] = [];
   for (const m of matches) {
-    const qNorm = m.entry.question.replace(/\s+/g, '');
-    const aNorm = (m.entry.answer ?? '').replace(/\s+/g, '');
+    const qNorm = dedupNorm(m.entry.question);
+    const aNorm = dedupNorm(m.entry.answer ?? '');
     const keys = [qNorm.slice(0, 40) + '|' + aNorm];
     if (aNorm.length > 20) keys.push('a|' + aNorm);
     if (keys.some((k) => seen.has(k))) continue;
@@ -157,6 +180,16 @@ export function searchQna(
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/**
+ * dedup 정규화 — 공백·구두점·중점만 제거한다.
+ * 개정판마다 문장부호(․/·/ㆍ)와 띄어쓰기가 흔들리는 것을 흡수하되,
+ * **숫자는 절대 제거하지 않는다** — 개정판 간 기준금액(50억→100억)이 다른 문답을
+ * 하나로 접으면 폐지된 기준만 남을 수 있다 (Codex 경고 반영).
+ */
+function dedupNorm(s: string): string {
+  return s.replace(/[\s.,?!·․ㆍ()\[\]"'“”‘’:;~-]+/g, '');
 }
 
 /** 테스트용 — 캐시를 비운다 */

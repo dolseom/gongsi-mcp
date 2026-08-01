@@ -103,11 +103,20 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe('지연이 확인되면 예상 과태료도 함께 산정할지 (기본 true)'),
 
-  situation: z
-    .string()
+  disclosureStatus: z
+    .enum(['not_disclosed', 'disclosed'])
     .optional()
     .describe(
-      '거래 상황 서술 (예: "계열사 발행어음이 만기 후 자동연장됨"). 주면 유사한 공정위 공식 Q&A를 ' +
+      '공시 이행 상태. not_disclosed(아직 공시 전)를 명시하면 기한 경과 시 자진시정 골든타임을 계산합니다. ' +
+        '생략하면 미공시로 단정하지 않습니다 — 기한만 조회하는 호출과 구분하기 위한 명시적 입력입니다',
+    ),
+
+  situation: z
+    .string()
+    .max(500, '거래 상황 서술은 500자 이내로 요약하세요')
+    .optional()
+    .describe(
+      '거래 상황 서술 (예: "계열사 발행어음이 만기 후 자동연장됨", 500자 이내). 주면 유사한 공정위 공식 Q&A를 ' +
         'relatedOfficialQna 로 함께 돌려줍니다 — 규칙만으로 판정하기 어려운 경계사례(대상 여부·거래 성격)에 유용합니다',
     ),
 });
@@ -303,10 +312,10 @@ export function checkDisclosureDuty(
   }
 
   // ── 기한 준수·과태료 ──
+  // 약관특례(§9)·상품용역 감소(§9의2)는 대규모내부거래 고시의 특례이므로 위반 시 법 §26 체계다.
+  // §27·§28 은 비상장사 중요사항·기업집단현황뿐이다. (Codex 교차검토가 잡은 오분류 수정)
   const regime: PenaltyRegime =
-    input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
-      ? 'art26_29'
-      : 'art27_28';
+    input.duty === 'unlisted_material' || input.duty === 'group_status' ? 'art27_28' : 'art26_29';
 
   let compliance: DutyResult['compliance'];
   let penalty: unknown;
@@ -343,35 +352,42 @@ export function checkDisclosureDuty(
 
   // ── 자진시정 골든타임 ──
   // 리서치 결론의 포지셔닝: "위반 통보"가 아니라 "면제 골든타임 내 구조".
-  // 기한이 지났는데 아직 공시 전인 상황이 이 블록의 존재 이유다.
+  //
+  // Codex 교차검토 반영 2건:
+  //  - actualDisclosureDate 생략은 "아직 미공시"가 아니다 (기한만 조회하는 호출이 흔하다)
+  //    → disclosureStatus:'not_disclosed' 명시 + verdict가 required 로 확정된 경우에만 부착한다.
+  //  - 최초 공시를 늦게 낸 것은 고시 Ⅴ의 "스스로 시정하여 다시 공시"가 아니다
+  //    → 지연 공시 사후 판정에는 골든타임을 부착하지 않는다 (면제 요건은 penalty disclaimer가 안내).
   let selfCorrection: DutyResult['selfCorrection'];
-  if (deadline && verdict !== 'not_required') {
-    if (!input.actualDisclosureDate && toDate(today) > toDate(deadline.deadline)) {
+  const deadlinePassed = deadline && toDate(today) > toDate(deadline.deadline);
+  if (deadline && deadlinePassed && !input.actualDisclosureDate && verdict === 'required') {
+    if (input.disclosureStatus === 'not_disclosed') {
       selfCorrection = selfCorrectionWindow(deadline.deadline, regime, today);
       if (selfCorrection.status === 'open') {
         notes.push(
           `⚠️ 공시기한(${deadline.deadline})이 지났고 아직 공시 전입니다. ` +
-            `자진시정 골든타임이 ${selfCorrection.windowEnd}까지 열려 있습니다 ` +
-            `(남은 영업일 ${selfCorrection.businessDaysRemaining}일). ` +
+            `자진시정 골든타임이 ${selfCorrection.windowEnd}까지 열려 있습니다` +
+            (selfCorrection.isLastDay
+              ? ' — **오늘이 마지막 날입니다**. '
+              : ` (남은 영업일 ${selfCorrection.businessDaysRemaining}일). `) +
             `selfCorrection 의 면제 사유와 주의사항을 확인하고 즉시 공시하세요.`,
         );
       } else {
+        // 감경 구간(지연 30일 이하)이 실제로 남아 있을 때만 감경을 언급한다
+        const delaySoFar = evaluateCompliance(deadline.deadline, today).delayDays;
         notes.push(
           `공시기한(${deadline.deadline})과 자진시정 10영업일(${selfCorrection.windowEnd})이 모두 지났습니다. ` +
-            `그래도 지연일수 감경 구간(30일 이하 20% 등, 달력일 기준)이 남아 있으므로 즉시 공시가 여전히 손실을 최소화합니다.`,
+            (delaySoFar <= 30
+              ? `현재 지연 ${delaySoFar}일 — 지연일수 감경 구간(30일 이하, 달력일 기준)이 아직 남아 있으므로 즉시 공시가 손실을 최소화합니다.`
+              : `현재 지연 ${delaySoFar}일로 지연일수 감경 구간(30일 이하)도 지났습니다. ` +
+                `그래도 기한초과 과태료는 일수 가산에 상한이 있어 미공시 상태보다 불리하지 않습니다 — 즉시 공시해 위반 상태를 해소하세요.`),
         );
       }
-    } else if (compliance && !compliance.onTime) {
-      // 이미 지연 공시한 사안 — 실제 공시일이 골든타임 안이었다면 면제 검토 여지를 알린다
-      const w = selfCorrectionWindow(deadline.deadline, regime, input.actualDisclosureDate!);
-      if (w.status === 'open') {
-        selfCorrection = w;
-        notes.push(
-          '실제 공시일이 자진시정 10영업일 이내입니다 — 신규 지정·편입 30일 이내 위반이거나 ' +
-            '사소한 부주의(계산 실수·오기)로 인정되는 등 고시 Ⅴ의 사유에 해당하면 과태료 면제를 검토할 수 있습니다 ' +
-            '(selfCorrection 의 exemptionGrounds 참조).',
-        );
-      }
+    } else {
+      notes.push(
+        `공시기한(${deadline.deadline})이 이미 지났습니다. 아직 공시 전이라면 disclosureStatus:"not_disclosed" 로 ` +
+          `다시 호출하세요 — 자진시정 골든타임(기한 만료 익일부터 10영업일)과 면제 사유를 계산해 드립니다.`,
+      );
     }
   }
 
@@ -380,10 +396,19 @@ export function checkDisclosureDuty(
   // 규칙으로 환원되지 않는 경계사례가 많아, 상황 서술이 오면 공정위 공식 답변을 근거로 붙인다.
   let relatedOfficialQna: DutyResult['relatedOfficialQna'];
   if (input.situation) {
-    const matches = searchQna(input.situation, {
-      category: DUTY_TO_QNA_CATEGORY[input.duty],
-      limit: 3,
-    });
+    // 지식베이스 문제(파일 손상 등)가 본 판정을 죽이면 안 된다 — Q&A 첨부는 부가 기능이다
+    let matches: ReturnType<typeof searchQna> = [];
+    try {
+      matches = searchQna(input.situation, {
+        category: DUTY_TO_QNA_CATEGORY[input.duty],
+        limit: 3,
+      });
+    } catch (err) {
+      notes.push(
+        `공정위 Q&A 지식베이스 검색에 실패해 relatedOfficialQna 를 첨부하지 못했습니다 ` +
+          `(${err instanceof Error ? err.name : 'unknown'}). 판정 결과 자체는 유효합니다.`,
+      );
+    }
     if (matches.length) {
       relatedOfficialQna = matches.map((m) => ({
         question: m.entry.question,

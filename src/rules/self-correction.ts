@@ -27,8 +27,10 @@ export interface SelfCorrectionResult {
   windowEnd: YMD;
   /** open = 골든타임 진행 중 / closed = 경과 / before_deadline = 아직 기한 전 */
   status: 'open' | 'closed' | 'before_deadline';
-  /** status=open 일 때: 오늘부터 골든타임 종료까지 남은 영업일 */
+  /** status=open 일 때: 오늘 이후 골든타임 종료까지 남은 영업일 (오늘 미포함 — 0이면 오늘이 마지막 날) */
   businessDaysRemaining?: number;
+  /** status=open 이고 오늘이 골든타임 마지막 날이면 true */
+  isLastDay?: boolean;
   /** 면제가 성립할 수 있는 사유 — 고시 Ⅴ 원문 기반 */
   exemptionGrounds: string[];
   caution: string;
@@ -79,7 +81,10 @@ export function selfCorrectionWindow(
     windowEnd,
     status,
     ...(status === 'open'
-      ? { businessDaysRemaining: businessDaysRemaining(today, windowEnd) }
+      ? (() => {
+          const remaining = businessDaysRemaining(today, windowEnd);
+          return { businessDaysRemaining: remaining, isLastDay: remaining === 0 };
+        })()
       : {}),
     exemptionGrounds: exemptionGrounds(regime),
     caution:

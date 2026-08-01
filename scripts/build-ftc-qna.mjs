@@ -76,11 +76,18 @@ function detectCaveats(question, answer, category, year) {
   } else if (year === null) {
     caveats.push('작성 연도 미상의 구 문서입니다 — 현행 법령·고시와 대조가 필요합니다.');
   }
-  if (category === 'internal_transaction' && /50억/.test(text)) {
-    caveats.push(
-      "문답에 '50억원'이 등장합니다 — 폐지된 옛 기준금액(50억원)일 수 있습니다. " +
-        '현행 기준금액은 min(100억원, max(5억원, 자본금·자본총계 중 큰 금액의 5%))입니다.',
-    );
+  if (/50억/.test(text)) {
+    if (category === 'internal_transaction') {
+      caveats.push(
+        "문답에 '50억원'이 등장합니다 — 폐지된 옛 기준금액(50억원)일 수 있습니다. " +
+          '현행 기준금액은 min(100억원, max(5억원, 자본금·자본총계 중 큰 금액의 5%))입니다.',
+      );
+    } else if (year !== null && year <= 2015) {
+      // 다른 공시유형의 금액 기준도 옛 문서라면 현행과 다를 수 있다 (Codex 지적: unl-023 등)
+      caveats.push(
+        '문답의 금액 기준이 현행 고시와 다를 수 있습니다 — check_disclosure_duty 로 현행 임계값을 확인하세요.',
+      );
+    }
   }
   if (/1일\s*이내/.test(text)) {
     caveats.push(
@@ -194,6 +201,7 @@ for (const sec of SECTIONS) {
 // ── 폐지 게시판 아카이브 복원분 (제목만) ──
 {
   const secStart = md.indexOf('## [폐지 게시판]');
+  if (secStart < 0) throw new Error('아카이브 섹션([폐지 게시판])을 찾지 못했습니다 — 원본 md 구조가 바뀌었습니다.');
   const secEnd = md.indexOf('\n## ', secStart + 1);
   const body = md.slice(secStart, secEnd);
   const archiveUrl =
@@ -221,6 +229,27 @@ const out = {
     '수집·추출 2026-07-31 (RESEARCH/공시담당자_니즈_20260730). 원문은 공정위 공공저작물.',
   entries,
 };
+
+// ── 쓰기 전 검증 게이트 — 파싱 누락은 에러 없이 조용히 사라지므로 기대 건수를 강제한다 ──
+// (원본 md 는 gitignore 스냅샷이라 기대치가 안정적이다. 원본이 갱신되면 여기 숫자도 갱신할 것)
+const EXPECTED = {
+  internal_transaction: 132 + 21, // 전문 132 + 아카이브 21
+  unlisted_material: 71,
+  group_status: 69,
+  subcontract: 58,
+};
+const actualByCat = {};
+for (const e of entries) actualByCat[e.category] = (actualByCat[e.category] ?? 0) + 1;
+for (const [cat, expected] of Object.entries(EXPECTED)) {
+  if (actualByCat[cat] !== expected) {
+    throw new Error(
+      `검증 실패: ${cat} 기대 ${expected}건, 실제 ${actualByCat[cat] ?? 0}건 — ` +
+        `정규식에서 벗어난 항목이 조용히 누락됐을 수 있습니다. 기존 JSON 을 덮어쓰지 않았습니다.`,
+    );
+  }
+}
+const idSet = new Set(entries.map((e) => e.id));
+if (idSet.size !== entries.length) throw new Error('검증 실패: 중복 id — 기존 JSON 을 덮어쓰지 않았습니다.');
 
 writeFileSync(OUT, JSON.stringify(out, null, 1), 'utf-8');
 

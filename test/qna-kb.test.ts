@@ -114,6 +114,19 @@ describe('검색 품질 (회귀 고정)', () => {
     expect(searchQna('zzqx')).toEqual([]);
   });
 
+  it('무관한 한국어 질의는 bigram 우연 일치만으로 반환되지 않는다 (Codex 중간 6)', () => {
+    expect(searchQna('강아지 예방접종')).toEqual([]);
+    expect(searchQna('오늘 점심 메뉴 추천')).toEqual([]);
+  });
+
+  it('초장문 질의도 잘라서 처리한다 — 이벤트 루프 점유 방지 (Codex 중간 10)', () => {
+    const long = '대규모내부거래 '.repeat(20_000); // 20만+ 자
+    const t0 = Date.now();
+    const r = searchQna(long);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(r.length).toBeGreaterThan(0); // 앞 500자에 유효 토큰이 있으므로 검색은 된다
+  });
+
   it('개정판 간 중복 문답은 한 건만 남는다 (계열 카드결제 — 2009/2015 해설 중복)', () => {
     const r = searchQna('계열 카드사 결제 할부금융', { limit: 5 });
     const cardQ = r.filter((m) => m.entry.question.includes('할부금융이나 카드결제'));
