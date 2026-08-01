@@ -21,6 +21,10 @@ import { findPrecedents, findPrecedentsInput } from './tools/find-precedents.js'
 import { getGroupStructure, getGroupStructureInput } from './tools/get-group-structure.js';
 import { getFinancials, getFinancialsInput } from './tools/get-financials.js';
 import { searchFtcQna, searchFtcQnaInput } from './tools/search-ftc-qna.js';
+import {
+  auditGroupDisclosures,
+  auditGroupDisclosuresInput,
+} from './tools/audit-group-disclosures.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -194,6 +198,23 @@ server.registerTool(
     inputSchema: searchFtcQnaInput.shape,
   },
   wrap('search_ftc_qna', searchFtcQna),
+);
+
+server.registerTool(
+  'audit_group_disclosures',
+  {
+    title: '대규모내부거래 기한 감사',
+    description:
+      '기업집단(또는 회사 목록)의 대규모내부거래(J001) 공시를 기간 단위로 감사해 기한 지연 후보를 찾습니다. ' +
+      '원본 접수분의 접수일과 원문에서 추출한 이사회 의결일을 대조합니다 (상장 3영업일 / 비상장 7영업일).\n\n' +
+      '- 지연 후보에는 지연일수·예상 과태료·자진시정 골든타임 상태·근거가 동봉됩니다 — "후보"이며 확정이 아닙니다\n' +
+      '- 약관 금융거래 특례 서식(분기 일괄, 의결일 없음)은 별도 분류로 나옵니다\n' +
+      '- 정정 제출분은 판정에서 제외하고 원본만 봅니다 (지연 판정의 성립 조건)\n' +
+      '- 범위가 크면 range_too_large 와 분할 구간을 안내합니다 — 원문 캐시는 영구라 재감사는 훨씬 빠릅니다\n' +
+      '- 집단 감사는 EGROUP_API_KEY 필요. coverage 의 미조인 회사는 감사에서 빠진 것이니 반드시 확인하세요',
+    inputSchema: auditGroupDisclosuresInput.shape,
+  },
+  wrap('audit_group_disclosures', auditGroupDisclosures),
 );
 
 async function main(): Promise<void> {

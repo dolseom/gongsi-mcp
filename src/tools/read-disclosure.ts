@@ -47,7 +47,7 @@ export const readDisclosureInput = z.object({
 
 export type ReadDisclosureInput = z.infer<typeof readDisclosureInput>;
 
-interface DocMeta {
+export interface DocMeta {
   acode: string | null;
   aregcik: string | null;
   formulaVersion: string | null;
@@ -56,6 +56,74 @@ interface DocMeta {
   bodyParsable: boolean;
   boardDate: string | null;
   pickedEntry: string | null;
+}
+
+/**
+ * 원문 다운로드 + 파싱 + 영구 캐시 — read_disclosure 와 audit 도구가 공유하는 코어.
+ * 파싱 불가 문서도 예외를 던지지 않고 `bodyParsable: false` 로 돌려준다 (감사는 계속 가야 한다).
+ * 호출부가 사용자 대면 도구라면 bodyParsable 을 보고 직접 에러를 만들 것.
+ */
+export async function loadDocument(
+  rceptNo: string,
+  client?: DartClient,
+): Promise<{ markdown: string; meta: DocMeta; cached: boolean }> {
+  const store = getStore();
+  const metaKey = `docmeta:${rceptNo}`;
+
+  const cachedBody = store.getBody(rceptNo);
+  const cachedMeta = store.get(metaKey);
+  if (cachedBody && cachedMeta) {
+    return { markdown: cachedBody.content, meta: JSON.parse(cachedMeta) as DocMeta, cached: true };
+  }
+
+  const dart = client ?? new DartClient();
+  const zip = await dart.downloadDocument(rceptNo);
+  const picked = pickLargestText(zip);
+
+  if (!picked.content) {
+    // 파싱 불가도 캐시한다 — 같은 공시를 반복 다운로드하지 않게
+    const emptyMeta: DocMeta = {
+      acode: null,
+      aregcik: null,
+      formulaVersion: null,
+      encoding: 'utf-8',
+      attachments: picked.attachments,
+      bodyParsable: false,
+      boardDate: null,
+      pickedEntry: null,
+    };
+    store.storeBody(rceptNo, '');
+    store.set(metaKey, JSON.stringify(emptyMeta));
+    return { markdown: '', meta: emptyMeta, cached: false };
+  }
+
+  const { text: xml, encoding } = decodeDocument(picked.content);
+  const parsed = parseDocument(xml);
+  const meta: DocMeta = {
+    acode: parsed.acode,
+    aregcik: parsed.aregcik,
+    formulaVersion: parsed.formulaVersion,
+    encoding,
+    attachments: picked.attachments,
+    bodyParsable: true,
+    boardDate: extractBoardDate(xml),
+    pickedEntry: picked.name,
+  };
+  store.storeBody(rceptNo, parsed.markdown);
+  store.set(metaKey, JSON.stringify(meta));
+  log.info('원문 파싱 완료', {
+    rcept_no: rceptNo,
+    acode: meta.acode,
+    chars: parsed.markdown.length,
+    encoding,
+  });
+  return { markdown: parsed.markdown, meta, cached: false };
+}
+
+/** 캐시에 이미 있는 원문인지 (다운로드 예상 비용 계산용) */
+export function isDocumentCached(rceptNo: string): boolean {
+  const store = getStore();
+  return store.hasBody(rceptNo) && !!store.get(`docmeta:${rceptNo}`);
 }
 
 export async function readDisclosure(input: ReadDisclosureInput): Promise<unknown> {
@@ -67,67 +135,7 @@ export async function readDisclosure(input: ReadDisclosureInput): Promise<unknow
     store.set(metaKey, '');
   }
 
-  let markdown: string | null = null;
-  let meta: DocMeta | null = null;
-  let cached = false;
-
-  const cachedBody = store.getBody(input.rcept_no);
-  const cachedMeta = store.get(metaKey);
-  if (cachedBody && cachedMeta) {
-    markdown = cachedBody.content;
-    meta = JSON.parse(cachedMeta) as DocMeta;
-    cached = true;
-  }
-
-  if (markdown === null || meta === null) {
-    const client = new DartClient();
-    const zip = await client.downloadDocument(input.rcept_no);
-    const picked = pickLargestText(zip);
-
-    if (!picked.content) {
-      // 파싱 불가도 캐시한다 — 같은 공시를 반복 다운로드하지 않게
-      const emptyMeta: DocMeta = {
-        acode: null,
-        aregcik: null,
-        formulaVersion: null,
-        encoding: 'utf-8',
-        attachments: picked.attachments,
-        bodyParsable: false,
-        boardDate: null,
-        pickedEntry: null,
-      };
-      store.storeBody(input.rcept_no, '');
-      store.set(metaKey, JSON.stringify(emptyMeta));
-      throw new ToolError(
-        'body_unparsable',
-        `접수번호 ${input.rcept_no} 원문에 파싱 가능한 텍스트가 없습니다 ` +
-          `(첨부: ${picked.attachments.join(', ') || '없음'}). DART 뷰어에서 직접 확인하세요.`,
-        { rcept_no: input.rcept_no, attachments: picked.attachments, viewer_url: viewerUrl(input.rcept_no) },
-      );
-    }
-
-    const { text: xml, encoding } = decodeDocument(picked.content);
-    const parsed = parseDocument(xml);
-    meta = {
-      acode: parsed.acode,
-      aregcik: parsed.aregcik,
-      formulaVersion: parsed.formulaVersion,
-      encoding,
-      attachments: picked.attachments,
-      bodyParsable: true,
-      boardDate: extractBoardDate(xml),
-      pickedEntry: picked.name,
-    };
-    markdown = parsed.markdown;
-    store.storeBody(input.rcept_no, markdown);
-    store.set(metaKey, JSON.stringify(meta));
-    log.info('원문 파싱 완료', {
-      rcept_no: input.rcept_no,
-      acode: meta.acode,
-      chars: markdown.length,
-      encoding,
-    });
-  }
+  const { markdown, meta, cached } = await loadDocument(input.rcept_no);
 
   if (!meta.bodyParsable) {
     throw new ToolError(
