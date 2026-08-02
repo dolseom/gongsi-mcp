@@ -14,7 +14,6 @@
  */
 
 import { z } from 'zod';
-import { DartClient } from '../clients/dart.js';
 import { loadDocument } from './read-disclosure.js';
 import {
   checkJ004Document,
@@ -75,10 +74,10 @@ interface CrossCheckReport {
 export async function checkJ004Consistency(
   input: CheckJ004ConsistencyInput,
 ): Promise<Record<string, unknown> | ErrorResponse> {
-  const client = new DartClient();
   const maxIssues = input.max_issues ?? 100;
 
-  const { markdown, meta, cached } = await loadDocument(input.rcept_no, client);
+  // DartClient 를 미리 만들지 않는다 — 캐시 hit 경로는 API 키 없이도 동작해야 한다 (Codex 3차)
+  const { markdown, meta, cached } = await loadDocument(input.rcept_no);
   if (!markdown) {
     return errorResponse(
       'body_unparsable',
@@ -116,7 +115,7 @@ export async function checkJ004Consistency(
     } else {
       for (const no of input.compare_rcept_nos) {
         try {
-          const indiv = await loadDocument(no, client);
+          const indiv = await loadDocument(no);
           if (!indiv.markdown) {
             crossChecks.push({ rcept_no: no, company: null, matched: false, diffCount: 0, diffs: [], note: '본문 파싱 불가' });
             continue;
@@ -182,17 +181,31 @@ export async function checkJ004Consistency(
     '허용오차: 항등식은 max(2백만원, 총계의 0.01%), 합계 재합산은 행수 비례 (백만원 반올림 누적) — 오차 이내 불일치는 보고하지 않습니다.',
   );
 
+  // 핵심 표(재무현황)를 하나도 검증하지 못했으면 "정합"이라고 말하지 않는다 —
+  // 비-J004 문서·파서 회귀가 가장 신뢰도 높은 정상 판정으로 뒤바뀌는 것을 막는다 (Codex 3차)
+  const coreChecked = result.financeRows !== null;
+  const verdict =
+    errors > 0
+      ? 'inconsistencies_found'
+      : warnings > 0
+        ? 'warnings_only'
+        : coreChecked
+          ? 'consistent'
+          : 'not_checkable';
+
   return {
     rcept_no: input.rcept_no,
     acode: meta.acode,
     cached,
-    verdict: errors > 0 ? 'inconsistencies_found' : warnings > 0 ? 'warnings_only' : 'consistent',
+    verdict,
     summary:
       errors > 0
         ? `불일치 ${errors}건(경고 ${warnings}건 별도)이 발견됐습니다. 정정 여부 판단은 assess_correction_risk 를 참고하세요.`
         : warnings > 0
           ? `치명적 불일치는 없고 경고 ${warnings}건이 있습니다.`
-          : '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.',
+          : coreChecked
+            ? '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.'
+            : '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.',
     issues: result.issues.slice(0, maxIssues),
     ...(truncatedIssues ? { issuesTruncated: true, totalIssues: result.issues.length } : {}),
     ...(crossChecks.length > 0 ? { crossChecks } : {}),

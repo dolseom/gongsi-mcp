@@ -44,3 +44,4 @@ CLAUDE.local.md.bak-*
 # 리서치 수집 원본 (커뮤니티 스크랩 — 저작권·개인글 노출 위험, 결과물만 커밋)
 RESEARCH/**/artifacts/
 RESEARCH/**/state.json
+.env.bak.*

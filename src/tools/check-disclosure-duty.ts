@@ -243,16 +243,21 @@ export function checkDisclosureDuty(
         return errorResponse('invalid_argument', 'occurredDate(사유 발생일)가 필요합니다.');
       }
       // 주요주주 지분변동만 분기별 공시 — 최대주주 변동·그 외 사유는 전부 7영업일 (§5의2④)
-      if (input.materialItem === 'shareholding_change' && input.shareholderType === 'major') {
-        deadline = unlistedMajorShareholderDeadline(input.occurredDate);
-      } else {
-        deadline = unlistedMaterialDeadline(input.occurredDate);
-        if (input.materialItem === 'shareholding_change' && !input.shareholderType) {
-          notes.push(
-            '⚠️ shareholderType 미지정 — 최대주주 기준(7영업일)으로 계산했습니다. ' +
-              '**주요주주**의 지분변동이라면 분기별 공시(분기 종료 후 2개월)로 기한이 완전히 달라집니다 (고시 §5의2④ 단서).',
+      // 유형에 따라 기한이 완전히 달라지므로 미지정 추정은 위험하다 (Codex 3차: 지연·과태료가 뒤집힌다)
+      if (input.materialItem === 'shareholding_change') {
+        if (!input.shareholderType) {
+          return errorResponse(
+            'invalid_argument',
+            'shareholding_change 는 shareholderType(largest=최대주주/major=주요주주)이 필수입니다. ' +
+              '최대주주 변동은 7영업일, 주요주주 변동은 분기 종료 후 2개월로 기한이 완전히 다릅니다 (고시 §5의2④ 단서).',
           );
         }
+        deadline =
+          input.shareholderType === 'major'
+            ? unlistedMajorShareholderDeadline(input.occurredDate)
+            : unlistedMaterialDeadline(input.occurredDate);
+      } else {
+        deadline = unlistedMaterialDeadline(input.occurredDate);
       }
       break;
     }
@@ -376,14 +381,16 @@ export function checkDisclosureDuty(
             '최대주주·주요주주 지분변동은 발행주식총수 대비 1%p 이상 변동 시 공시 대상입니다. ' +
             'shareChangePct(변동폭 %p)를 주면 판정합니다.';
         } else {
-          const required = input.shareChangePct >= 1;
+          // 감소(-)도 변동이다 — 절댓값으로 판정한다 (Codex 3차: 음수 입력 미탐)
+          const changeMagnitude = Math.abs(input.shareChangePct);
+          const required = changeMagnitude >= 1;
           verdict = required ? 'required' : 'not_required';
           summary = required
-            ? `공시 대상입니다. 지분 변동 ${input.shareChangePct}%p ≥ 1%p (고시 §5의2①1호가목).`
-            : `공시 대상이 아닙니다. 지분 변동 ${input.shareChangePct}%p < 1%p.`;
+            ? `공시 대상입니다. 지분 변동 ${changeMagnitude}%p ≥ 1%p (고시 §5의2①1호가목).`
+            : `공시 대상이 아닙니다. 지분 변동 ${changeMagnitude}%p < 1%p.`;
           threshold = {
             amount: 1,
-            formula: `발행주식총수 대비 변동폭 ${input.shareChangePct}%p vs 임계 1%p`,
+            formula: `발행주식총수 대비 변동폭 |${input.shareChangePct}|%p vs 임계 1%p`,
             inputs: { shareChangePct: input.shareChangePct },
           };
         }
@@ -455,7 +462,9 @@ export function checkDisclosureDuty(
   let compliance: DutyResult['compliance'];
   let penalty: unknown;
 
-  if (deadline && input.actualDisclosureDate) {
+  // 대상이 아니라고 판정했으면 지연·과태료를 붙이지 않는다 — "대상 아님 + 20일 지연"은 모순이다
+  // (Codex 3차 지적: 상장회사 not_required 응답에 지연·과태료가 동봉되던 실버그)
+  if (deadline && input.actualDisclosureDate && verdict !== 'not_required') {
     const c = evaluateCompliance(deadline.deadline, input.actualDisclosureDate);
     compliance = { ...c, actualDisclosureDate: input.actualDisclosureDate };
     summary +=

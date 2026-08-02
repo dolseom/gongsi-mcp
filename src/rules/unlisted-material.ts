@@ -83,8 +83,22 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
     };
   }
 
+  // 미확인 전제는 명시한다 — 자산 요건 충족이 상장·업종·소속 요건까지 보장하지 않는다 (Codex 3차)
+  const unverifiedPreconditions: string[] = [];
+  if (input.isListed === undefined) {
+    unverifiedPreconditions.push('비상장(주권상장법인 아님)');
+  }
+  if (input.isFinancialOrInsurance === undefined) {
+    unverifiedPreconditions.push('금융·보험업 미영위');
+  }
+  const preconditionNote =
+    unverifiedPreconditions.length > 0
+      ? `※ ${unverifiedPreconditions.join('·')} 및 공시대상기업집단 소속을 전제한 판정입니다 — 해당 전제가 깨지면 대상이 아닙니다.`
+      : '※ 공시대상기업집단 소속을 전제한 판정입니다.';
+
   if (input.totalAssets >= 100 * 억) {
     reasons.push(`직전 사업연도말 자산총액이 100억원 이상입니다 (§2②1호).`);
+    reasons.push(preconditionNote);
     return { subject: true, reasons, legalBasis: REF_SUBJECT };
   }
 
@@ -119,6 +133,7 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
   reasons.push(
     '자산총액 100억원 미만이지만 동일인·친족이 합산 20% 이상 소유한 회사(또는 그 50% 초과 자회사)로서 대상입니다 (§2②2호).',
   );
+  reasons.push(preconditionNote);
   return { subject: true, reasons, legalBasis: REF_SUBJECT };
 }
 

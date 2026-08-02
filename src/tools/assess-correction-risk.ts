@@ -221,7 +221,9 @@ export function assessCorrectionRisk(input: AssessCorrectionRiskInput): Correcti
       recommendation =
         input.regime === 'art26_29'
           ? '정정이 아니라 변경 건의 이사회 의결 + 공시 절차를 밟으세요. 기한은 변경 의결일 기준으로 다시 ' +
-            '계산됩니다 (check_disclosure_duty 사용). 변경 재의결 없이 방치하면 그 자체가 위반행위입니다.'
+            '계산됩니다 (check_disclosure_duty 사용). 변경 재의결 없이 방치하면 그 자체가 위반행위입니다. ' +
+            '단, 약관에 의한 금융업 일상거래(고시 §9 특례)와 상품·용역 20% 이상 감소(§9의2)는 ' +
+            '이사회 의결 없이 분기별 공시로 처리하는 예외이므로 해당 여부를 먼저 확인하세요.'
           : '변동사항이 독립적인 공시 대상인지 check_disclosure_duty 로 판정한 뒤, 대상이면 사유 발생일 기준 ' +
             '기한 내에 공시하세요.';
       if (input.regime === 'art26_29') {

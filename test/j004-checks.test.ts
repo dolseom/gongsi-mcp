@@ -80,13 +80,13 @@ describe('J004 재무현황 점검', () => {
     expect(r.issues.some((i) => i.check === 'asset_sum')).toBe(true);
   });
 
-  it('부채 합산 불일치를 잡는다 (실물 큐리어스 패턴)', () => {
+  it('부채 합산 불일치를 잡는다 (실물 큐리어스 패턴 — 한쪽이 "-" 여도 0으로 보고 검증)', () => {
     const md = financeMd([
       '| 금융회사 | 큐리어스 | 583 | 583 | 14,999 | 15,582 | 52 | - | 34 | - | 15,749 | 15,548 | 0.22 |',
     ]);
     const r = checkJ004Document(md);
-    // 유동부채(52)+비유동(없음→가산 불가)이라 c+d 검증은 건너뛰지만, 항등식(자산=부채+자본)은 통과해야 한다
-    // 52는 c만 있고 d가 '-' 라 liability_sum 은 스킵된다 — 실물에서 이 행은 항등식으론 정합
+    // 유동부채 52 + 비유동 '-'(0) = 52 ≠ 부채총계 34 — Codex 3차가 잡은 미탐. 항등식은 정합(34+15,548=15,582)
+    expect(r.issues.some((i) => i.check === 'liability_sum')).toBe(true);
     expect(r.issues.filter((i) => i.check === 'balance_identity')).toEqual([]);
   });
 

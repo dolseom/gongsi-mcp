@@ -64,7 +64,7 @@ export interface FinanceRow {
  * 상대 오차(0.01%)로 가르면 전자는 걸러지고 후자만 남는다.
  */
 function identityTolerance(reference: number): number {
-  return Math.max(2, Math.round(Math.abs(reference) * 1e-4));
+  return Math.max(2, Math.abs(reference) * 1e-4);
 }
 function sumTolerance(rowCount: number): number {
   return Math.max(5, Math.ceil(rowCount * 0.5) + 2);
@@ -219,9 +219,12 @@ export function checkFinanceRows(section: string, rows: FinanceRow[]): Consisten
   const issues: ConsistencyIssue[] = [];
   const dataRows = rows.filter((r) => !r.isSubtotal && !r.isTotal);
 
+  // 구성항목의 '-'(무액)는 0으로 보고 합산한다 — 한쪽만 '-' 인 행에서 항등식을 통째로 건너뛰면
+  // 실제 오류(실측: 유동부채 52 + '-' ≠ 부채총계 34)를 놓친다 (Codex 3차).
+  // 단 두 구성항목이 모두 '-' 면 검증 근거가 없으므로 건너뛴다.
   for (const r of dataRows) {
-    if (r.currentAssets !== null && r.nonCurrentAssets !== null && r.totalAssets !== null) {
-      const sum = r.currentAssets + r.nonCurrentAssets;
+    if (r.totalAssets !== null && (r.currentAssets !== null || r.nonCurrentAssets !== null)) {
+      const sum = (r.currentAssets ?? 0) + (r.nonCurrentAssets ?? 0);
       if (Math.abs(sum - r.totalAssets) > identityTolerance(r.totalAssets)) {
         pushDiff(
           issues, 'error', section, r.company, 'asset_sum',
@@ -230,8 +233,11 @@ export function checkFinanceRows(section: string, rows: FinanceRow[]): Consisten
         );
       }
     }
-    if (r.currentLiabilities !== null && r.nonCurrentLiabilities !== null && r.totalLiabilities !== null) {
-      const sum = r.currentLiabilities + r.nonCurrentLiabilities;
+    if (
+      r.totalLiabilities !== null &&
+      (r.currentLiabilities !== null || r.nonCurrentLiabilities !== null)
+    ) {
+      const sum = (r.currentLiabilities ?? 0) + (r.nonCurrentLiabilities ?? 0);
       if (Math.abs(sum - r.totalLiabilities) > identityTolerance(r.totalLiabilities)) {
         pushDiff(
           issues, 'error', section, r.company, 'liability_sum',
@@ -576,12 +582,19 @@ export function crossCheckFinanceRow(
   const indivData = indivRows.filter((r) => !r.isSubtotal && !r.isTotal);
   const target = indivData[0];
   if (!target) return { matched: false, diffs: [] };
-  const targetName = normalizeCompanyName(indivCompanyName || target.company);
 
-  const repMatch = repRows.find(
-    (r) => !r.isSubtotal && !r.isTotal && normalizeCompanyName(r.company) === targetName,
-  );
-  if (!repMatch) return { matched: false, diffs: [] };
+  const rawName = (indivCompanyName || target.company).trim();
+  const repData = repRows.filter((r) => !r.isSubtotal && !r.isTotal);
+
+  // 원문 표기 그대로의 일치를 우선한다. 정규화 매칭은 법인격 표기 차이용 폴백인데,
+  // 'ABC(주)'와 'ABC유한회사'가 같은 키로 합쳐질 수 있어 후보가 복수면 매칭하지 않는다 (Codex 3차).
+  let repMatch = repData.find((r) => r.company.trim() === rawName);
+  if (!repMatch) {
+    const targetName = normalizeCompanyName(rawName);
+    const candidates = repData.filter((r) => normalizeCompanyName(r.company) === targetName);
+    if (candidates.length !== 1) return { matched: false, diffs: [] };
+    repMatch = candidates[0]!;
+  }
 
   const diffs: ConsistencyIssue[] = [];
   const keys: Array<[keyof FinanceRow, string]> = [

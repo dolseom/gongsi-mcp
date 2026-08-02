@@ -165,7 +165,7 @@ describe('check_disclosure_duty — 비상장사 중요사항 확장', () => {
     expect(r.notes.some((n) => n.includes('대상회사임을 전제'))).toBe(true);
   });
 
-  it('shareholderType 미지정 지분변동은 최대주주 기준 + 경고 노트', () => {
+  it('shareholderType 미지정 지분변동은 에러다 — 유형에 따라 기한이 완전히 달라진다', () => {
     const r = checkDisclosureDuty({
       duty: 'unlisted_material',
       materialItem: 'shareholding_change',
@@ -173,8 +173,37 @@ describe('check_disclosure_duty — 비상장사 중요사항 확장', () => {
       occurredDate: '20260722',
       totalAssets: 200 * 억,
     });
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.message).toContain('shareholderType');
+  });
+
+  it('지분 감소(음수 입력)도 절댓값으로 판정한다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      materialItem: 'shareholding_change',
+      shareholderType: 'largest',
+      shareChangePct: -2,
+      occurredDate: '20260722',
+      totalAssets: 200 * 억,
+    });
     if ('error' in r) throw new Error('에러');
     expect(r.verdict).toBe('required');
-    expect(r.notes.some((n) => n.includes('shareholderType 미지정'))).toBe(true);
+  });
+
+  it('대상 아님(not_required) 판정에는 지연·과태료를 붙이지 않는다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      materialItem: 'gift',
+      listing: 'listed',
+      occurredDate: '20260701',
+      actualDisclosureDate: '20260801',
+      amount: 10 * 억,
+      totalEquity: 100 * 억,
+      paidInCapital: 50 * 억,
+    });
+    if ('error' in r) throw new Error('에러');
+    expect(r.verdict).toBe('not_required');
+    expect(r.compliance).toBeUndefined();
+    expect(r.penalty).toBeUndefined();
   });
 });

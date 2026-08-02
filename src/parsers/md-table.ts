@@ -24,11 +24,16 @@ export interface DocSection {
   textLines: string[];
 }
 
-/** '| a | b |' → ['a','b'] */
+/**
+ * '| a | b |' → ['a','b'].
+ * document.ts 는 셀 안의 '|' 를 '\|' 로 이스케이프한다 — 단순 split 은 열을 쪼갠다 (Codex 3차).
+ */
 function splitRow(line: string): string[] {
   const trimmed = line.trim();
   const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
-  return inner.split('|').map((c) => c.trim());
+  return inner
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replace(/\\\|/g, '|'));
 }
 
 function isSeparatorRow(cells: string[]): boolean {
