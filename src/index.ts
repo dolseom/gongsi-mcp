@@ -25,6 +25,10 @@ import {
   auditGroupDisclosures,
   auditGroupDisclosuresInput,
 } from './tools/audit-group-disclosures.js';
+import {
+  assessCorrectionRisk,
+  assessCorrectionRiskInput,
+} from './tools/assess-correction-risk.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -215,6 +219,22 @@ server.registerTool(
     inputSchema: auditGroupDisclosuresInput.shape,
   },
   wrap('audit_group_disclosures', auditGroupDisclosures),
+);
+
+server.registerTool(
+  'assess_correction_risk',
+  {
+    title: '정정공시 리스크 진단',
+    description:
+      '"정정하면 과태료 나온다"는 속설을 과태료 고시 원문으로 진단합니다. 정정공시 자체는 위반행위가 아니며 ' +
+      '(고시 Ⅱ의 위반 열거에 없음), 문제는 원 공시의 상태(누락·거짓·지연)입니다. 로컬 룰이라 인증키 없이 동작합니다.\n\n' +
+      '- errorType 별로 원 공시의 위반 성립 여부, 면제 경로(자진시정 골든타임·단순오류·불가항력), 권고를 근거 조문과 함께 돌려줍니다\n' +
+      '- originalDeadline 을 주면 골든타임(기한 만료 후 10영업일) 상태와 지연 감경 축소 일정(75%→50%→30%→20%)을 계산합니다\n' +
+      '- 거래 내용 자체가 변경된 경우(transaction_changed)는 정정이 아니라 새 공시의무입니다 — 재의결·재공시 경로를 안내합니다\n' +
+      '- 면제·감경은 모두 공정위 재량이므로 확정이 아닌 판단 재료입니다',
+    inputSchema: assessCorrectionRiskInput.shape,
+  },
+  wrap('assess_correction_risk', assessCorrectionRisk),
 );
 
 async function main(): Promise<void> {
