@@ -118,6 +118,36 @@ export function unlistedMaterialDeadline(occurredDate: YMD): DeadlineResult {
   );
 }
 
+const REF_UNLISTED_MAJOR: LegalRef[] = [
+  {
+    source: '공시대상기업집단 소속회사 등의 중요사항 공시에 관한 규정 제5조의2제4항 단서',
+    summary:
+      '주요주주의 주식보유비율 변동은 분기마다 공시한다. 이 경우 분기별 공시기한(매 분기 종료 후 2개월, ' +
+      '제5조제2항제2호)을 준용한다.',
+  },
+];
+
+/**
+ * 비상장회사 중요사항 중 **주요주주** 지분변동의 분기별 공시기한 — 고시 §5의2④ 단서
+ * 사유 발생일이 속한 분기 종료 후 2개월 (최대주주 변동은 7영업일 — unlistedMaterialDeadline 사용)
+ */
+export function unlistedMajorShareholderDeadline(occurredDate: YMD): DeadlineResult {
+  const y = Number(occurredDate.slice(0, 4));
+  const m = Number(occurredDate.slice(4, 6));
+  const quarterEndMonth = Math.ceil(m / 3) * 3;
+  const targetMonth = quarterEndMonth + 2;
+  const ty = targetMonth > 12 ? y + 1 : y;
+  const tm = targetMonth > 12 ? targetMonth - 12 : targetMonth;
+  const lastDay = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
+  const raw: YMD = `${ty}${String(tm).padStart(2, '0')}${String(lastDay).padStart(2, '0')}`;
+  return finalize(
+    raw,
+    `주요주주 지분변동 분기공시: 사유 발생일(${occurredDate})이 속한 분기(${y}년 ${quarterEndMonth}월 말) 종료 후 2개월`,
+    0,
+    REF_UNLISTED_MAJOR,
+  );
+}
+
 /**
  * 약관에 의한 금융거래 분기별 공시기한 — 고시 §9③⑤
  * 해당 분기 종료 후 익월 10영업일까지

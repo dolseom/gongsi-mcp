@@ -22,6 +22,7 @@ import {
 import {
   litDeadline,
   unlistedMaterialDeadline,
+  unlistedMajorShareholderDeadline,
   omnibusQuarterlyDeadline,
   goodsServicesReducedDeadline,
   groupStatusAnnualDeadline,
@@ -29,6 +30,13 @@ import {
   evaluateCompliance,
   businessDaysRemaining,
 } from '../rules/deadlines.js';
+import {
+  checkUnlistedSubjectCompany,
+  UNLISTED_UNCONDITIONAL_ITEMS,
+  DECISION_DATE_NOTE,
+  CAPITAL_MARKET_OVERLAP_NOTE,
+  type UnconditionalItem,
+} from '../rules/unlisted-material.js';
 import { estimatePenalty, type PenaltyRegime } from '../rules/penalties.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
 import { toYMD, toDate } from '../rules/business-days.js';
@@ -90,9 +98,51 @@ export const checkDisclosureDutyInput = z.object({
       'guarantee',
       'debt_relief',
       'shareholding_change',
+      'capital_change',
+      'cb_bw_issue',
+      'business_transfer',
+      'stock_exchange_transfer',
+      'dissolution',
+      'rehabilitation',
+      'restructuring_procedure',
     ])
     .optional()
-    .describe('비상장사 중요사항 세부 항목. 항목별로 임계 비율과 기준 수치가 다르다'),
+    .describe(
+      '비상장사 중요사항 세부 항목. 임계 비율형: fixed_asset=고정자산 취득·처분(자산총액 10%), ' +
+        'other_corp_stock=타법인 주식(자기자본 5%), gift=증여(1%), guarantee=담보·보증(5%), ' +
+        'debt_relief=채무 면제·인수(5%), shareholding_change=최대·주요주주 지분 1%p 변동. ' +
+        '금액 무관 결정형: capital_change=증자·감자, cb_bw_issue=CB·BW 발행, business_transfer=영업양수도·합병·분할, ' +
+        'stock_exchange_transfer=주식 포괄적 교환·이전, dissolution=해산, rehabilitation=회생절차, ' +
+        'restructuring_procedure=기촉법 관리절차',
+    ),
+
+  shareholderType: z
+    .enum(['largest', 'major'])
+    .optional()
+    .describe(
+      'shareholding_change 전용 — largest=최대주주(7영업일 공시) / major=주요주주(분기별 공시, 고시 §5의2④ 단서). ' +
+        '기한이 완전히 달라지므로 반드시 구분하세요',
+    ),
+  shareChangePct: z
+    .number()
+    .optional()
+    .describe('shareholding_change 전용 — 발행주식총수 대비 지분 변동 크기 (%p). 1 이상이면 공시 대상'),
+
+  isFinancialCompany: z
+    .boolean()
+    .optional()
+    .describe('금융업·보험업 영위 여부 (비상장사 중요사항 대상회사 판정용 — 영위하면 제외)'),
+  specialRelated20pct: z
+    .boolean()
+    .optional()
+    .describe(
+      '자산총액 100억 미만 회사의 대상 판정용 — 동일인·친족이 합산 20% 이상 소유한 회사(또는 그 회사가 ' +
+        '50% 초과 소유한 자회사)인지 (고시 §2②2호)',
+    ),
+  inLiquidationOrDormant: z
+    .boolean()
+    .optional()
+    .describe('청산 절차 진행 중 또는 1년 이상 휴업 중인지 (고시 §2②2호 단서의 제외 요건)'),
 
   actualDisclosureDate: YMD.optional()
     .describe('실제 공시일. 주면 기한 준수 여부와 지연일수를 함께 판정한다'),
@@ -157,6 +207,10 @@ const DUTY_TO_QNA_CATEGORY: Record<CheckDisclosureDutyInput['duty'], QnaCategory
   group_status: 'group_status',
 };
 
+function isUnconditionalItem(x: string): x is UnconditionalItem {
+  return x in UNLISTED_UNCONDITIONAL_ITEMS;
+}
+
 const DISCLAIMER =
   '본 판정은 공개된 법령·고시에 기반한 참고 정보이며 공정거래위원회의 공식 유권해석이 아닙니다. ' +
   '실제 신고 전 소관 부서 확인을 권장합니다.';
@@ -188,7 +242,18 @@ export function checkDisclosureDuty(
       if (!input.occurredDate) {
         return errorResponse('invalid_argument', 'occurredDate(사유 발생일)가 필요합니다.');
       }
-      deadline = unlistedMaterialDeadline(input.occurredDate);
+      // 주요주주 지분변동만 분기별 공시 — 최대주주 변동·그 외 사유는 전부 7영업일 (§5의2④)
+      if (input.materialItem === 'shareholding_change' && input.shareholderType === 'major') {
+        deadline = unlistedMajorShareholderDeadline(input.occurredDate);
+      } else {
+        deadline = unlistedMaterialDeadline(input.occurredDate);
+        if (input.materialItem === 'shareholding_change' && !input.shareholderType) {
+          notes.push(
+            '⚠️ shareholderType 미지정 — 최대주주 기준(7영업일)으로 계산했습니다. ' +
+              '**주요주주**의 지분변동이라면 분기별 공시(분기 종료 후 2개월)로 기한이 완전히 달라집니다 (고시 §5의2④ 단서).',
+          );
+        }
+      }
       break;
     }
     case 'omnibus_financial': {
@@ -264,45 +329,115 @@ export function checkDisclosureDuty(
       }
     }
   } else if (input.duty === 'unlisted_material') {
-    if (!input.materialItem) {
-      verdict = 'insufficient_data';
-      summary =
-        'materialItem(세부 항목)이 필요합니다. 금액 무관 공시 대상도 있습니다: ' +
-        UNLISTED_MATERIAL_UNCONDITIONAL.join(' / ');
+    // ── 0단계: 대상회사 판정 (§2②) — 사유를 보기 전에 회사 자체가 대상인지부터 ──
+    const subjectCheck = checkUnlistedSubjectCompany({
+      isListed: input.listing === undefined ? undefined : input.listing === 'listed',
+      isFinancialOrInsurance: input.isFinancialCompany,
+      totalAssets: input.totalAssets,
+      specialRelated20pct: input.specialRelated20pct,
+      inLiquidationOrDormant: input.inLiquidationOrDormant,
+    });
+    if (subjectCheck.subject === false) {
+      verdict = 'not_required';
+      summary = `공시대상비상장회사가 아닙니다. ${subjectCheck.reasons.join(' ')}`;
+      notes.push(
+        '※ 대상회사 판정은 공시대상기업집단 소속을 전제로 합니다 — 소속 여부는 resolve_entity(includeGroup=true)로 확인하세요.',
+      );
     } else {
-      const spec = UNLISTED_MATERIAL_THRESHOLDS[input.materialItem];
-      const base =
-        spec.base === 'totalAssets'
-          ? input.totalAssets
-          : spec.base === 'equity'
-            ? input.totalEquity !== undefined && input.paidInCapital !== undefined
-              ? effectiveEquity(input.totalEquity, input.paidInCapital)
-              : input.totalEquity
-            : undefined;
-
-      if (base === undefined) {
-        verdict = 'insufficient_data';
-        summary = `${spec.label} 판정에는 ${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}이 필요합니다.`;
-      } else if (input.amount === undefined) {
-        verdict = 'insufficient_data';
-        summary = `${spec.label}: 임계값은 ${fmtWon(base * spec.rate)} (${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}의 ${spec.rate * 100}%)입니다. amount 를 주면 판정합니다.`;
-      } else {
-        const limit = base * spec.rate;
-        const required = input.amount >= limit;
-        verdict = required ? 'required' : 'not_required';
-        summary = required
-          ? `공시 대상입니다. ${spec.label} ${fmtWon(input.amount)} ≥ 임계 ${fmtWon(limit)}.`
-          : `공시 대상이 아닙니다. ${spec.label} ${fmtWon(input.amount)} < 임계 ${fmtWon(limit)}.`;
-        threshold = {
-          amount: limit,
-          formula: `${spec.base === 'totalAssets' ? '자산총액' : '자기자본'} ${fmtWon(base)} × ${spec.rate * 100}% = ${fmtWon(limit)}`,
-          inputs: { base },
-        };
-      }
-      if (input.totalEquity !== undefined && input.paidInCapital !== undefined && input.totalEquity < input.paidInCapital) {
+      if (subjectCheck.subject === 'insufficient_data') {
         notes.push(
-          '자기자본이 자본금에 미달하여 고시 §5의2③에 따라 **자본금을 자기자본으로 보아** 계산했습니다.',
+          `대상회사 여부 미확정: ${subjectCheck.reasons.join(' ')} 아래 사유 판정은 대상회사임을 전제한 참고값입니다.`,
         );
+      } else {
+        notes.push(`대상회사 확인: ${subjectCheck.reasons.join(' ')}`);
+      }
+      notes.push(
+        '※ 법 §26(대규모내부거래)에 따라 공시되는 사항은 비상장사 중요사항 공시에서 제외됩니다 (고시 §5의2① 단서).',
+      );
+
+      if (!input.materialItem) {
+        verdict = 'insufficient_data';
+        summary =
+          'materialItem(세부 항목)이 필요합니다. 금액 무관 공시 대상도 있습니다: ' +
+          UNLISTED_MATERIAL_UNCONDITIONAL.join(' / ');
+      } else if (isUnconditionalItem(input.materialItem)) {
+        // ── 금액 무관 결정형 사유 — 결정이 있으면 그 자체로 공시 대상 ──
+        const spec = UNLISTED_UNCONDITIONAL_ITEMS[input.materialItem];
+        verdict = 'required';
+        summary = `${spec.label}은(는) 금액과 무관하게 결정(사유 발생) 자체로 공시 대상입니다 (고시 ${spec.clause}).`;
+        if (spec.occurrenceNote) notes.push(spec.occurrenceNote);
+        notes.push(DECISION_DATE_NOTE);
+        notes.push(CAPITAL_MARKET_OVERLAP_NOTE);
+      } else if (input.materialItem === 'shareholding_change') {
+        // ── 지분 변동 — 금액이 아니라 발행주식총수 대비 변동폭(%p)으로 판정 ──
+        if (input.shareChangePct === undefined) {
+          verdict = 'insufficient_data';
+          summary =
+            '최대주주·주요주주 지분변동은 발행주식총수 대비 1%p 이상 변동 시 공시 대상입니다. ' +
+            'shareChangePct(변동폭 %p)를 주면 판정합니다.';
+        } else {
+          const required = input.shareChangePct >= 1;
+          verdict = required ? 'required' : 'not_required';
+          summary = required
+            ? `공시 대상입니다. 지분 변동 ${input.shareChangePct}%p ≥ 1%p (고시 §5의2①1호가목).`
+            : `공시 대상이 아닙니다. 지분 변동 ${input.shareChangePct}%p < 1%p.`;
+          threshold = {
+            amount: 1,
+            formula: `발행주식총수 대비 변동폭 ${input.shareChangePct}%p vs 임계 1%p`,
+            inputs: { shareChangePct: input.shareChangePct },
+          };
+        }
+        notes.push(
+          '변동 기준일은 시행령 §17제1호에서 규정한 날입니다. 주요주주 변동은 분기별 공시입니다 (§5의2④ 단서).',
+        );
+      } else {
+        // ── 임계 비율형 사유 ──
+        const spec = UNLISTED_MATERIAL_THRESHOLDS[input.materialItem];
+        const base =
+          spec.base === 'totalAssets'
+            ? input.totalAssets
+            : spec.base === 'equity'
+              ? input.totalEquity !== undefined && input.paidInCapital !== undefined
+                ? effectiveEquity(input.totalEquity, input.paidInCapital)
+                : input.totalEquity
+              : undefined;
+
+        if (base === undefined) {
+          verdict = 'insufficient_data';
+          summary = `${spec.label} 판정에는 ${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}이 필요합니다.`;
+          notes.push(
+            '신설 회사로 최근 사업연도 대차대조표가 없으면 설립 당시 납입자본금을 기준으로 합니다 (고시 §5의2②).',
+          );
+        } else if (input.amount === undefined) {
+          verdict = 'insufficient_data';
+          summary = `${spec.label}: 임계값은 ${fmtWon(base * spec.rate)} (${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}의 ${spec.rate * 100}%)입니다. amount 를 주면 판정합니다.`;
+        } else {
+          const limit = base * spec.rate;
+          const required = input.amount >= limit;
+          verdict = required ? 'required' : 'not_required';
+          summary = required
+            ? `공시 대상입니다. ${spec.label} ${fmtWon(input.amount)} ≥ 임계 ${fmtWon(limit)}.`
+            : `공시 대상이 아닙니다. ${spec.label} ${fmtWon(input.amount)} < 임계 ${fmtWon(limit)}.`;
+          threshold = {
+            amount: limit,
+            formula: `${spec.base === 'totalAssets' ? '자산총액' : '자기자본'} ${fmtWon(base)} × ${spec.rate * 100}% = ${fmtWon(limit)}`,
+            inputs: { base },
+          };
+          if (input.materialItem === 'guarantee') {
+            notes.push('계약 등의 이행보증·납세보증을 위한 채무보증은 제외됩니다 (고시 §5의2①2호라목).');
+          }
+        }
+        if (
+          input.totalEquity !== undefined &&
+          input.paidInCapital !== undefined &&
+          input.totalEquity < input.paidInCapital
+        ) {
+          notes.push(
+            '자기자본이 자본금에 미달하여 고시 §5의2③에 따라 **자본금을 자기자본으로 보아** 계산했습니다.',
+          );
+        }
+        notes.push(DECISION_DATE_NOTE);
+        notes.push(CAPITAL_MARKET_OVERLAP_NOTE);
       }
     }
   } else {
