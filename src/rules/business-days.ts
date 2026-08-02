@@ -66,6 +66,11 @@ export function __setHolidayData(data: Record<string, HolidayYear>): void {
   cache = data;
 }
 
+/** 테스트용 — 주입을 해제하고 파일 데이터로 되돌린다 */
+export function __resetHolidayData(): void {
+  cache = null;
+}
+
 export function toDate(ymd: YMD): Date {
   const y = Number(ymd.slice(0, 4));
   const m = Number(ymd.slice(4, 6));

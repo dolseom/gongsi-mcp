@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  __resetHolidayData,
+  __setHolidayData,
   addBusinessDays,
   countCalendarDays,
   dayOfWeek,
@@ -149,9 +151,36 @@ describe('기한 — 유형별', () => {
   });
 
   it('미검증 공휴일 데이터는 경고를 반환한다', () => {
+    // 2026년은 공식 발표 대조로 verified: true가 됐으므로, 미검증 연도를 주입해 경고 경로를 검증한다
+    __setHolidayData({ '2026': { verified: false, holidays: [] } });
+    try {
+      const d = litDeadline('20260722', 'listed');
+      expect(d.warnings.length).toBeGreaterThan(0);
+      expect(d.warnings[0]).toContain('미검증');
+    } finally {
+      __resetHolidayData();
+    }
+  });
+
+  it('검증된 공휴일 데이터(2026 실데이터)는 경고가 없다', () => {
     const d = litDeadline('20260722', 'listed');
-    expect(d.warnings.length).toBeGreaterThan(0);
-    expect(d.warnings[0]).toContain('미검증');
+    expect(d.warnings).toEqual([]);
+  });
+
+  // 2026 공휴일 데이터 회귀 고정 — 월력요항(우주항공청 2025-06-30 발표) 대조 검증분 (2026-08-02)
+  it('2026 공휴일 데이터 고정: 선거일·대체공휴일·근로자의날', () => {
+    // 6/3 지방선거일 — Codex 교차검토가 잡았던 누락. 적색표기일 70일 집계가 포함을 증명
+    expect(isBusinessDay('20260603')).toBe(false);
+    // 대체공휴일 4건 (관공서의 공휴일에 관한 규정 §3)
+    expect(isBusinessDay('20260302')).toBe(false); // 삼일절(일) 대체
+    expect(isBusinessDay('20260525')).toBe(false); // 부처님오신날(일) 대체
+    expect(isBusinessDay('20260817')).toBe(false); // 광복절(토) 대체 — 8/16(일) 건너뜀
+    expect(isBusinessDay('20261005')).toBe(false); // 개천절(토) 대체
+    // 대체공휴일이 생기지 않아야 하는 날 — 잘못 추가되면 기한이 하루 늦어져 지연을 적법 오판한다
+    expect(isBusinessDay('20260608')).toBe(true); // 현충일(토)은 대체 대상 아님
+    expect(isBusinessDay('20260928')).toBe(true); // 추석연휴 토요일 겹침은 대체 없음(§3①2는 일요일만)
+    // 근로자의 날 — 고시상 영업일 제외 대상
+    expect(isBusinessDay('20260501')).toBe(false);
   });
 });
 
