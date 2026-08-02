@@ -29,6 +29,10 @@ import {
   assessCorrectionRisk,
   assessCorrectionRiskInput,
 } from './tools/assess-correction-risk.js';
+import {
+  checkJ004Consistency,
+  checkJ004ConsistencyInput,
+} from './tools/check-j004-consistency.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -235,6 +239,24 @@ server.registerTool(
     inputSchema: assessCorrectionRiskInput.shape,
   },
   wrap('assess_correction_risk', assessCorrectionRisk),
+);
+
+server.registerTool(
+  'check_j004_consistency',
+  {
+    title: '기업집단현황공시(J004) 정합성 자가점검',
+    description:
+      '기업집단현황공시 원문에서 기계적으로 재검산 가능한 항목을 전부 다시 계산해 불일치를 찾습니다. ' +
+      '공시의무 위반 건수의 84%가 J004입니다 — 제출 전 자가점검 또는 제출본 사후 점검용입니다.\n\n' +
+      '- 재무현황: 유동+비유동=총계(자산·부채), 자산=부채+자본 항등식, 부채비율 재계산, 금융/비금융 소계·합계 재합산\n' +
+      '- 차이가 약 1,000배면 단위(원/천원/백만원) 오기 힌트를 답니다\n' +
+      '- 그 외 표의 합계 행도 재합산합니다 (비율 열 제외)\n' +
+      '- compare_rcept_nos 로 개별회사 공시들을 주면 대표회사 취합분과 회사별 수치를 대사합니다\n' +
+      '- 문서 내적 정합성만 봅니다 — 원천 회계 데이터와의 일치(진실성)는 판정하지 않습니다\n' +
+      '- 불일치 발견 시 정정 판단은 assess_correction_risk 와 함께 쓰세요',
+    inputSchema: checkJ004ConsistencyInput.shape,
+  },
+  wrap('check_j004_consistency', checkJ004Consistency),
 );
 
 async function main(): Promise<void> {
