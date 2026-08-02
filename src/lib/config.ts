@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -36,14 +37,22 @@ const PROJECT_ROOT = findProjectRoot();
 /**
  * `.env` 를 읽어 process.env 에 채운다. Node 21.7+ 내장 — 의존성 없음.
  * 이미 설정된 환경변수를 덮어쓰지는 않는다.
+ *
+ * 순서: 프로젝트 `.env` → `~/.dart-ftc-mcp/.env` (setup 마법사가 npx 설치 시 쓰는 위치).
+ * loadEnvFile 은 기존 값을 덮지 않으므로 먼저 읽힌 쪽이 우선한다.
  */
 export function loadDotEnv(): void {
-  const path = join(PROJECT_ROOT, '.env');
-  if (!existsSync(path)) return;
-  try {
-    process.loadEnvFile(path);
-  } catch {
-    // 형식 오류는 무시하고 실제 환경변수만 쓴다
+  const candidates = [
+    join(PROJECT_ROOT, '.env'),
+    join(homedir(), '.dart-ftc-mcp', '.env'),
+  ];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      process.loadEnvFile(path);
+    } catch {
+      // 형식 오류는 무시하고 실제 환경변수만 쓴다
+    }
   }
 }
 
