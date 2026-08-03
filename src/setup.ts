@@ -13,7 +13,15 @@
  *    config.ts 가 프로젝트 .env → 홈 .env 순서로 읽는다 (먼저 설정된 값이 우선).
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -141,7 +149,26 @@ function backupIfExists(path: string): string | null {
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
   const bak = `${path}.bak.${stamp}`;
   copyFileSync(path, bak);
+  restrictPermissions(bak);
   return bak;
+}
+
+/** 인증키 파일 권한을 소유자 전용(0600)으로 좁힌다. Windows 에선 사실상 무시된다 — 베스트에포트. */
+function restrictPermissions(path: string): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // 권한 조정 실패는 치명이 아니다
+  }
+}
+
+/** 심볼릭 링크면 true — 링크를 통해 쓰면 키가 의도치 않은 곳으로 흘러갈 수 있어 거부한다. */
+export function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 function maskKey(key: string): string {
@@ -250,6 +277,13 @@ export async function runSetup(argv: string[]): Promise<number> {
     const target = args.envPath
       ? { path: resolve(args.envPath), kind: 'project' as const }
       : defaultEnvTarget(process.cwd());
+    if (isSymlink(target.path)) {
+      console.error(
+        `대상이 심볼릭 링크입니다: ${target.path}\n` +
+          '링크를 통해 인증키를 쓰면 의도치 않은 위치로 흘러갈 수 있어 중단합니다. 실제 파일 경로를 지정하세요.',
+      );
+      return 1;
+    }
     const updates: Record<string, string> = { DART_API_KEY: dartKey };
     if (egroupKey) updates['EGROUP_API_KEY'] = egroupKey;
     if (target.kind === 'home') {
@@ -259,8 +293,27 @@ export async function runSetup(argv: string[]): Promise<number> {
     mkdirSync(dirname(target.path), { recursive: true });
     const existing = existsSync(target.path) ? readFileSync(target.path, 'utf-8') : '';
     const bak = backupIfExists(target.path);
-    writeFileSync(target.path, upsertEnvContent(existing, updates), 'utf-8');
+    writeFileSync(target.path, upsertEnvContent(existing, updates), { encoding: 'utf-8', mode: 0o600 });
+    restrictPermissions(target.path);
     console.log(`\n.env 기록: ${target.path}${bak ? ` (기존 파일 백업: ${bak})` : ''}`);
+
+    // 서버(config.ts)는 패키지 루트 .env 와 ~/.dart-ftc-mcp/.env 만 자동으로 읽는다 —
+    // --env-path 로 다른 곳에 쓰면 "키를 넣었는데 인식이 안 된다"가 된다 (Codex 3차 백로그)
+    if (args.envPath) {
+      const autoLoaded = new Set(
+        [defaultEnvTarget(process.cwd()).path, join(homedir(), '.dart-ftc-mcp', '.env')].map((p) =>
+          resolve(p),
+        ),
+      );
+      if (!autoLoaded.has(target.path)) {
+        console.log(
+          '\n⚠️ 이 경로는 서버가 자동으로 읽는 위치가 아닙니다.\n' +
+            '   서버는 패키지 루트의 .env 와 ~/.dart-ftc-mcp/.env 만 자동 로드합니다.\n' +
+            '   등록 시 환경변수로 직접 넘기세요:\n' +
+            '   claude mcp add dart-ftc-mcp --env DART_API_KEY=<키> -- npx -y dart-ftc-mcp',
+        );
+      }
+    }
 
     // 4) 룰 엔진 자가검증 — 검증된 실제 사례 (소노스테이션, rcept_no 20260728000484)
     const { litDeadline } = await import('./rules/deadlines.js');

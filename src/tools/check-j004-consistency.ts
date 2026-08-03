@@ -61,14 +61,46 @@ export type CheckJ004ConsistencyInput = z.infer<typeof checkJ004ConsistencyInput
 /** J004 계열 서식코드 (실측: 80621 분기 개별 / 80622 연1회 대표 / 80623 연1회 개별) */
 const J004_ACODES = new Set(['80620', '80621', '80622', '80623', '80624', '80625']);
 
-interface CrossCheckReport {
+export interface CrossCheckReport {
   rcept_no: string;
   company: string | null;
   matched: boolean;
   matchedName?: string;
   diffCount: number;
   diffs: ConsistencyIssue[];
+  /** max_issues 예산에 걸려 diffs 가 잘렸는지 — diffCount 는 전체 건수를 유지한다 */
+  diffsTruncated?: boolean;
   note?: string;
+}
+
+/**
+ * max_issues 예산을 본문 issues 와 crossChecks 의 diffs 에 함께 적용한다 (Codex 3차 백로그).
+ * 본문 issues 가 예산을 우선 소진하고, 남은 예산으로 대사 diffs 를 순서대로 자른다.
+ * diffCount·stats 집계는 전체 기준을 유지해 "잘려서 0건"으로 오독되지 않게 한다.
+ */
+export function applyIssueBudget(
+  issues: ConsistencyIssue[],
+  crossChecks: CrossCheckReport[],
+  maxIssues: number,
+): {
+  shownIssues: ConsistencyIssue[];
+  shownCrossChecks: CrossCheckReport[];
+  crossChecksTruncated: boolean;
+} {
+  const shownIssues = issues.slice(0, maxIssues);
+  let budget = Math.max(0, maxIssues - shownIssues.length);
+  let crossChecksTruncated = false;
+  const shownCrossChecks = crossChecks.map((c) => {
+    if (c.diffs.length <= budget) {
+      budget -= c.diffs.length;
+      return c;
+    }
+    crossChecksTruncated = true;
+    const kept = c.diffs.slice(0, budget);
+    budget = 0;
+    return { ...c, diffs: kept, diffsTruncated: true };
+  });
+  return { shownIssues, shownCrossChecks, crossChecksTruncated };
 }
 
 export async function checkJ004Consistency(
@@ -169,6 +201,12 @@ export async function checkJ004Consistency(
   const warnings = allIssues.filter((i) => i.severity === 'warning').length;
   const truncatedIssues = result.issues.length > maxIssues;
 
+  const { shownIssues, shownCrossChecks, crossChecksTruncated } = applyIssueBudget(
+    result.issues,
+    crossChecks,
+    maxIssues,
+  );
+
   log.info('J004 정합성 점검 완료', {
     rcept_no: input.rcept_no,
     errors,
@@ -206,9 +244,10 @@ export async function checkJ004Consistency(
           : coreChecked
             ? '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.'
             : '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.',
-    issues: result.issues.slice(0, maxIssues),
+    issues: shownIssues,
     ...(truncatedIssues ? { issuesTruncated: true, totalIssues: result.issues.length } : {}),
-    ...(crossChecks.length > 0 ? { crossChecks } : {}),
+    ...(shownCrossChecks.length > 0 ? { crossChecks: shownCrossChecks } : {}),
+    ...(crossChecksTruncated ? { crossChecksTruncated: true } : {}),
     stats: {
       ...result.stats,
       errors,

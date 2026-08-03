@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import { defaultEnvTarget, parseSetupArgs, upsertEnvContent } from '../src/setup.js';
+import { defaultEnvTarget, isSymlink, parseSetupArgs, upsertEnvContent } from '../src/setup.js';
 
 describe('setup — .env 갱신', () => {
   it('빈 내용에 키를 추가한다', () => {
@@ -60,5 +60,15 @@ describe('setup — .env 위치 결정', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dartftc-broken-'));
     writeFileSync(join(dir, 'package.json'), '{not json');
     expect(defaultEnvTarget(dir).kind).toBe('home');
+  });
+});
+
+describe('setup — symlink 방어 (Codex 3차 백로그)', () => {
+  it('일반 파일·미존재 경로는 심볼릭 링크가 아니다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dartftc-'));
+    const file = join(dir, '.env');
+    writeFileSync(file, 'DART_API_KEY=x\n');
+    expect(isSymlink(file)).toBe(false);
+    expect(isSymlink(join(dir, 'no-such-file'))).toBe(false);
   });
 });

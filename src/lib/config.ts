@@ -50,8 +50,14 @@ export function loadDotEnv(): void {
     if (!existsSync(path)) continue;
     try {
       process.loadEnvFile(path);
-    } catch {
-      // 형식 오류는 무시하고 실제 환경변수만 쓴다
+    } catch (err) {
+      // 파일은 있는데 읽기 실패 — 조용히 삼키면 "키를 넣었는데 인식이 안 된다"는
+      // 진단 불가 증상이 된다 (Codex 3차 백로그). stderr 로만 알린다 (stdout 은 프로토콜 전용).
+      // logger 는 이 모듈을 import 하므로 여기서 쓸 수 없다 (순환).
+      process.stderr.write(
+        `[dart-ftc-mcp] .env 읽기 실패 — 이 파일의 값은 적용되지 않습니다: ${path} ` +
+          `(${err instanceof Error ? err.message : String(err)})\n`,
+      );
     }
   }
 }

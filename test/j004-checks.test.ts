@@ -8,7 +8,9 @@ import {
   checkJ004Document,
   crossCheckFinanceRow,
   parseFinanceTable,
+  type ConsistencyIssue,
 } from '../src/rules/j004-checks.js';
+import { applyIssueBudget, type CrossCheckReport } from '../src/tools/check-j004-consistency.js';
 
 describe('md-table 파서', () => {
   it('공시 표기 숫자를 파싱한다', () => {
@@ -245,5 +247,47 @@ describe('대표회사 ↔ 개별회사 대사', () => {
     const indiv = parseFinanceTable(splitSections(indivMd).find((s) => s.title.includes('재무현황'))!.tables[1]!)!;
     const r = crossCheckFinanceRow(rep, indiv, '없는회사(주)');
     expect(r.matched).toBe(false);
+  });
+});
+
+describe('applyIssueBudget — max_issues 를 crossChecks 에도 적용 (Codex 3차 백로그)', () => {
+  const issue = (i: number): ConsistencyIssue => ({
+    severity: 'warning',
+    section: '재무현황',
+    rowLabel: `행 ${i}`,
+    check: 'total_sum',
+    detail: `이슈 ${i}`,
+    expected: i,
+    actual: i + 1,
+  });
+  const cross = (n: number): CrossCheckReport => ({
+    rcept_no: '20260101000001',
+    company: '테스트',
+    matched: true,
+    diffCount: n,
+    diffs: Array.from({ length: n }, (_, i) => issue(i)),
+  });
+
+  it('예산 이내면 그대로 통과한다', () => {
+    const r = applyIssueBudget([issue(1)], [cross(3)], 100);
+    expect(r.shownIssues.length).toBe(1);
+    expect(r.shownCrossChecks[0]!.diffs.length).toBe(3);
+    expect(r.crossChecksTruncated).toBe(false);
+  });
+
+  it('본문 issues 가 예산을 소진하면 diffs 가 잘리고 표시된다', () => {
+    const r = applyIssueBudget([issue(1), issue(2), issue(3)], [cross(5)], 4);
+    expect(r.shownIssues.length).toBe(3);
+    expect(r.shownCrossChecks[0]!.diffs.length).toBe(1); // 남은 예산 1
+    expect(r.shownCrossChecks[0]!.diffsTruncated).toBe(true);
+    expect(r.shownCrossChecks[0]!.diffCount).toBe(5); // 집계는 전체 유지
+    expect(r.crossChecksTruncated).toBe(true);
+  });
+
+  it('예산이 0 이 되면 뒤 crossCheck 는 diffs 0건 + 표시', () => {
+    const r = applyIssueBudget([], [cross(2), cross(3)], 2);
+    expect(r.shownCrossChecks[0]!.diffs.length).toBe(2);
+    expect(r.shownCrossChecks[1]!.diffs.length).toBe(0);
+    expect(r.shownCrossChecks[1]!.diffsTruncated).toBe(true);
   });
 });
