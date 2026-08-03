@@ -13,6 +13,7 @@ import { resolveCorp } from '../resolver/corp-index.js';
 import { collectAdaptive } from '../search/batch.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
+import { isValidYMD } from '../rules/business-days.js';
 
 export const searchDisclosuresInput = z.object({
   query: z
@@ -28,11 +29,13 @@ export const searchDisclosuresInput = z.object({
   date_from: z
     .string()
     .regex(/^\d{8}$/, '날짜는 YYYYMMDD 형식입니다')
+    .refine(isValidYMD, '실존하지 않는 날짜입니다')
     .optional()
     .describe('조회 시작일 YYYYMMDD (기본: 30일 전)'),
   date_to: z
     .string()
     .regex(/^\d{8}$/, '날짜는 YYYYMMDD 형식입니다')
+    .refine(isValidYMD, '실존하지 않는 날짜입니다')
     .optional()
     .describe('조회 종료일 YYYYMMDD (기본: 오늘)'),
   preset: z

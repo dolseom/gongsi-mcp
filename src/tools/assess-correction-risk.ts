@@ -17,12 +17,15 @@
  */
 
 import { z } from 'zod';
-import { countCalendarDays, toYMD } from '../rules/business-days.js';
+import { countCalendarDays, toYMD, isValidYMD } from '../rules/business-days.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
 import type { PenaltyRegime } from '../rules/penalties.js';
 import type { LegalRef, YMD as YMDType } from '../rules/types.js';
 
-const YMD = z.string().regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다 (예: 20260722)');
+const YMD = z
+  .string()
+  .regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다 (예: 20260722)')
+  .refine(isValidYMD, '실존하지 않는 날짜입니다');
 
 const REGIME_RULE: Record<PenaltyRegime, string> = {
   art26_29: '대규모내부거래 등에 대한 이사회 의결 및 공시의무 위반사건에 관한 과태료 부과기준',

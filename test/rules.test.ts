@@ -6,6 +6,7 @@ import {
   countCalendarDays,
   dayOfWeek,
   isBusinessDay,
+  isValidYMD,
   nextBusinessDay,
 } from '../src/rules/business-days.js';
 import { calcThreshold, effectiveEquity, 억 } from '../src/rules/thresholds.js';
@@ -43,6 +44,28 @@ describe('영업일 계산', () => {
     expect(addBusinessDays('20260722', 3)).toBe('20260727');
     // → 28(화)4 29(수)5 30(목)6 31(금)7
     expect(addBusinessDays('20260722', 7)).toBe('20260731');
+  });
+});
+
+describe('날짜 round-trip 검증 (Codex 3차 백로그)', () => {
+  it('실존하는 날짜만 통과한다', () => {
+    expect(isValidYMD('20260722')).toBe(true);
+    expect(isValidYMD('20261231')).toBe(true);
+    expect(isValidYMD('20240229')).toBe(true); // 윤년
+  });
+
+  it('Date 롤오버로 넘어가던 가짜 날짜를 거부한다', () => {
+    expect(isValidYMD('20260231')).toBe(false); // 2월 31일 → 3월 롤오버
+    expect(isValidYMD('20260431')).toBe(false); // 4월 31일
+    expect(isValidYMD('20260229')).toBe(false); // 2026은 평년
+    expect(isValidYMD('20261301')).toBe(false); // 13월
+    expect(isValidYMD('20260100')).toBe(false); // 0일
+  });
+
+  it('형식이 아니면 거부한다', () => {
+    expect(isValidYMD('2026-07-22')).toBe(false);
+    expect(isValidYMD('202607')).toBe(false);
+    expect(isValidYMD('')).toBe(false);
   });
 });
 

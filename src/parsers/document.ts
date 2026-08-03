@@ -225,8 +225,16 @@ export function extractBoardDate(rawXml: string): string | null {
   const valid = (y: string, mo: string, d: string): string | null => {
     const moN = Number(mo);
     const dN = Number(d);
-    // 달력 유효성 — "2026.99.99" 같은 오타를 날짜로 반환하지 않는다
-    if (moN < 1 || moN > 12 || dN < 1 || dN > 31) return null;
+    // 달력 유효성 round-trip — "2026.2.31" 은 Date.UTC 가 3월로 롤오버시키므로
+    // 재직렬화가 원본과 달라지는 것으로 실존하지 않는 날짜를 걸러낸다
+    const dt = new Date(Date.UTC(Number(y), moN - 1, dN));
+    if (
+      dt.getUTCFullYear() !== Number(y) ||
+      dt.getUTCMonth() !== moN - 1 ||
+      dt.getUTCDate() !== dN
+    ) {
+      return null;
+    }
     return `${y}${String(moN).padStart(2, '0')}${String(dN).padStart(2, '0')}`;
   };
 

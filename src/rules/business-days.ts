@@ -86,6 +86,16 @@ export function toYMD(date: Date): YMD {
   return `${y}${m}${d}`;
 }
 
+/**
+ * 실존하는 달력 날짜인지 round-trip 으로 검증한다.
+ * `Date.UTC` 는 20260231 같은 값을 조용히 3월로 롤오버시키므로,
+ * 정규식만 통과한 입력이 기한 계산에 들어가면 판정이 하루 이상 어긋난다.
+ */
+export function isValidYMD(ymd: string): boolean {
+  if (!/^\d{8}$/.test(ymd)) return false;
+  return toYMD(toDate(ymd)) === ymd;
+}
+
 /** 0=일요일 … 6=토요일 */
 export function dayOfWeek(ymd: YMD): number {
   return toDate(ymd).getUTCDay();

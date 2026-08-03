@@ -36,7 +36,7 @@ import {
 import { litDeadline, evaluateCompliance } from '../rules/deadlines.js';
 import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
-import { toYMD } from '../rules/business-days.js';
+import { toYMD, isValidYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit');
 
@@ -61,11 +61,20 @@ export const auditGroupDisclosuresInput = z.object({
     .max(50)
     .optional()
     .describe('회사 목록 — 회사명 또는 corp_code(8자리). 집단 전체 대신 특정 회사만 감사할 때'),
-  from: z.string().regex(/^\d{8}$/, 'YYYYMMDD').describe('감사 기간 시작일 (접수일 기준)'),
-  to: z.string().regex(/^\d{8}$/, 'YYYYMMDD').describe('감사 기간 종료일'),
+  from: z
+    .string()
+    .regex(/^\d{8}$/, 'YYYYMMDD')
+    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+    .describe('감사 기간 시작일 (접수일 기준)'),
+  to: z
+    .string()
+    .regex(/^\d{8}$/, 'YYYYMMDD')
+    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+    .describe('감사 기간 종료일'),
   today: z
     .string()
     .regex(/^\d{8}$/, 'YYYYMMDD')
+    .refine(isValidYMD, '실존하지 않는 날짜입니다')
     .optional()
     .describe('판정 기준일 (기본: 오늘). 자진시정 골든타임 계산에 쓴다'),
   year_month: z

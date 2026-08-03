@@ -39,14 +39,16 @@ import {
 } from '../rules/unlisted-material.js';
 import { estimatePenalty, type PenaltyRegime } from '../rules/penalties.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
-import { toYMD, toDate } from '../rules/business-days.js';
+import { toYMD, toDate, isValidYMD } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
 import { searchQna, type QnaCategory } from '../kb/qna.js';
 
 const YMD = z
   .string()
-  .regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다 (예: 20260722)');
+  .regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다 (예: 20260722)')
+  // 20260231 같은 값은 Date 롤오버로 기한이 조용히 틀어진다 — 실존 날짜만 통과
+  .refine(isValidYMD, '실존하지 않는 날짜입니다');
 
 export const checkDisclosureDutyInput = z.object({
   duty: z

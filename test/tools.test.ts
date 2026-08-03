@@ -240,3 +240,31 @@ describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
     expect(out).not.toContain('abcdef0123456789abcdef0123456789');
   });
 });
+
+describe('도구 입력 날짜 round-trip 검증 (Codex 3차 백로그)', () => {
+  it('실존하지 않는 날짜는 스키마에서 거부한다', async () => {
+    const { checkDisclosureDutyInput } = await import('../src/tools/check-disclosure-duty.js');
+    const base = {
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      totalEquity: 1200,
+      amount: 80,
+      amountBasis: 'actual',
+    };
+    // 20260231은 정규식은 통과하지만 실존하지 않는다 — Date 롤오버로 기한이 틀어지기 전에 차단
+    expect(checkDisclosureDutyInput.safeParse({ ...base, boardDate: '20260231' }).success).toBe(false);
+    expect(checkDisclosureDutyInput.safeParse({ ...base, boardDate: '20260722' }).success).toBe(true);
+  });
+
+  it('search/audit 의 기간 입력도 같은 검증을 탄다', async () => {
+    const { searchDisclosuresInput } = await import('../src/tools/search-disclosures.js');
+    const { auditGroupDisclosuresInput } = await import('../src/tools/audit-group-disclosures.js');
+    expect(searchDisclosuresInput.safeParse({ date_from: '20260431', date_to: '20260501' }).success).toBe(false);
+    expect(
+      auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20261301' }).success,
+    ).toBe(false);
+    expect(
+      auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20260131' }).success,
+    ).toBe(true);
+  });
+});

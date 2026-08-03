@@ -144,4 +144,12 @@ describe('이사회 의결일 정밀 추출', () => {
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.13.01</TD>')).toBeNull();
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.12.31</TD>')).toBe('20261231');
   });
+
+  it('월별 말일을 넘는 날짜는 round-trip 으로 거른다 (Codex 3차 백로그)', () => {
+    // 종전 검증은 일 1~31 범위만 봐서 2월 31일이 통과했다 — Date 롤오버로 3월 초 기한이 나온다
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.2.31</TD>')).toBeNull();
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.4.31</TD>')).toBeNull();
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.2.29</TD>')).toBeNull(); // 평년
+    expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2024.2.29</TD>')).toBe('20240229'); // 윤년
+  });
 });
