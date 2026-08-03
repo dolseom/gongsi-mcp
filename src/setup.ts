@@ -299,13 +299,15 @@ export async function runSetup(argv: string[]): Promise<number> {
 
     // 서버(config.ts)는 패키지 루트 .env 와 ~/.dart-ftc-mcp/.env 만 자동으로 읽는다 —
     // --env-path 로 다른 곳에 쓰면 "키를 넣었는데 인식이 안 된다"가 된다 (Codex 3차 백로그)
+    let customPathNotAutoLoaded = false;
     if (args.envPath) {
       const autoLoaded = new Set(
         [defaultEnvTarget(process.cwd()).path, join(homedir(), '.dart-ftc-mcp', '.env')].map((p) =>
           resolve(p),
         ),
       );
-      if (!autoLoaded.has(target.path)) {
+      customPathNotAutoLoaded = !autoLoaded.has(target.path);
+      if (customPathNotAutoLoaded) {
         console.log(
           '\n⚠️ 이 경로는 서버가 자동으로 읽는 위치가 아닙니다.\n' +
             '   서버는 패키지 루트의 .env 와 ~/.dart-ftc-mcp/.env 만 자동 로드합니다.\n' +
@@ -328,7 +330,18 @@ export async function runSetup(argv: string[]): Promise<number> {
 
     // 5) 다음 단계 안내
     console.log('\n── 다음 단계 ──');
-    if (target.kind === 'project') {
+    // --env-path 사용자는 개발 클론이 아닐 수 있다 — cwd 기준 dist 경로를 안내하면 틀린다
+    if (args.envPath) {
+      console.log(
+        [
+          'Claude Code 에 등록:',
+          customPathNotAutoLoaded
+            ? '  claude mcp add dart-ftc-mcp --env DART_API_KEY=<키> -- npx -y dart-ftc-mcp\n' +
+              '  (위 경고대로, 지정한 .env 경로는 서버가 자동으로 읽지 않습니다)'
+            : '  claude mcp add dart-ftc-mcp -- npx -y dart-ftc-mcp',
+        ].join('\n'),
+      );
+    } else if (target.kind === 'project') {
       console.log(
         [
           'Claude Code 에 등록 (프로젝트 클론 기준):',
