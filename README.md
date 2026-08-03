@@ -7,13 +7,22 @@
 > "이거 공시사항이야?"라는 전화를 받은 순간부터 점검을 통과할 때까지,
 > 물어볼 사람이 없어도 혼자서 확신을 가질 수 있도록.
 
-## 도구
+## 도구 (11개)
+
+**판정·리스크 (공정위 공시 특화 — 이 서버에만 있는 것)**
 
 | 도구 | 설명 |
 |---|---|
-| `check_disclosure_duty` | 공시의무 판정 + 기한 계산 + 예상 과태료 — 근거 조문·계산식 동봉, 인증키 불필요. 거래 상황을 서술하면 유사 공정위 공식 Q&A도 근거로 첨부. 기한을 놓쳤으면 자진시정 10영업일 골든타임(면제 사유·남은 영업일)을 안내 |
-| `search_ftc_qna` | 공정위 공식 Q&A 351건 검색 — 규칙으로 판정 안 되는 경계사례("이런 거래도 대상인가?")에 공정위 공식 답변을 근거로 제시. 옛 문서의 폐지된 기준은 caveat 로 표시 |
+| `check_disclosure_duty` | 공시의무 판정 + 기한 계산 + 예상 과태료 — 근거 조문·계산식 동봉, 인증키 불필요. 거래 상황을 서술하면 유사 공정위 공식 Q&A도 근거로 첨부. 기한을 놓쳤으면 자진시정 10영업일 골든타임(면제 사유·남은 영업일)을 안내. 비상장사 중요사항은 대상회사 판정(자산 100억·동일인 지분 20%)과 무조건 공시 사유 7종까지 |
+| `assess_correction_risk` | "정정하면 과태료 나온다?" — 커뮤니티 썰 진단. 과태료 고시의 위반행위 열거에 정정은 없다는 원문 근거와 함께, 오류 성격별(단순 오기·계산 실수·내용 누락·거짓 기재·거래 변경) 리스크와 골든타임 일정 제시 |
+| `check_j004_consistency` | 기업집단현황공시(J004) 제출 전 자가점검 — 재무표 항등식(자산=부채+자본)·소계 재합산·부채비율 재계산·단위 오류 힌트 + 대표회사↔개별회사 공시 대사. 위반의 84%가 J004에서 나온다 |
 | `audit_group_disclosures` | 기업집단·회사의 대규모내부거래(J001) 기한 감사 — 원본 접수일 vs 원문 의결일 대조, 지연 후보에 예상 과태료·자진시정 골든타임 동봉 |
+| `search_ftc_qna` | 공정위 공식 Q&A 351건 검색 — 규칙으로 판정 안 되는 경계사례("이런 거래도 대상인가?")에 공정위 공식 답변을 근거로 제시. 옛 문서의 폐지된 기준은 caveat 로 표시 |
+
+**검색·원문·선례 (범용)**
+
+| 도구 | 설명 |
+|---|---|
 | `search_disclosures` | 공시 검색 — 공정위 프리셋 내장, 적응형 분할 전수 수집, 절단·부분결과를 조용히 넘기지 않음 |
 | `read_disclosure` | 공시 원문을 표 구조 보존 마크다운으로 — 이사회 의결일 자동 추출 |
 | `find_precedents` | "다른 회사는 어떻게 썼나" — 같은 유형 최근 공시를 회사당 1건씩 원문과 함께 |
@@ -25,20 +34,39 @@
 
 요구사항: **Node.js 22.5+** (런타임 의존성 2개 — MCP SDK, zod. SQLite는 Node 내장 사용)
 
+### npx (권장)
+
+```bash
+npx dart-ftc-mcp setup        # 키 입력 → 실호출 검증 → .env 생성 → 자가검증
+claude mcp add dart-ftc-mcp -- npx -y dart-ftc-mcp
+```
+
+setup 마법사가 인증키를 실제 호출로 검증하고 `~/.dart-ftc-mcp/.env` 에 저장합니다.
+비대화 모드: `npx dart-ftc-mcp setup --dart-key <키> [--egroup-key <키>] --no-input`
+
+### 소스 클론 (개발)
+
 ```bash
 git clone <repo-url> && cd dart-ftc-mcp
 npm install && npm run build
-cp .env.example .env   # DART_API_KEY 필수, EGROUP_API_KEY 선택
+node dist/src/cli.js setup    # 또는 cp .env.example .env 후 직접 편집
+claude mcp add dart-ftc-mcp -- node <절대경로>/dist/src/cli.js
 ```
 
-Claude Code 등록:
+### 인증키
 
-```bash
-claude mcp add dart-ftc -- node <절대경로>/dist/src/index.js
+- `DART_API_KEY` (필수) — [OpenDART](https://opendart.fss.or.kr)에서 발급 (즉시, 일 20,000건)
+- `EGROUP_API_KEY` (선택) — [공공데이터포털](https://www.data.go.kr)에서 발급 후 **기업집단포털 4개 API 각각 활용신청** (publicYmList·appnGroupSttusList·appnGroupAffiList·financeCompSttusList). 없으면 DART 단독 기능만 동작하며, 판정·검색·원문·재무 도구는 전부 사용 가능
+
+## 사용 예
+
 ```
-
-- `DART_API_KEY` — [OpenDART](https://opendart.fss.or.kr)에서 발급 (일 20,000건)
-- `EGROUP_API_KEY` — [공공데이터포털](https://www.data.go.kr)에서 발급 후 **기업집단포털 API 활용신청** (없으면 DART 단독 기능만 동작)
+"소노인터내셔널이 계열사에 80억 대여하는데 공시 대상이야? 기한은?"
+"이 정정공시 내면 과태료 나와? 원 공시 기한은 7월 31일이었어"
+"우리 집단 6~7월 대규모내부거래 공시 지연된 거 있는지 감사해줘"
+"기업집단현황공시 제출 전에 rcept_no 2026... 정합성 점검해줘"
+"자금차입 공시 다른 회사들은 이자율 어떻게 썼는지 선례 찾아줘"
+```
 
 ## 설계 원칙
 
@@ -48,9 +76,10 @@ claude mcp add dart-ftc -- node <절대경로>/dist/src/index.js
 - **법령 세부는 원문으로만** — 웹에 퍼진 "공시기한 1일" 같은 오정보를 걸러냄 (실제는 3영업일)
 - **자동 제출 기능은 만들지 않는다** — 초안·판정·근거까지만. 최종 제출은 담당자의 몫
 
-## 상태
+## 면책
 
-개발 중(M2). 도구 9개 실서버 검증 완료, 테스트 161개. 다음: npx setup 마법사, 공휴일 API 검증.
+본 도구의 판정·과태료 추정은 법령·고시 원문에 근거한 참고 정보이며 법률 자문이 아닙니다.
+공휴일 데이터(기한 계산의 기초)는 2026년분이 공식 공고와 대조 검증되어 있으며, 미검증 연도는 응답에 경고가 동봉됩니다.
 
 ## 라이선스
 
