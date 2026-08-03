@@ -21,6 +21,7 @@ export type ErrorCode =
   | 'body_unparsable'
   | 'dart_api_error'
   | 'egroup_api_error'
+  | 'egroup_parse_error'
   | 'upstream_forbidden'
   | 'internal_error';
 

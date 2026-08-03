@@ -3,10 +3,11 @@
  * 포털 API 결합 경로는 실서버 스모크로 검증한다.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isGroupCode, toWon } from '../src/tools/get-group-structure.js';
 import { inferYearMonth } from '../src/tools/resolve-entity.js';
-import { parsePortalXml } from '../src/clients/egroup.js';
+import { EgroupClient, parsePortalXml } from '../src/clients/egroup.js';
+import { Store, __setStore } from '../src/lib/store.js';
 
 describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
   it('항목 태그는 서비스명에서 List 를 뗀 이름이다 — <item> 이 아니다', () => {
@@ -40,6 +41,46 @@ describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
     expect(r.items.length).toBe(0);
   });
 
+  it('publicYmList 도 같은 태그 규칙이다 — <publicYm> (2026-08-03 실응답)', () => {
+    // ⚠️ 이 API 는 pageNo 에 더해 numOfRows 도 필수다 (빼면 resultCode 97)
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><publicYmList>' +
+      '<numOfRows>100</numOfRows><pageNo>1</pageNo><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>1</totalCount>' +
+      '<publicYm><othbcYm>202605</othbcYm><jobSeCode>0001</jobSeCode></publicYm></publicYmList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'publicYmList');
+    expect(r.resultCode).toBe('00');
+    expect(r.items.length).toBe(1);
+    expect(r.items[0]!['othbcYm']).toBe('202605');
+  });
+
+  it('financeCompSttusList 도 같은 태그 규칙이다 — <financeCompSttus> (2026-08-03 실응답)', () => {
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><financeCompSttusList>' +
+      '<numOfRows>2</numOfRows><pageNo>1</pageNo><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>67</totalCount>' +
+      '<financeCompSttus><entrprsNm>(주)멀티캠퍼스</entrprsNm><jurirno>1101111960792</jurirno>' +
+      '<bizrno>1048153114</bizrno><assetsTotamt>296325000000</assetsTotamt>' +
+      '<caplTotamt>213707000000</caplTotamt><caplAmount>2963000000</caplAmount>' +
+      '<stacntDudt>20251231</stacntDudt></financeCompSttus></financeCompSttusList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'financeCompSttusList');
+    expect(r.resultCode).toBe('00');
+    expect(r.totalCount).toBe(67);
+    expect(r.items[0]!['jurirno']).toBe('1101111960792');
+    expect(r.items[0]!['caplTotamt']).toBe('213707000000'); // 단위: 원
+  });
+
+  it('태그 규칙이 깨지면 totalCount>0 인데 항목 0건이 된다 — callPage 가드의 전제', () => {
+    // 성공 응답이 빈 배열로 둔갑하는 "이중 삼킴" 시나리오. 클라이언트는 이걸 egroup_parse_error 로 던진다.
+    const xml =
+      '<unknownWrapList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg><totalCount>5</totalCount>' +
+      '<somethingElse><a>1</a></somethingElse></unknownWrapList>';
+    const r = parsePortalXml(xml, 'appnGroupSttusList');
+    expect(r.resultCode).toBe('00');
+    expect(r.totalCount).toBe(5);
+    expect(r.items.length).toBe(0);
+  });
+
   it('XML 엔티티를 되돌린다 (삼성E&amp;A 류)', () => {
     const xml =
       '<appnGroupAffiList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg><totalCount>1</totalCount>' +
@@ -47,6 +88,34 @@ describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
       '</appnGroupAffiList>';
     const r = parsePortalXml<Record<string, string>>(xml, 'appnGroupAffiList');
     expect(r.items[0]!['entrprsNm']).toBe('삼성E&A(주)');
+  });
+});
+
+describe('EgroupClient — 파싱 실패 가드 (Codex 3차 백로그)', () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(':memory:');
+    __setStore(store);
+  });
+
+  afterEach(() => {
+    __setStore(null);
+    store.close();
+    vi.unstubAllGlobals();
+  });
+
+  it('resultCode 00 + totalCount>0 인데 항목 0건이면 빈 배열 대신 egroup_parse_error 를 던진다', async () => {
+    // 태그 규칙이 바뀌면(포털 개편 등) 성공 응답이 빈 배열로 둔갑해 "집단 없음" 오진이 재발한다
+    const xml =
+      '<appnGroupSttusList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>102</totalCount><renamedTag><unityGrupNm>삼성</unityGrupNm></renamedTag></appnGroupSttusList>';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(xml, { status: 200 })),
+    );
+    const client = new EgroupClient('test-key');
+    await expect(client.groups('202605')).rejects.toMatchObject({ code: 'egroup_parse_error' });
   });
 });
 

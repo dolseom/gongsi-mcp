@@ -146,6 +146,15 @@ export class EgroupClient {
         { service, resultCode: parsed.resultCode },
       );
     }
+    // totalCount 는 있는데 1페이지에서 0건이 파싱되면 항목 태그 규칙(List 제거)이 깨진 것이다.
+    // 이걸 빈 배열로 돌려주면 과거의 "이중 삼킴" 오진이 재발한다 — 파싱 실패로 명시한다.
+    if (pageNo === 1 && parsed.totalCount > 0 && parsed.items.length === 0) {
+      throw new ToolError(
+        'egroup_parse_error',
+        `기업집단포털 응답 파싱 실패: totalCount=${parsed.totalCount} 인데 항목이 추출되지 않았습니다 (태그 규칙 확인 필요).`,
+        { service, totalCount: parsed.totalCount },
+      );
+    }
     return { items: parsed.items, totalCount: parsed.totalCount };
   }
 
@@ -160,9 +169,13 @@ export class EgroupClient {
     return out;
   }
 
-  /** 공개년월 목록. jobSeCode: 0001 지정현황 / 0003 지주회사 */
+  /**
+   * 공개년월 목록. jobSeCode: 0001 지정현황 / 0003 지주회사
+   * ⚠️ `numOfRows` 도 필수다 (실측 2026-08-03: 빼면 resultCode 97 "numOfRows ::: not current!!").
+   * setup 마법사의 직접 fetch 는 넣고 있었고 이 메서드만 빠져 있었다 — 4종 개별 검증에서 발견.
+   */
   async publicYearMonths(jobSeCode: '0001' | '0003', presentnYear?: string): Promise<unknown[]> {
-    return this.call('publicYmList', { jobSeCode, presentnYear });
+    return this.call('publicYmList', { jobSeCode, presentnYear, numOfRows: 100 });
   }
 
   /** 지정 기업집단 목록. presentnYear 는 YYYYMM (예: 202605) */
