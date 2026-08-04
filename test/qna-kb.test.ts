@@ -67,10 +67,12 @@ describe('지식베이스 무결성', () => {
     expect(flagged.length).toBeGreaterThan(0);
   });
 
-  it('신선도 경고 — 매뉴얼 확인 기한(2027-05-31) 전엔 없고, 지나면 갱신 안내가 붙는다', () => {
+  it('신선도 경고 — 매뉴얼 확인 기한(2027-05-31) 전엔 없고, 지나면 갱신 안내가 붙는다 (KST 기준)', () => {
     expect(kb.manualCheckDue).toBe('2027-05-31');
-    expect(kbStalenessNote(new Date('2027-05-31T00:00:00Z'))).toBeNull();
-    const note = kbStalenessNote(new Date('2027-06-01T00:00:00Z'));
+    // 기한은 한국 날짜 기준 — KST 5/31 23:59 = UTC 5/31 14:59 → 아직 경고 없음
+    expect(kbStalenessNote(new Date('2027-05-31T14:59:00Z'))).toBeNull();
+    // KST 6/1 00:00 = UTC 5/31 15:00 → 자정부터 바로 경고 (UTC 비교였다면 9시간 늦었다 — Codex 지적)
+    const note = kbStalenessNote(new Date('2027-05-31T15:00:00Z'));
     expect(note).toContain('매년 4월');
     expect(note).toContain('bordCd=101');
   });
@@ -151,6 +153,18 @@ describe('검색 품질 (회귀 고정)', () => {
     expect(hit).toBeDefined();
     expect(hit!.entry.docYear).toBe(2026);
     expect(hit!.entry.caveats).toEqual([]);
+  });
+
+  it('구판 질문 전문을 그대로 검색해도 최신판(2026)이 대표로 남는다 (Codex 2차 — 점수 우선 dedup 결함)', () => {
+    // 2015 해설서의 질문 표기 그대로("만기출금" 붙여쓰기) — 문구 일치 점수는 구판이 더 높다.
+    // 동일 답변 그룹을 접을 때 연도로 대표를 정하지 않으면 caveat 달린 구판이 현행판을 제거한다.
+    const r = searchQna(
+      '발행어음이 만기가 되었으나 만기출금하지 않고 자동연장되는 경우에도 이사회 의결 및 공시의무가 발생하는지 여부',
+      { limit: 5 },
+    );
+    const dup = r.filter((m) => m.entry.question.includes('자동연장'));
+    expect(dup.length).toBe(1); // 개정판 중복은 한 건으로 접힌다
+    expect(dup[0]!.entry.id).toBe('lit26-006'); // 남는 것은 2026 매뉴얼판
   });
 });
 

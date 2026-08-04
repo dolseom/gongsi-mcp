@@ -45,7 +45,19 @@ const qnaFileSchema = z.object({
   version: z.string(),
   source: z.string(),
   /** 공정위 매뉴얼 연례 갱신(매년 4월) 확인 기한 — 지나면 검색 응답에 갱신 안내를 붙인다 */
-  manualCheckDue: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  manualCheckDue: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(
+      (s) => {
+        // 실존 달력 날짜 round-trip — '2027-99-99' 같은 값이 들어오면 문자열 비교가
+        // 경고를 영구히 끄거나 잘못 켠다 (Codex 사소 3)
+        const d = new Date(`${s}T00:00:00Z`);
+        return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+      },
+      { message: '실존하지 않는 날짜입니다' },
+    )
+    .optional(),
   entries: z.array(qnaEntrySchema).min(1),
 });
 
@@ -166,22 +178,36 @@ export function searchQna(
     return (y.entry.docYear ?? 0) - (x.entry.docYear ?? 0);
   });
 
-  // 해설서 개정판(2008→2009→2015)에 같은 문답이 반복 수록되어 있다 (실측: 정규화 답변 동일 53건/26그룹) —
-  // 상위 슬롯을 낭비하지 않게 한 건(정렬상 앞선 것)만 남긴다. 키 2종:
+  // 해설서 개정판(2008→2009→2015→2026)에 같은 문답이 반복 수록되어 있다 (실측: 정규화 답변 동일 53건/26그룹) —
+  // 상위 슬롯을 낭비하지 않게 한 건만 남긴다. 키 2종:
   //  ① 질문 앞 40자 + 답변 — 개정판마다 어미가 미세하게 다른 경우("대상입니까"/"대상인지")
   //  ② 답변 전문 — 질문 표기가 40자 안에서 갈리는 경우("해당하지"/"해당되지"). 단답("포함시킴")끼리의
   //     오접힘을 막기 위해 20자 초과 답변에만 적용한다.
-  const seen = new Set<string>();
+  //
+  // ⚠️ 접을 때 어느 판을 남기느냐는 점수 순서가 아니라 **문서 연도**로 정한다 (Codex 2차 지적).
+  // 구판 질문 전문을 그대로 검색하면 구판이 문구 일치로 점수를 더 받아 정렬상 앞서는데,
+  // 그대로 남기면 caveat 달린 구판이 현행판(lit26-*)을 제거해 버린다. 노출 순위(점수)는
+  // 먼저 도달한 항목의 것을 유지하되, 내용은 같은 그룹에서 가장 최신 문서의 것으로 교체한다.
+  const seen = new Map<string, number>(); // dedup 키 → out 인덱스
   const out: QnaMatch[] = [];
   for (const m of matches) {
     const qNorm = dedupNorm(m.entry.question);
     const aNorm = dedupNorm(m.entry.answer ?? '');
     const keys = [qNorm.slice(0, 40) + '|' + aNorm];
     if (aNorm.length > 20) keys.push('a|' + aNorm);
-    if (keys.some((k) => seen.has(k))) continue;
-    for (const k of keys) seen.add(k);
+    const hitIdx = keys.map((k) => seen.get(k)).find((i) => i !== undefined);
+    if (hitIdx !== undefined) {
+      const kept = out[hitIdx]!;
+      if ((m.entry.docYear ?? 0) > (kept.entry.docYear ?? 0)) {
+        out[hitIdx] = { entry: m.entry, score: kept.score };
+      }
+      for (const k of keys) if (!seen.has(k)) seen.set(k, hitIdx);
+      continue;
+    }
+    if (out.length >= limit) continue; // 슬롯이 차도 순회는 계속한다 — 뒤에 오는 최신판 교체를 놓치지 않게
+    const idx = out.length;
+    for (const k of keys) seen.set(k, idx);
     out.push(m);
-    if (out.length >= limit) break;
   }
   return out;
 }
@@ -206,8 +232,9 @@ function dedupNorm(s: string): string {
 export function kbStalenessNote(now: Date = new Date()): string | null {
   const kb = loadQnaKb();
   if (!kb.manualCheckDue) return null;
-  const today = now.toISOString().slice(0, 10);
-  if (today <= kb.manualCheckDue) return null;
+  // 확인 기한은 한국 기준이다 — UTC 날짜로 비교하면 KST 자정~09:00 사이 9시간이 늦는다 (Codex 지적)
+  const kstToday = new Date(now.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  if (kstToday <= kb.manualCheckDue) return null;
   return (
     `⚠️ 이 지식베이스(${kb.version} 빌드)의 매뉴얼 갱신 확인 기한(${kb.manualCheckDue})이 지났습니다. ` +
     '공정위는 공시 매뉴얼을 매년 4월 갱신합니다 — 정책자료 게시판에서 새 판을 확인하세요: ' +

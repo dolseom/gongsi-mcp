@@ -219,7 +219,8 @@ for (const sec of SECTIONS) {
       doc: `대규모내부거래 등에 대한 공시 업무 매뉴얼(2026. 4. 27.) — 주요 사례: ${item.subsection}`,
       docYear: manual.docYear,
       url: manual.url,
-      caveats: [],
+      // 현행 문서라 연식 caveat 는 없지만, 표 유실 등 원문·추출 한계는 항목별로 동봉된다 (#70)
+      caveats: item.caveats ?? [],
     });
   }
 }

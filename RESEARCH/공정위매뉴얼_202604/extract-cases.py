@@ -37,6 +37,15 @@ for key, title in SUBSECTIONS:
     sub_pos.append((m.start(), m.end(), title))
     sub_patterns.append((pat, title))
 
+# 표 구조가 텍스트 추출에서 유실되는 등 원문 자체의 한계가 있는 항목 — 재추출해도 재현되므로
+# 항목별 주의 문구를 데이터에 동봉한다 (Codex 교차검토 중간 1)
+ITEM_CAVEATS = {
+    70: '원문 사례에 분기별 거래금액 표가 포함되어 있으나 PDF 텍스트 추출 과정에서 표의 행·열 구조가 '
+        '유실되어 수치와 분기의 대응을 이 텍스트만으로 복원할 수 없습니다 — 정확한 수치는 원문 매뉴얼'
+        '(공정위 2026. 4. 27., 주요 사례 #70)을 참조하세요. 계약② 기간 "\'24.3.1~\'24.2.28"은 원문 PDF '
+        '표기 그대로이며, 문맥(25년 1/4분기까지의 표)상 종료일은 \'25.2.28의 오기로 보입니다.',
+}
+
 arrows = [m.start() for m in re.finditer('☞', sec)]
 N = len(arrows)
 items = []
@@ -47,6 +56,11 @@ for i, arrow in enumerate(arrows, start=1):
     cands = [m.start() for m in re.finditer(re.escape(marker), window)]
     if not cands:
         raise SystemExit(f'항목 {i}: 번호 마커 없음 (구간 {prev_arrow}~{arrow})')
+    # 마커 유일성 게이트 — 질문·답변 속 날짜("2025.4.1.")·소수점이 항목 번호와 충돌하면
+    # 조용한 오절단이 된다. 현재 79건 전 구간에서 후보가 정확히 1개임을 실측(Codex 재확인)했으므로
+    # 복수 후보는 통과시키지 않고 빌드를 세워 수동 확인을 강제한다 (Codex 사소 1)
+    if len(cands) != 1:
+        raise SystemExit(f'항목 {i}: 번호 마커 후보 {len(cands)}개 — 원문 변경 여부 수동 확인 필요')
     q = None
     for c in reversed(cands):
         cand_q = window[c + len(marker):].strip()
@@ -65,6 +79,8 @@ for i, arrow in enumerate(arrows, start=1):
     if i < N:
         nxt_window = sec[arrow:arrows[i]]
         nxt_cands = [m.start() for m in re.finditer(re.escape(f'{i+1}.'), nxt_window)]
+        if len(nxt_cands) > 1:
+            raise SystemExit(f'항목 {i}: 답변 종료 마커({i+1}.) 후보 {len(nxt_cands)}개 — 수동 확인 필요')
         a_end = arrow + (nxt_cands[-1] if nxt_cands else len(nxt_window))
         # 다음 질문 앞의 소제목 헤더도 답변에서 제외
         ans = sec[arrow + 1: a_end]
@@ -82,7 +98,10 @@ for i, arrow in enumerate(arrows, start=1):
             subsection = title
     if not ans:
         raise SystemExit(f'항목 {i}: 답변 없음')
-    items.append({'no': i, 'subsection': subsection, 'question': q, 'answer': ans})
+    item = {'no': i, 'subsection': subsection, 'question': q, 'answer': ans}
+    if i in ITEM_CAVEATS:
+        item['caveats'] = [ITEM_CAVEATS[i]]
+    items.append(item)
     prev_arrow = arrow
 
 # ── 검증 게이트 ──
