@@ -1,7 +1,7 @@
 /**
  * 공정위 Q&A 지식베이스 테스트
  *
- * 1) 무결성 — 351건(전문 330 + 아카이브 제목 21), 전 항목 출처 URL, 옛 문서 caveat
+ * 1) 무결성 — 430건(전문 330 + 아카이브 제목 21 + 2026 매뉴얼 사례 79), 전 항목 출처 URL, 옛 문서 caveat
  * 2) 검색 품질 — 실제 실무 질의 형태로 기대 항목이 상위에 오는지 (회귀 고정)
  * 3) 도구 — search_ftc_qna 응답 규격, check_disclosure_duty 의 situation 연동
  */
@@ -14,16 +14,16 @@ import { checkDisclosureDuty } from '../src/tools/check-disclosure-duty.js';
 describe('지식베이스 무결성', () => {
   const kb = loadQnaKb();
 
-  it('총 351건 — 전문 330 + 아카이브 제목 21', () => {
-    expect(kb.entries.length).toBe(351);
+  it('총 430건 — 전문 330 + 아카이브 제목 21 + 2026 매뉴얼 사례 79', () => {
+    expect(kb.entries.length).toBe(430);
     const withAnswer = kb.entries.filter((e) => e.answer !== null);
-    expect(withAnswer.length).toBe(330);
+    expect(withAnswer.length).toBe(330 + 79);
   });
 
   it('카테고리 분포가 수집 보고서와 일치한다', () => {
     const byCat = new Map<string, number>();
     for (const e of kb.entries) byCat.set(e.category, (byCat.get(e.category) ?? 0) + 1);
-    expect(byCat.get('internal_transaction')).toBe(132 + 21); // 전문 132 + 아카이브 21
+    expect(byCat.get('internal_transaction')).toBe(132 + 21 + 79); // 전문 132 + 아카이브 21 + 2026 매뉴얼 79
     expect(byCat.get('unlisted_material')).toBe(71);
     expect(byCat.get('group_status')).toBe(69);
     expect(byCat.get('subcontract')).toBe(58);
@@ -127,13 +127,22 @@ describe('검색 품질 (회귀 고정)', () => {
     expect(r.length).toBeGreaterThan(0); // 앞 500자에 유효 토큰이 있으므로 검색은 된다
   });
 
-  it('개정판 간 중복 문답은 한 건만 남는다 (계열 카드결제 — 2009/2015 해설 중복)', () => {
+  it('개정판 간 중복 문답은 한 건만 남는다 (계열 카드결제 — 2009/2015/2026 중복)', () => {
     const r = searchQna('계열 카드사 결제 할부금융', { limit: 5 });
     const cardQ = r.filter((m) => m.entry.question.includes('할부금융이나 카드결제'));
     // 전문 항목은 1건으로 접히고, 아카이브 제목(답변 null·질문 상이)은 별도로 남을 수 있다
     expect(cardQ.filter((m) => m.entry.answer !== null).length).toBe(1);
-    // 남는 것은 최신판(2015)이어야 한다
-    expect(cardQ[0]!.entry.docYear).toBe(2015);
+    // 남는 것은 최신판(2026 매뉴얼)이어야 한다
+    expect(cardQ[0]!.entry.docYear).toBe(2026);
+    expect(cardQ[0]!.entry.id).toMatch(/^lit26-/);
+  });
+
+  it('2026 매뉴얼 사례가 검색된다 — 발행어음 자동연장의 현행판이 구판보다 위', () => {
+    const r = searchQna('발행어음 자동연장', { limit: 5 });
+    const hit = r.find((m) => m.entry.question.includes('자동연장'));
+    expect(hit).toBeDefined();
+    expect(hit!.entry.docYear).toBe(2026);
+    expect(hit!.entry.caveats).toEqual([]);
   });
 });
 
@@ -145,7 +154,7 @@ describe('search_ftc_qna 도구', () => {
     expect(top.question).toContain('자동연장');
     expect(top.answer).toBeTruthy();
     expect(top.source.url).toMatch(/^https/);
-    expect(r.diagnostics.kbEntries).toBe(351);
+    expect(r.diagnostics.kbEntries).toBe(430);
     // 옛 문서 결과가 있으면 반드시 경고 노트가 있어야 한다
     if (r.results.some((x) => x.caveats.length > 0)) {
       expect(r.notes.some((n) => n.includes('caveats'))).toBe(true);

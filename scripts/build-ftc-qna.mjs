@@ -2,10 +2,13 @@
 /**
  * 공정위 Q&A 지식베이스 빌드 스크립트 (1회성)
  *
- * 입력: RESEARCH/공시담당자_니즈_20260730/artifacts/agent_results/Q1_ftc_qna.md
- *       (공정위 정책자료 게시판 배포 해설서·FAQ 9종에서 추출한 질문·답변 전문 330건
- *        + 폐지된 '내부거래공시 주요 질문답변' 게시판 아카이브 복원 제목 21건)
- * 출력: data/ftc-qna.json  ← 이 파일이 커밋 대상이다 (입력 md는 gitignore)
+ * 입력: ① RESEARCH/공시담당자_니즈_20260730/artifacts/agent_results/Q1_ftc_qna.md
+ *          (공정위 정책자료 게시판 배포 해설서·FAQ 9종에서 추출한 질문·답변 전문 330건
+ *           + 폐지된 '내부거래공시 주요 질문답변' 게시판 아카이브 복원 제목 21건)
+ *       ② RESEARCH/공정위매뉴얼_202604/manual2026-lit-cases.json
+ *          (2026. 4. 27. 대규모내부거래 공시 업무 매뉴얼 <참고: 주요 사례> 79건 —
+ *           extract-cases.py 로 PDF 에서 추출. 매뉴얼은 매년 4월 갱신되므로 새 판이 나오면 재추출)
+ * 출력: data/ftc-qna.json  ← 이 파일이 커밋 대상이다 (입력 md·PDF·중간 JSON 은 gitignore)
  *
  * 원본 문서는 공정거래위원회가 배포한 공공저작물이다. 커뮤니티 스크랩과 달리 커밋해도 된다.
  *
@@ -198,6 +201,48 @@ for (const sec of SECTIONS) {
   });
 }
 
+// ── 2026. 4. 27. 매뉴얼 <참고: 주요 사례> 79건 ──
+// 현행 매뉴얼이므로 연식·옛 수치 caveat 를 달지 않는다 (detectCaveats 의 '50억' 감지는
+// 옛 기준 탐지용이라 현행 문서에 오탐을 만든다 — 예: 사례 속 예시 금액).
+{
+  const manualPath = join(ROOT, 'RESEARCH', '공정위매뉴얼_202604', 'manual2026-lit-cases.json');
+  const manual = JSON.parse(readFileSync(manualPath, 'utf-8'));
+  if (manual.items.length !== 79) {
+    throw new Error(`2026 매뉴얼 사례 기대 79건, 실제 ${manual.items.length}건`);
+  }
+  for (const item of manual.items) {
+    entries.push({
+      id: `lit26-${String(item.no).padStart(3, '0')}`,
+      category: 'internal_transaction',
+      question: item.question,
+      answer: item.answer,
+      doc: `대규모내부거래 등에 대한 공시 업무 매뉴얼(2026. 4. 27.) — 주요 사례: ${item.subsection}`,
+      docYear: manual.docYear,
+      url: manual.url,
+      caveats: [],
+    });
+  }
+}
+
+// ── 구판 해설서 → 2026 매뉴얼 안내 ──
+// 2026. 4. 27. 매뉴얼이 같은 주제의 현행 문답(lit26-*)을 담고 있으므로, 2015년 이하
+// 대규모내부거래 문답에는 최신판 우선 안내를 단다. 비상장사·현황공시도 2026 매뉴얼이
+// 발간되어 있으나 문답이 아닌 서식·작성기준 중심이라 존재 안내만 한다.
+{
+  const NEWER = {
+    internal_transaction:
+      '공정위가 2026. 4. 27. 최신 매뉴얼을 발간했습니다 — 같은 주제의 문답(lit26-*)이 검색되면 그쪽이 현행입니다.',
+    unlisted_material:
+      '공정위가 2026. 4. 27. 「비상장사 중요사항 공시 매뉴얼」(서식·작성기준 중심)을 발간했습니다 — 수치·기한은 현행 기준 확인이 필요합니다. https://www.ftc.go.kr/www/selectBbsNttView.do?key=725&bordCd=101&nttSn=47397',
+    group_status:
+      '공정위가 2026. 4. 27. 「기업집단 현황공시 매뉴얼」(서식·작성기준 중심)을 발간했습니다 — 수치·기한은 현행 기준 확인이 필요합니다. https://www.ftc.go.kr/www/selectBbsNttView.do?key=725&bordCd=101&nttSn=47395',
+  };
+  for (const e of entries) {
+    const note = NEWER[e.category];
+    if (note && e.docYear !== null && e.docYear <= 2015) e.caveats.push(note);
+  }
+}
+
 // ── 폐지 게시판 아카이브 복원분 (제목만) ──
 {
   const secStart = md.indexOf('## [폐지 게시판]');
@@ -222,18 +267,19 @@ for (const sec of SECTIONS) {
 }
 
 const out = {
-  version: '2026-07-31',
+  version: '2026-08-04',
   source:
     '공정거래위원회 정책자료 게시판(bordCd=101) 배포 해설서·FAQ 9종에서 추출한 질문·답변 전문 ' +
-    '+ 폐지된 내부거래공시 질문답변 게시판의 Internet Archive 복원 제목. ' +
-    '수집·추출 2026-07-31 (RESEARCH/공시담당자_니즈_20260730). 원문은 공정위 공공저작물.',
+    '+ 폐지된 내부거래공시 질문답변 게시판의 Internet Archive 복원 제목 ' +
+    '+ 대규모내부거래 공시 업무 매뉴얼(2026. 4. 27.) 주요 사례 79건. ' +
+    '수집·추출 2026-07-31 / 2026-08-04. 원문은 공정위 공공저작물.',
   entries,
 };
 
 // ── 쓰기 전 검증 게이트 — 파싱 누락은 에러 없이 조용히 사라지므로 기대 건수를 강제한다 ──
 // (원본 md 는 gitignore 스냅샷이라 기대치가 안정적이다. 원본이 갱신되면 여기 숫자도 갱신할 것)
 const EXPECTED = {
-  internal_transaction: 132 + 21, // 전문 132 + 아카이브 21
+  internal_transaction: 132 + 21 + 79, // 전문 132 + 아카이브 21 + 2026 매뉴얼 사례 79
   unlisted_material: 71,
   group_status: 69,
   subcontract: 58,
