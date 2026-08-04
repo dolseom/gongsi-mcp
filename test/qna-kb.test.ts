@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { loadQnaKb, searchQna } from '../src/kb/qna.js';
+import { kbStalenessNote, loadQnaKb, searchQna } from '../src/kb/qna.js';
 import { searchFtcQna } from '../src/tools/search-ftc-qna.js';
 import { checkDisclosureDuty } from '../src/tools/check-disclosure-duty.js';
 
@@ -65,6 +65,14 @@ describe('지식베이스 무결성', () => {
       e.caveats.some((c) => c.includes('3영업일')),
     );
     expect(flagged.length).toBeGreaterThan(0);
+  });
+
+  it('신선도 경고 — 매뉴얼 확인 기한(2027-05-31) 전엔 없고, 지나면 갱신 안내가 붙는다', () => {
+    expect(kb.manualCheckDue).toBe('2027-05-31');
+    expect(kbStalenessNote(new Date('2027-05-31T00:00:00Z'))).toBeNull();
+    const note = kbStalenessNote(new Date('2027-06-01T00:00:00Z'));
+    expect(note).toContain('매년 4월');
+    expect(note).toContain('bordCd=101');
   });
 
   it('아카이브 복원분은 답변이 null 이고 유실 caveat 을 가진다', () => {

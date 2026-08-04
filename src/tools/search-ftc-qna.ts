@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { loadQnaKb, searchQna, type QnaCategory } from '../kb/qna.js';
+import { kbStalenessNote, loadQnaKb, searchQna, type QnaCategory } from '../kb/qna.js';
 
 export const searchFtcQnaInput = z.object({
   query: z
@@ -53,6 +53,8 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
   const limit = input.limit ?? 5;
   const matches = searchQna(input.query, { category: input.category as QnaCategory, limit });
 
+  const staleness = kbStalenessNote();
+
   // 0건은 에러가 아니다 — 검색어 조정 방법을 담아 정상 응답으로 돌려준다
   if (!matches.length) {
     return {
@@ -62,6 +64,7 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
         `"${input.query}" 와 유사한 공정위 Q&A를 찾지 못했습니다. ` +
           '핵심 명사 위주로 검색어를 바꿔 보세요 (예: "임대차 변경계약", "수익증권 환매").' +
           (input.category ? ' category 필터를 빼고 전체에서 다시 검색해 볼 수도 있습니다.' : ''),
+        ...(staleness ? [staleness] : []),
       ],
       diagnostics: { kbVersion: kb.version, kbEntries: kb.entries.length, matched: 0 },
     };
@@ -70,6 +73,7 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
   const notes: string[] = [
     '공정위가 배포한 해설서·FAQ에서 추출한 공식 질의응답입니다. 개별 사안에 대한 유권해석이 아니므로 참고 근거로만 사용하세요.',
   ];
+  if (staleness) notes.push(staleness);
   if (matches.some((m) => m.entry.caveats.length > 0)) {
     notes.push(
       '⚠️ 일부 결과는 옛 문서(2008~2015)에서 나왔습니다 — 각 항목의 caveats(폐지된 기준금액·기한 등)를 반드시 확인하세요. ' +

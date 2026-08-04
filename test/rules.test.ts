@@ -205,6 +205,34 @@ describe('기한 — 유형별', () => {
     // 근로자의 날 — 고시상 영업일 제외 대상
     expect(isBusinessDay('20260501')).toBe(false);
   });
+
+  // 2027 공휴일 데이터 회귀 고정 — 규정 현행 원문(2026-04-30 개정) + 월력요항(2026-06-29) 검증분 (2026-08-05)
+  it('2027 공휴일 데이터 고정: 노동절·제헌절 신설 + 대체공휴일 7건', () => {
+    // 2026-04-30 개정으로 신설·복귀된 공휴일 2건
+    expect(isBusinessDay('20270501')).toBe(false); // 노동절(토) — §2 6호 신설
+    expect(isBusinessDay('20270717')).toBe(false); // 제헌절(토) — §2 2호 국경일 전면 편입으로 복귀
+    // 대체공휴일 7건 (§3)
+    expect(isBusinessDay('20270209')).toBe(false); // 설날(일) 대체 — 연휴 다음 첫 비공휴일 화요일
+    expect(isBusinessDay('20270503')).toBe(false); // 노동절(토) 대체 — 5/2(일) 건너뜀. 실사용 테스트 #52가 잡은 갭
+    expect(isBusinessDay('20270719')).toBe(false); // 제헌절(토) 대체
+    expect(isBusinessDay('20270816')).toBe(false); // 광복절(일) 대체
+    expect(isBusinessDay('20271004')).toBe(false); // 개천절(일) 대체
+    expect(isBusinessDay('20271011')).toBe(false); // 한글날(토) 대체
+    expect(isBusinessDay('20271227')).toBe(false); // 성탄절(토) 대체
+    // 대체공휴일이 생기지 않아야 하는 날 — 현충일(일)은 §3 대상이 아니다 (언론 헤드라인 오보 주의)
+    expect(isBusinessDay('20270607')).toBe(true);
+    // 추석연휴(9/14 화~16 목)는 주말 겹침 없음 — 9/17(금) 정상 영업일
+    expect(isBusinessDay('20270917')).toBe(true);
+  });
+
+  it('2027-05-01 전후 기한 계산 — 실사용 테스트 #52 오답(5/3) 교정: 정답은 5/4(화)', () => {
+    // 역일 기한이 5/1(토)에 떨어지면: 5/2(일)·5/3(대체공휴일) 건너 5/4(화)
+    expect(nextBusinessDay('20270501')).toBe('20270504');
+    // 비상장 7영업일: 의결 4/22(목) → 4/23·26·27·28·29·30 = 6영업일, 5/3 대체공휴일 제외 → 5/4(화)
+    const d = litDeadline('20270422', 'unlisted');
+    expect(d.deadline).toBe('20270504');
+    expect(d.warnings).toEqual([]); // 2027 verified — 미검증 경고가 있으면 안 된다
+  });
 });
 
 describe('과태료 — 별표9 + 고시', () => {

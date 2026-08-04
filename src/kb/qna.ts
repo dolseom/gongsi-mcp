@@ -44,6 +44,8 @@ const qnaEntrySchema = z.object({
 const qnaFileSchema = z.object({
   version: z.string(),
   source: z.string(),
+  /** 공정위 매뉴얼 연례 갱신(매년 4월) 확인 기한 — 지나면 검색 응답에 갱신 안내를 붙인다 */
+  manualCheckDue: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   entries: z.array(qnaEntrySchema).min(1),
 });
 
@@ -192,6 +194,26 @@ export function searchQna(
  */
 function dedupNorm(s: string): string {
   return s.replace(/[\s.,?!·․ㆍ()\[\]"'“”‘’:;~-]+/g, '');
+}
+
+/**
+ * 지식베이스 유통기한 경과 안내.
+ *
+ * 공정위 매뉴얼은 매년 4월 갱신된다 (2024·2025·2026판 실측 — 2026-08-04 발견 전까지
+ * 이 사실을 몰라서 2026판을 3개월 놓쳤다). 사람 기억에 맡기지 않고,
+ * 빌드 시 기록한 확인 기한(manualCheckDue)이 지나면 도구 응답에 갱신 안내를 붙인다.
+ */
+export function kbStalenessNote(now: Date = new Date()): string | null {
+  const kb = loadQnaKb();
+  if (!kb.manualCheckDue) return null;
+  const today = now.toISOString().slice(0, 10);
+  if (today <= kb.manualCheckDue) return null;
+  return (
+    `⚠️ 이 지식베이스(${kb.version} 빌드)의 매뉴얼 갱신 확인 기한(${kb.manualCheckDue})이 지났습니다. ` +
+    '공정위는 공시 매뉴얼을 매년 4월 갱신합니다 — 정책자료 게시판에서 새 판을 확인하세요: ' +
+    'https://www.ftc.go.kr/www/selectBbsNttList.do?bordCd=101&key=725 ' +
+    '(재추출 절차: RESEARCH/공정위매뉴얼_202604/README.md)'
+  );
 }
 
 /** 테스트용 — 캐시를 비운다 */

@@ -268,6 +268,9 @@ for (const sec of SECTIONS) {
 
 const out = {
   version: '2026-08-04',
+  // 공정위 매뉴얼은 매년 4월 갱신된다 (2024·2025·2026판 실측). 다음 판(2027) 확인 기한 —
+  // 이 날짜가 지나면 search_ftc_qna 가 응답에 갱신 안내를 붙인다 (src/kb/qna.ts kbStalenessNote)
+  manualCheckDue: '2027-05-31',
   source:
     '공정거래위원회 정책자료 게시판(bordCd=101) 배포 해설서·FAQ 9종에서 추출한 질문·답변 전문 ' +
     '+ 폐지된 내부거래공시 질문답변 게시판의 Internet Archive 복원 제목 ' +
