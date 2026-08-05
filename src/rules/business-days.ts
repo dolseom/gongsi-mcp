@@ -34,7 +34,7 @@ function resolveHolidayPath(): string {
 
 const HOLIDAY_PATH = resolveHolidayPath();
 
-interface HolidayEntry {
+export interface HolidayEntry {
   date: string;
   name: string;
   lunar?: boolean;
@@ -111,6 +111,21 @@ export function isHoliday(ymd: YMD): boolean {
   const entry = loadAll()[year];
   if (!entry) return false;
   return entry.holidays.some((h) => h.date === ymd);
+}
+
+/** 해당 날짜의 공휴일 항목들 — 명칭 표시용 (없으면 빈 배열) */
+export function holidaysOn(ymd: YMD): HolidayEntry[] {
+  const year = ymd.slice(0, 4);
+  const entry = loadAll()[year];
+  if (!entry) return [];
+  return entry.holidays.filter((h) => h.date === ymd);
+}
+
+/** 보유한 공휴일 데이터 연도 → 검증 여부 */
+export function holidayDataStatus(): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const [year, v] of Object.entries(loadAll())) out[year] = v.verified;
+  return out;
 }
 
 /** 해당 연도 공휴일 데이터가 검증되었는지 */

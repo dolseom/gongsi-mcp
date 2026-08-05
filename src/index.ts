@@ -33,6 +33,7 @@ import {
   checkJ004Consistency,
   checkJ004ConsistencyInput,
 } from './tools/check-j004-consistency.js';
+import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -82,6 +83,27 @@ server.registerTool(
     inputSchema: checkDisclosureDutyInput.shape,
   },
   wrap('check_disclosure_duty', checkDisclosureDuty),
+);
+
+server.registerTool(
+  'calc_business_days',
+  {
+    title: '영업일·공휴일·기한 날짜 계산',
+    description:
+      '한국 영업일·공휴일 기준의 날짜 계산을 담당합니다. 날짜 하나를 주면 영업일 여부와 공휴일 명칭, ' +
+      '기한 말일이 비영업일일 때의 다음 최초 영업일을 돌려주고, N영업일/N달력일 기한 계산과 ' +
+      '남은 영업일 세기도 지원합니다. 로컬 데이터라 인증키 없이 동작합니다.\n\n' +
+      '⚠️ 공휴일은 법령 개정으로 바뀝니다 — 예: 2027년부터 노동절(5/1)이 공휴일로 신설되어 ' +
+      '2027-05-03(월)이 대체공휴일입니다. 모델의 자체 달력 지식은 최신 개정을 모를 수 있으므로, ' +
+      '기한·영업일·공휴일이 걸린 날짜 질문에는 반드시 이 도구를 호출하세요.\n\n' +
+      '- 결과에는 건너뛴 비영업일 목록(날짜·요일·공휴일 명칭)과 근거 조문이 동봉됩니다\n' +
+      '- 근로자의 날(5/1)은 관공서 공휴일이 아니어서 민법 기간계산과 고시 영업일 계산이 갈립니다 — ' +
+      '해당 시 notes 로 안내합니다 (2027년부터는 노동절 공휴일 신설로 차이가 사라집니다)\n' +
+      '- 공휴일 데이터가 없거나 미검증인 연도는 warnings 로 알립니다 — 경고가 있으면 결과를 단정하지 마세요\n' +
+      '- 공시유형이 특정된 기한 판정(대규모내부거래 등)은 check_disclosure_duty 가 근거 조문까지 계산합니다',
+    inputSchema: calcBusinessDaysInput.shape,
+  },
+  wrap('calc_business_days', calcBusinessDays),
 );
 
 server.registerTool(
