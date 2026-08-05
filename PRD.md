@@ -1,6 +1,6 @@
 # PRD — 기업집단 공시 특화 MCP 서버
 
-> **프로젝트 코드명**: `dart-ftc-mcp`
+> **프로젝트 코드명**: `gongsi-mcp`
 > **한 줄 정의**: DART 전자공시 + 공정위 기업집단포털을 한 몸으로 묶어, **공시담당자가 과태료를 맞지 않게 만드는** MCP 서버
 > **작성일**: 2026-07-28
 > **버전**: v0.1 (초안)
@@ -66,7 +66,7 @@
 | keonho-kim/OpenDart-mcp | Python/Docker | 7 | 2 | 재무분석 | ❌ | ❌ |
 | SongHyojun0228/opendart-mcp | TS/npm | 5 | 1 | 재무조회 | ❌ | ❌ |
 | 2geonhyup/dart-mcp | - | - | - | 재무분석 | ❌ | ❌ |
-| **dart-ftc-mcp (본 프로젝트)** | TS/npm | 11 | - | **공시담당자** | ✅ | ✅ |
+| **gongsi-mcp (본 프로젝트)** | TS/npm | 11 | - | **공시담당자** | ✅ | ✅ |
 
 **최강 경쟁자 `korean-dart-mcp` 분석**
 - 강점: XBRL 완전 파싱(calculation linkbase 검증), HWP/PDF→마크다운(kordoc), 90일 자동분할, 22개 프리셋, SQLite FTS 회사명 해석, 애널리스트 프레임 3종(`insider_signal`, `disclosure_anomaly`, `buffett_quality_snapshot`)
@@ -935,7 +935,7 @@ DART 기업개황 API가 `jurir_no`(13자리 법인등록번호)를 반환함을
 ### 6.2 디렉터리 구조
 
 ```
-dart-ftc-mcp/
+gongsi-mcp/
 ├── src/
 │   ├── index.ts                 # MCP 서버 엔트리 (stdio)
 │   ├── setup.ts                 # npx ... setup 대화형 마법사
@@ -1060,13 +1060,13 @@ dart-ftc-mcp/
 
 **① npx 원클릭 (권장)**
 ```bash
-npx -y dart-ftc-mcp setup
+npx -y gongsi-mcp setup
 ```
 대화형 마법사: API 키 2종 입력 → 클라이언트 자동 감지(Claude Desktop/Code, Cursor, Windsurf, VS Code, Zed, Gemini CLI) → 설정 파일 자동 수정. **Windows는 `cmd /c npx` 래핑 자동 처리** (한국 기업 실무자 대부분 Windows).
 
 **② Claude Code 플러그인 마켓플레이스**
 ```
-/plugin marketplace add <org>/dart-ftc-mcp
+/plugin marketplace add <org>/gongsi-mcp
 /plugin install dart-ftc@dart-ftc-marketplace
 ```
 설치 중 API 키 입력 프롬프트. korean-law-mcp가 확산에 쓴 경로.
@@ -1238,7 +1238,7 @@ XBRL 파싱 · 하도급대금 공시 심화 · 원격 MCP 엔드포인트
 
 ## 12. 열린 질문 (구현 전 확정)
 
-1. **패키지·저장소 명**: `dart-ftc-mcp` / `korean-disclosure-mcp` / `gongsi-mcp` — npm 선점 여부 확인 후 결정
+1. **패키지·저장소 명**: `gongsi-mcp` 확정 (2026-08-05, npm 미선점 확인. 구 코드명 `dart-ftc-mcp`에서 rename)
 2. 감사 도구 기본 스코프: 집단 전체(무거움) vs 단일 회사(가벼움) — 기본값 결정 필요
 3. 영업일 캘린더 데이터 소스: 내장 JSON vs 외부 API (내장 시 연 1회 갱신 필요)
 4. ~~공시 기한 "1일 이내"의 기산점~~ → **해소.** 고시 §6① 원문 확인 결과 **상장 3영업일 / 비상장 7영업일**. 남은 확인사항은 영업일 기산점(의결일 당일 포함 여부)뿐이며, 실제 공시 사례 대조로 확정한다

@@ -10,9 +10,9 @@ describe('setup — .env 갱신', () => {
   });
 
   it('기존 키는 제자리에서 갱신하고 주석·다른 줄은 보존한다', () => {
-    const existing = '# 주석\nDART_API_KEY=old\nDARTFTC_LOG_LEVEL=DEBUG\n';
+    const existing = '# 주석\nDART_API_KEY=old\nGONGSI_LOG_LEVEL=DEBUG\n';
     const out = upsertEnvContent(existing, { DART_API_KEY: 'new', EGROUP_API_KEY: 'e1' });
-    expect(out).toBe('# 주석\nDART_API_KEY=new\nDARTFTC_LOG_LEVEL=DEBUG\nEGROUP_API_KEY=e1\n');
+    expect(out).toBe('# 주석\nDART_API_KEY=new\nGONGSI_LOG_LEVEL=DEBUG\nEGROUP_API_KEY=e1\n');
   });
 
   it('CRLF 파일도 처리한다', () => {
@@ -41,23 +41,23 @@ describe('setup — 인자 파싱', () => {
 });
 
 describe('setup — .env 위치 결정', () => {
-  it('dart-ftc-mcp 클론 안에서는 프로젝트 .env 를 쓴다', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dartftc-'));
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'dart-ftc-mcp' }));
+  it('gongsi-mcp 클론 안에서는 프로젝트 .env 를 쓴다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gongsi-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'gongsi-mcp' }));
     const t = defaultEnvTarget(dir);
     expect(t.kind).toBe('project');
     expect(t.path).toBe(join(dir, '.env'));
   });
 
-  it('다른 디렉터리에서는 홈 ~/.dart-ftc-mcp/.env 를 쓴다', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dartftc-other-'));
+  it('다른 디렉터리에서는 홈 ~/.gongsi-mcp/.env 를 쓴다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gongsi-other-'));
     const t = defaultEnvTarget(dir);
     expect(t.kind).toBe('home');
-    expect(t.path.endsWith(`.dart-ftc-mcp${sep}.env`)).toBe(true);
+    expect(t.path.endsWith(`.gongsi-mcp${sep}.env`)).toBe(true);
   });
 
   it('package.json 이 깨져 있으면 홈으로 폴백한다', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dartftc-broken-'));
+    const dir = mkdtempSync(join(tmpdir(), 'gongsi-broken-'));
     writeFileSync(join(dir, 'package.json'), '{not json');
     expect(defaultEnvTarget(dir).kind).toBe('home');
   });
@@ -65,7 +65,7 @@ describe('setup — .env 위치 결정', () => {
 
 describe('setup — symlink 방어 (Codex 3차 백로그)', () => {
   it('일반 파일·미존재 경로는 심볼릭 링크가 아니다', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dartftc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'gongsi-'));
     const file = join(dir, '.env');
     writeFileSync(file, 'DART_API_KEY=x\n');
     expect(isSymlink(file)).toBe(false);

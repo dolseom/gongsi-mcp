@@ -116,7 +116,7 @@ export class EgroupClient {
     try {
       res = await fetch(url, {
         // ⚠️ 이 헤더가 없으면 403 이다. 지우지 말 것.
-        headers: { 'User-Agent': 'dart-ftc-mcp/0.1.0' },
+        headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
         signal: AbortSignal.timeout(cfg.readTimeoutMs),
       });
     } catch (err) {

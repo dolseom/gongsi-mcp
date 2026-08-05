@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dart-ftc-mcp — 공정거래위원회 기업집단 공시 특화 MCP 서버
+ * gongsi-mcp — 공정거래위원회 기업집단 공시 특화 MCP 서버
  *
  * ⚠️ stdout 은 MCP 프로토콜 전용이다. 어떤 로그도 stdout 으로 내보내지 않는다.
  */
@@ -37,7 +37,7 @@ import {
 loadDotEnv();
 const log = getLogger('server');
 
-const server = new McpServer({ name: 'dart-ftc-mcp', version: '0.1.0' });
+const server = new McpServer({ name: 'gongsi-mcp', version: '0.1.0' });
 
 /**
  * 도구 핸들러 공통 래퍼.
@@ -278,7 +278,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log.info('dart-ftc-mcp 서버 시작 (stdio)');
+  log.info('gongsi-mcp 서버 시작 (stdio)');
 }
 
 main().catch((err) => {

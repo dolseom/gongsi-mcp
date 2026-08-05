@@ -76,7 +76,7 @@ export interface BatchResult {
 }
 
 export interface AdaptiveOptions {
-  /** 청크당 목표 최대 건수 (기본: 설정 DARTFTC_ADAPTIVE_THRESHOLD = 1000) */
+  /** 청크당 목표 최대 건수 (기본: 설정 GONGSI_ADAPTIVE_THRESHOLD = 1000) */
   threshold?: number;
   /** 이 이하로는 쪼개지 않는다 (기본 3일) */
   minDays?: number;

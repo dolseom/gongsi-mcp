@@ -1,4 +1,4 @@
-# dart-ftc-mcp
+# gongsi-mcp
 
 **공시담당자를 위한 DART + 공정위 기업집단포털 MCP 서버**
 
@@ -37,20 +37,20 @@
 ### npx (권장)
 
 ```bash
-npx dart-ftc-mcp setup        # 키 입력 → 실호출 검증 → .env 생성 → 자가검증
-claude mcp add dart-ftc-mcp -- npx -y dart-ftc-mcp
+npx gongsi-mcp setup        # 키 입력 → 실호출 검증 → .env 생성 → 자가검증
+claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 ```
 
-setup 마법사가 인증키를 실제 호출로 검증하고 `~/.dart-ftc-mcp/.env` 에 저장합니다.
-비대화 모드: `npx dart-ftc-mcp setup --dart-key <키> [--egroup-key <키>] --no-input`
+setup 마법사가 인증키를 실제 호출로 검증하고 `~/.gongsi-mcp/.env` 에 저장합니다.
+비대화 모드: `npx gongsi-mcp setup --dart-key <키> [--egroup-key <키>] --no-input`
 
 ### 소스 클론 (개발)
 
 ```bash
-git clone <repo-url> && cd dart-ftc-mcp
+git clone <repo-url> && cd gongsi-mcp
 npm install && npm run build
 node dist/src/cli.js setup    # 또는 cp .env.example .env 후 직접 편집
-claude mcp add dart-ftc-mcp -- node <절대경로>/dist/src/cli.js
+claude mcp add gongsi-mcp -- node <절대경로>/dist/src/cli.js
 ```
 
 ### 인증키

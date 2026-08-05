@@ -1,5 +1,5 @@
 /**
- * `dart-ftc-mcp setup` — 설치 마법사
+ * `gongsi-mcp setup` — 설치 마법사
  *
  * API 키 입력 → 실호출 검증 → .env 생성 → 룰 엔진 자가검증 → claude mcp add 안내.
  *
@@ -7,8 +7,8 @@
  *    (서버 경로인 index.ts 는 stdout 이 프로토콜 전용이다)
  *
  * .env 위치 결정:
- *  - 개발 클론(cwd 의 package.json name 이 dart-ftc-mcp)  → ./​.env
- *  - 그 외(npx 설치 등)                                    → ~/.dart-ftc-mcp/.env
+ *  - 개발 클론(cwd 의 package.json name 이 gongsi-mcp)  → ./​.env
+ *  - 그 외(npx 설치 등)                                    → ~/.gongsi-mcp/.env
  *    npx 설치본의 패키지 디렉터리는 npm 캐시 안이라 사용자 설정을 둘 곳이 못 된다.
  *    config.ts 가 프로젝트 .env → 홈 .env 순서로 읽는다 (먼저 설정된 값이 우선).
  */
@@ -78,7 +78,7 @@ export async function validateEgroupKey(key: string): Promise<KeyCheck> {
     const url = `https://apis.data.go.kr/1130000/publicYmList/publicYmListApi?${sp}`;
     const res = await fetch(url, {
       // 이 헤더가 없으면 무조건 403 이다 — 검증 결과를 오염시키지 않도록 반드시 붙인다
-      headers: { 'User-Agent': 'dart-ftc-mcp/0.1.0' },
+      headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
       signal: AbortSignal.timeout(15_000),
     });
     const text = await res.text();
@@ -135,12 +135,12 @@ export function defaultEnvTarget(cwd: string): EnvTarget {
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { name?: string };
-      if (pkg.name === 'dart-ftc-mcp') return { path: join(cwd, '.env'), kind: 'project' };
+      if (pkg.name === 'gongsi-mcp') return { path: join(cwd, '.env'), kind: 'project' };
     } catch {
       // package.json 이 깨져 있으면 홈으로
     }
   }
-  return { path: join(homedir(), '.dart-ftc-mcp', '.env'), kind: 'home' };
+  return { path: join(homedir(), '.gongsi-mcp', '.env'), kind: 'home' };
 }
 
 /** 덮어쓰기 전 타임스탬프 백업. 백업 파일 경로를 반환한다 (원본 없으면 null). */
@@ -214,11 +214,11 @@ export function parseSetupArgs(argv: string[]): SetupArgs {
   return out;
 }
 
-const USAGE = `dart-ftc-mcp setup — 설치 마법사
+const USAGE = `gongsi-mcp setup — 설치 마법사
 
 사용법:
-  npx dart-ftc-mcp setup                     대화형 설정
-  npx dart-ftc-mcp setup --dart-key <키> [--egroup-key <키>] [--env-path <경로>] [--no-input]
+  npx gongsi-mcp setup                     대화형 설정
+  npx gongsi-mcp setup --dart-key <키> [--egroup-key <키>] [--env-path <경로>] [--no-input]
 
 옵션:
   --dart-key <키>     DART 인증키 (${DART_GUIDE})
@@ -235,7 +235,7 @@ export async function runSetup(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.log('── dart-ftc-mcp 설치 마법사 ──\n');
+  console.log('── gongsi-mcp 설치 마법사 ──\n');
 
   const rl = args.noInput
     ? null
@@ -288,7 +288,7 @@ export async function runSetup(argv: string[]): Promise<number> {
     if (egroupKey) updates['EGROUP_API_KEY'] = egroupKey;
     if (target.kind === 'home') {
       // npx 설치본의 패키지 디렉터리는 npm 캐시라 언제든 지워진다 — 원문 영구 캐시를 홈에 둔다
-      updates['DARTFTC_CACHE_DB'] = join(dirname(target.path), 'cache.db');
+      updates['GONGSI_CACHE_DB'] = join(dirname(target.path), 'cache.db');
     }
     mkdirSync(dirname(target.path), { recursive: true });
     const existing = existsSync(target.path) ? readFileSync(target.path, 'utf-8') : '';
@@ -297,12 +297,12 @@ export async function runSetup(argv: string[]): Promise<number> {
     restrictPermissions(target.path);
     console.log(`\n.env 기록: ${target.path}${bak ? ` (기존 파일 백업: ${bak})` : ''}`);
 
-    // 서버(config.ts)는 패키지 루트 .env 와 ~/.dart-ftc-mcp/.env 만 자동으로 읽는다 —
+    // 서버(config.ts)는 패키지 루트 .env 와 ~/.gongsi-mcp/.env 만 자동으로 읽는다 —
     // --env-path 로 다른 곳에 쓰면 "키를 넣었는데 인식이 안 된다"가 된다 (Codex 3차 백로그)
     let customPathNotAutoLoaded = false;
     if (args.envPath) {
       const autoLoaded = new Set(
-        [defaultEnvTarget(process.cwd()).path, join(homedir(), '.dart-ftc-mcp', '.env')].map((p) =>
+        [defaultEnvTarget(process.cwd()).path, join(homedir(), '.gongsi-mcp', '.env')].map((p) =>
           resolve(p),
         ),
       );
@@ -310,9 +310,9 @@ export async function runSetup(argv: string[]): Promise<number> {
       if (customPathNotAutoLoaded) {
         console.log(
           '\n⚠️ 이 경로는 서버가 자동으로 읽는 위치가 아닙니다.\n' +
-            '   서버는 패키지 루트의 .env 와 ~/.dart-ftc-mcp/.env 만 자동 로드합니다.\n' +
+            '   서버는 패키지 루트의 .env 와 ~/.gongsi-mcp/.env 만 자동 로드합니다.\n' +
             '   등록 시 환경변수로 직접 넘기세요:\n' +
-            '   claude mcp add dart-ftc-mcp --env DART_API_KEY=<키> -- npx -y dart-ftc-mcp',
+            '   claude mcp add gongsi-mcp --env DART_API_KEY=<키> -- npx -y gongsi-mcp',
         );
       }
     }
@@ -336,9 +336,9 @@ export async function runSetup(argv: string[]): Promise<number> {
         [
           'Claude Code 에 등록:',
           customPathNotAutoLoaded
-            ? '  claude mcp add dart-ftc-mcp --env DART_API_KEY=<키> -- npx -y dart-ftc-mcp\n' +
+            ? '  claude mcp add gongsi-mcp --env DART_API_KEY=<키> -- npx -y gongsi-mcp\n' +
               '  (위 경고대로, 지정한 .env 경로는 서버가 자동으로 읽지 않습니다)'
-            : '  claude mcp add dart-ftc-mcp -- npx -y dart-ftc-mcp',
+            : '  claude mcp add gongsi-mcp -- npx -y gongsi-mcp',
         ].join('\n'),
       );
     } else if (target.kind === 'project') {
@@ -346,14 +346,14 @@ export async function runSetup(argv: string[]): Promise<number> {
         [
           'Claude Code 에 등록 (프로젝트 클론 기준):',
           '  npm run build',
-          `  claude mcp add dart-ftc-mcp -- node "${resolve('dist', 'src', 'cli.js')}"`,
+          `  claude mcp add gongsi-mcp -- node "${resolve('dist', 'src', 'cli.js')}"`,
         ].join('\n'),
       );
     } else {
       console.log(
         [
           'Claude Code 에 등록:',
-          '  claude mcp add dart-ftc-mcp -- npx -y dart-ftc-mcp',
+          '  claude mcp add gongsi-mcp -- npx -y gongsi-mcp',
           '(키는 방금 기록한 홈 .env 에서 자동으로 읽습니다)',
         ].join('\n'),
       );

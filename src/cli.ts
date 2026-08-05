@@ -21,8 +21,8 @@ if (cmd === 'setup') {
       `알 수 없는 명령입니다: ${cmd}`,
       '',
       '사용법:',
-      '  dart-ftc-mcp          MCP 서버 시작 (stdio)',
-      '  dart-ftc-mcp setup    설치 마법사 (API 키 검증·.env 생성)',
+      '  gongsi-mcp          MCP 서버 시작 (stdio)',
+      '  gongsi-mcp setup    설치 마법사 (API 키 검증·.env 생성)',
     ].join('\n'),
   );
   process.exitCode = 1;

@@ -150,7 +150,7 @@ export class DartClient {
         // NOTE: connect/read 타임아웃 분리는 undici Agent 가 필요하다.
         // 지금은 전체 타임아웃만 적용한다. (TODO: dispatcher 도입 시 분리)
         const res = await fetch(url, {
-          headers: { 'User-Agent': 'dart-ftc-mcp/0.1.0' },
+          headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
           signal: AbortSignal.timeout(cfg.readTimeoutMs),
         });
 
