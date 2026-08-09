@@ -10,12 +10,20 @@
  * 검색은 최신부터 30일 창으로 거슬러 내려가며, 후보가 충분히 모이면 멈춘다 —
  * 전수 수집이 아니므로 range_too_large 없이 항상 60초 안에 끝난다.
  *
- * ★ 다년 선례 (lookback_days > 365): 실무에서 "○○한 공시 3년치·5년치 찾아줘"는 회사를
- * 지정하지 않는 질문이고, 전수 수집으로는 60초 벽에 막힌다(실측: 전체시장 J 3년 90,820건
- * 243초 / J001 3년 26,467건 73초). 그러나 이 질문의 목적은 전수가 아니라 **문안 참고용 사례**다.
- * 그래서 1년을 넘는 요청은 창을 90일로 넓히고 창당 페이지 수를 제한한 **표본 스캔**으로 바꾼다.
- * 5년 전 구간을 훑으면서도 호출 수가 선형으로 유지되고, 응답에는 표본이라는 사실과
- * 실제로 훑은 구간(coverage)을 반드시 함께 돌려준다 — 조용히 일부만 보고 전부인 척하지 않는다.
+ * ★ 다년 선례 (최대 5년): 실무에서 "○○한 공시 3년치·5년치 찾아줘"는 회사를 지정하지 않는
+ * 질문이다. 기간 전체를 한 번에 전수 수집하는 건 불가능하다 — 실측으로 전체시장 J 3년은
+ * 90,820건·243초, J001 로 좁혀도 3년 26,467건·73초로 60초 벽을 넘는다.
+ *
+ * 그래서 **기간을 줄이는 대신 밀도를 지킨다**: 최신부터 30일 창을 전수로 훑어 내려가며,
+ * 사례가 충분히 모이거나 시간 예산에 걸리면 멈춘다. 흔한 유형은 첫 창에서 끝나고,
+ * 희귀 유형은 예산이 허용하는 만큼(대략 1년 반) 거슬러 간다.
+ *
+ * 창당 페이지를 잘라 "5년을 얇게" 훑는 방식은 **일부러 버렸다** — 자세한 이유는
+ * SCAN_BUDGET_SECONDS 주석에 있다. 요약하면 5년에 10건뿐인 희귀 유형에서 표본은
+ * 0건을 반환해 "그런 공시는 없다"는 거짓 확신을 만든다.
+ *
+ * 응답의 `coverage` 는 어디까지 훑었는지와 **그 구간이 전수인지**를 함께 알린다.
+ * 조용히 일부만 보고 전부인 척하지 않는 것이 이 도구의 핵심 계약이다.
  */
 
 import { z } from 'zod';
@@ -25,23 +33,27 @@ import { readDisclosure } from './read-disclosure.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
 import { getLogger } from '../lib/logger.js';
+import { countCalendarDays } from '../rules/business-days.js';
 
 const log = getLogger('find-precedents');
 
-/** 한 번에 거슬러 내려가는 검색 창 (전체시장 검색 3개월 제한보다 작게) */
+/**
+ * 한 번에 거슬러 내려가는 검색 창 (전체시장 검색 3개월 제한보다 작게).
+ * 창 안은 **항상 전수**로 훑는다 — 페이지를 잘라 표본만 보면 안 된다. 아래 주석 참조.
+ */
 const WINDOW_DAYS = 30;
 
-/** 이 일수를 넘는 요청은 다년 표본 스캔으로 전환한다 */
-const LONG_SCAN_OVER_DAYS = 365;
-/** 다년 표본 스캔의 창 — DART 전체시장 3개월 제한의 상한선 */
-const LONG_WINDOW_DAYS = 90;
 /**
- * 다년 표본 스캔에서 창당 최대 페이지. 목록은 접수일 내림차순이라 앞쪽 페이지가
- * 그 창의 최신 건이다. 문안 참고에는 창마다 300건 표본이면 충분하고,
- * 이 상한이 없으면 5년 스캔이 수백 페이지로 불어나 60초 벽에 막힌다.
+ * 스캔에 쓸 시간 예산(초). 남은 시간은 선례 원문 다운로드에 쓴다.
+ *
+ * ★ 창당 페이지를 잘라 "넓고 얇게" 훑던 설계를 폐기하고 "좁고 전수"로 되돌린 이유:
+ * 예산 안에서 볼 수 있는 총 건수는 전략과 무관하게 비슷하다(실측 약 380건/초).
+ * 5년을 14% 표본으로 훑든 최근 1.4년을 전수로 훑든 기대 적발 건수는 같다.
+ * 그런데 표본은 "5년 중 일부를 봤고 3건 나왔다"는 못 쓰는 답을 주고,
+ * 전수는 "이 구간은 빠짐없이 확인했고 3건이다"는 쓸 수 있는 답을 준다.
+ * **특히 5년에 10건뿐인 희귀 유형에서 표본은 0건을 반환해 "그런 공시는 없다"는
+ * 거짓 확신을 만든다** — 이 도구가 가장 피해야 하는 실패 형태다.
  */
-const LONG_PAGES_PER_WINDOW = 3;
-/** 스캔에 쓸 시간 예산(초). 남은 시간은 선례 원문 다운로드에 쓴다 */
 const SCAN_BUDGET_SECONDS = 32;
 
 export const findPrecedentsInput = z.object({
@@ -68,8 +80,8 @@ export const findPrecedentsInput = z.object({
     .optional()
     .describe(
       '최대 며칠 전까지 거슬러 찾을지 (기본 180일, 최대 1825일=5년). 후보가 모이면 더 내려가지 않습니다. ' +
-        '365일을 넘기면 창을 90일로 넓히고 창당 300건 표본만 훑는 다년 스캔으로 바뀝니다 — ' +
-        '"3년치·5년치 사례" 질문에 쓰되, 결과는 전수가 아닌 표본이며 coverage 로 실제 훑은 구간을 확인하세요',
+        '훑은 구간 안에서는 항상 전수로 확인하며, 사례가 모이거나 시간 예산에 걸리면 멈춥니다 — ' +
+        '"3년치·5년치 사례" 질문에 쓰세요. coverage 로 실제 훑은 구간과 그 구간이 전수인지 확인하세요',
     ),
   corp_cls: z
     .enum(['Y', 'K', 'N', 'E'])
@@ -157,11 +169,7 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   let searchCalls = 0;
   let truncatedAny = false;
 
-  // 다년 요청은 표본 스캔으로 — 창을 넓히고 창당 페이지를 제한한다 (파일 상단 주석 참조)
-  const longScan = lookbackDays > LONG_SCAN_OVER_DAYS;
-  const windowDays = longScan ? LONG_WINDOW_DAYS : WINDOW_DAYS;
-  const pagesPerWindow = longScan ? LONG_PAGES_PER_WINDOW : undefined;
-
+  const windowDays = WINDOW_DAYS;
   const scanStartedAt = Date.now();
   let budgetExhausted = false;
   let reachedOldest = false;
@@ -176,22 +184,19 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
     }
     const winFrom = addDays(winTo, -(windowDays - 1)) < oldest ? oldest : addDays(winTo, -(windowDays - 1));
     scannedFrom = winFrom;
-    const r = await client.collect(
-      {
-        pblntfTy: preset.pblntfTy,
-        pblntfDetailTy: preset.pblntfDetailTy,
-        corpCls: input.corp_cls,
-        bgnDe: winFrom,
-        endDe: winTo,
-        // 문안 참고는 정정 반영된 최종본이 정답이다 (지연 판정과 정반대 — 파일 상단 주석)
-        lastReportOnly: true,
-      },
-      pagesPerWindow,
-    );
+    // 창 안은 전수로 — maxPages 를 주지 않는다. 상한에 걸리면 truncated 로 올라온다.
+    const r = await client.collect({
+      pblntfTy: preset.pblntfTy,
+      pblntfDetailTy: preset.pblntfDetailTy,
+      corpCls: input.corp_cls,
+      bgnDe: winFrom,
+      endDe: winTo,
+      // 문안 참고는 정정 반영된 최종본이 정답이다 (지연 판정과 정반대 — 파일 상단 주석)
+      lastReportOnly: true,
+    });
     windowsScanned++;
     searchCalls += r.calls;
-    // 다년 표본 스캔의 truncated 는 의도된 표본 추출이므로 경고로 올리지 않는다
-    if (r.truncated && !longScan) truncatedAny = true;
+    if (r.truncated) truncatedAny = true;
     matched.push(...r.rows.filter((row) => row.report_nm.includes(keyword)));
 
     const candidatesSoFar = selectCandidates(matched, { excludeCorpCode, onePerCompany });
@@ -203,33 +208,45 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
     winTo = addDays(winFrom, -1);
   }
 
-  /** 실제로 훑은 구간 — 요청 구간과 다를 수 있다(조기 중단·예산 초과) */
+  /**
+   * 실제로 훑은 구간 — 요청 구간과 다를 수 있다(조기 중단·예산 초과).
+   * `exhaustive_within_scanned` 가 true 면 **훑은 구간 안에서는 빠짐없이 확인**했다는 뜻이다.
+   * "5년간 10건뿐인 유형" 같은 질문에서 이 구분이 답의 성격을 바꾼다.
+   */
   const coverage = {
     requested_from: oldest,
     scanned_from: scannedFrom,
     scanned_to: today,
+    days_scanned: countCalendarDays(scannedFrom, today) + 1,
     windows_scanned: windowsScanned,
     /** 요청한 구간 끝까지 실제로 내려갔는지 */
     reached_requested_start: reachedOldest,
-    /** 창당 페이지를 제한한 표본 스캔인지 */
-    sampled: longScan,
-    ...(longScan ? { pages_per_window: LONG_PAGES_PER_WINDOW, window_days: windowDays } : {}),
+    /** 훑은 구간 안에서는 전수인가 — 페이지 상한에 걸린 창이 있으면 false */
+    exhaustive_within_scanned: !truncatedAny,
     budget_exhausted: budgetExhausted,
+    /** 조기 중단 여부 — 사례가 충분히 모여서 멈췄다면 그 이전 구간은 안 봤다 */
+    stopped_early_on_enough_matches: !reachedOldest && !budgetExhausted,
   };
 
   const candidates = selectCandidates(matched, { excludeCorpCode, onePerCompany });
   if (candidates.length === 0) {
     // ★ 훑지 못한 구간을 훑은 것처럼 말하면 "그 유형은 없다"는 잘못된 확신을 준다.
     //   실제 스캔 구간(scannedFrom)으로 안내하고, 왜 거기서 멈췄는지도 밝힌다.
+    const scope = truncatedAny
+      ? '이 구간은 페이지 상한에 걸려 일부만 확인했습니다'
+      : '이 구간은 전수로 확인했습니다';
     const hint = budgetExhausted
-      ? `시간 예산(${SCAN_BUDGET_SECONDS}초)이 다 되어 ${scannedFrom} 이전은 훑지 못했습니다. ` +
-        `date 구간을 나눠 다시 조회하거나 키워드를 짧게 해보세요.`
-      : `키워드를 짧게 하거나 lookback_days 를 늘려보세요.`;
+      ? `시간 예산(${SCAN_BUDGET_SECONDS}초)이 다 되어 ${scannedFrom} 이전(요청 시작일 ${oldest})은 ` +
+        `훑지 못했습니다 — "그런 공시가 없다"는 뜻이 아닙니다. 더 과거까지 빠짐없이 확인해야 한다면 ` +
+        `search_disclosures(mode:"batch", report_name_contains, date_from·date_to를 3개월 이하로) 로 ` +
+        `구간을 나눠 훑으세요. 키워드를 짧게 하는 것도 방법입니다(보고서명 부분일치).`
+      : reachedOldest
+        ? `요청한 ${oldest}까지 모두 확인했습니다. 키워드를 짧게 해보세요 (보고서명 부분일치입니다).`
+        : `키워드를 짧게 하거나 lookback_days 를 늘려보세요.`;
     throw new ToolError(
       'document_not_found',
       `${scannedFrom}~${today} 구간의 ${preset.label} 공시에서 ` +
-        `보고서명에 '${keyword}' 가 들어간 건을 찾지 못했습니다` +
-        `${longScan ? ' (창당 상위 ' + LONG_PAGES_PER_WINDOW * 100 + '건 표본 스캔)' : ''}. ${hint}`,
+        `보고서명에 '${keyword}' 가 들어간 건을 찾지 못했습니다 (${scope}). ${hint}`,
       { keyword, preset: preset.label, coverage },
     );
   }
@@ -281,17 +298,33 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
       `요청 ${count}건 중 ${precedents.length}건만 확보했습니다. lookback_days 를 늘리거나 키워드를 넓혀보세요.`,
     );
   }
-  if (longScan) {
+  const exhaustiveHint =
+    '요청 기간 전체의 정확한 건수가 필요하면 search_disclosures(mode:"batch", report_name_contains, ' +
+    'date_from·date_to를 3개월 이하로)로 구간을 나눠 훑으세요.';
+  if (coverage.stopped_early_on_enough_matches) {
     notes.push(
-      `다년 표본 스캔입니다 — ${windowDays}일 창마다 최신 ${LONG_PAGES_PER_WINDOW * 100}건까지만 훑었으므로 ` +
-        `total_matched 는 그 기간의 전체 건수가 아닙니다. 문안 참고용 사례 수집에는 충분하지만, ` +
-        `누락 여부 판정(전수 필요)에는 audit_group_disclosures 나 search_disclosures(mode:batch)를 쓰세요.`,
+      `사례가 충분히 모여 ${scannedFrom} 에서 멈췄습니다 — ${scannedFrom}~${today} 구간은 전수로 확인했지만 ` +
+        `그 이전(요청 시작일 ${oldest})은 보지 않았으므로 total_matched 는 요청 기간 전체의 건수가 아닙니다. ` +
+        exhaustiveHint,
     );
   }
   if (budgetExhausted) {
     notes.push(
       `시간 예산(${SCAN_BUDGET_SECONDS}초)에 걸려 ${scannedFrom} 이전 구간은 훑지 않았습니다 ` +
-        `(요청 시작일 ${oldest}). 더 과거를 보려면 그 구간을 따로 조회하세요.`,
+        `(요청 시작일 ${oldest}). ${scannedFrom}~${today} 구간은 전수로 확인했습니다 — ` +
+        `이 결과로 "그 이전에는 없다"고 결론내지 마세요. ${exhaustiveHint}`,
+    );
+  }
+  if (reachedOldest && !truncatedAny) {
+    notes.push(
+      `요청 구간(${oldest}~${today}) 전체를 전수로 확인했습니다 — total_matched ${candidates.length}건이 ` +
+        `이 기간의 전부입니다(보고서명 부분일치 기준, 최종보고서 기준).`,
+    );
+  }
+  if (truncatedAny) {
+    notes.push(
+      '⚠️ 일부 창이 페이지 상한에 걸려 그 창은 전수가 아닙니다 (diagnostics.truncated). ' +
+        'max_pages 설정을 확인하거나 기간을 좁혀 다시 조회하세요.',
     );
   }
 
