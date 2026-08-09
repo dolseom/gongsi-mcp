@@ -9,7 +9,8 @@
   "files": [
     "dist/src",
     "data/holidays.json",
-    "data/ftc-qna.json"
+    "data/ftc-qna.json",
+    "data/penalty-ratios.json"
   ],
   "engines": {
     "node": ">=22.5"

@@ -101,6 +101,21 @@ export interface PenaltyResult {
   baseAmount: number;
   /** 일수 가산액 (원) */
   dailySurcharge: number;
+  /**
+   * 기준금액 (원) = (기본금액 + 일수가산) × 거래금액별 적용비율.
+   * 가중·감경은 이 금액에 곱한다 (고시 Ⅵ.3.가).
+   * 비율이 적용되지 않는 경우(거래금액 100억원 이상 / 미지정 / §27·§28)에는 기본금액 총액과 같다.
+   */
+  standardAmount: number;
+  /**
+   * ★ true = `amount` 는 확정 추정치가 아니라 **상한선**이다.
+   * §26·§29 인데 거래금액을 몰라 적용비율(고시 Ⅵ.2)을 적용하지 못한 경우로,
+   * 실제 과태료는 이 값의 최저 절반까지 내려간다. 중첩된 caveats 를 놓쳐도
+   * 이 필드만 보면 알 수 있게 구조화해 노출한다.
+   */
+  isUpperBound: boolean;
+  /** 선택된 거래금액 구간 — 거래금액을 받아 구간을 확정했을 때만 존재 (100억 이상이면 rate 1.0) */
+  transactionRatio?: { rate: number; label: string; transactionAmount: number };
   /** 적용된 가중 (비율) */
   aggravations: Array<{ reason: string; rate: number }>;
   /** 적용된 감경 (비율) */
@@ -111,5 +126,7 @@ export interface PenaltyResult {
   /** 다음 감경 구간 경계 — "3일 뒤면 얼마" 를 보여주기 위함 */
   nextThreshold?: { delayDays: number; amountIfDelayed: number; note: string };
   legalBasis: LegalRef[];
+  /** 산정값의 한계·전제 (거래금액 미지정 시 상한선이라는 안내 등) */
+  caveats: string[];
   disclaimer: string;
 }

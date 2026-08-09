@@ -19,6 +19,7 @@ import {
   unlistedMaterialDeadline,
 } from '../src/rules/deadlines.js';
 import { estimatePenalty } from '../src/rules/penalties.js';
+import { findRatioTier } from '../src/rules/penalty-ratios.js';
 
 describe('영업일 계산', () => {
   it('2026-07-22는 수요일이다', () => {
@@ -364,6 +365,197 @@ describe('과태료 — 별표9 + 고시', () => {
     const r = estimatePenalty({ regime: 'art26_29', boardResolution: true, disclosed: false });
     expect(r.disclaimer).toContain('확정액이 아닙니다');
     expect(r.legalBasis.length).toBeGreaterThan(0);
+  });
+});
+
+describe('거래금액별 적용비율 — 고시 Ⅵ.2 (기준금액)', () => {
+  it('표 6구간이 20억원 단위로 50%→100% 등차다', () => {
+    // 표 판독의 회귀 고정. 구간 경계나 비율 어느 쪽이 틀어지면 이 등차가 깨진다.
+    const probes: Array<[number, number, string]> = [
+      [200 * 억, 1.0, '100억원 이상'],
+      [100 * 억, 1.0, '100억원 이상'],
+      [99 * 억, 0.9, '80억원 이상 ~ 100억원 미만'],
+      [80 * 억, 0.9, '80억원 이상 ~ 100억원 미만'],
+      [79 * 억, 0.8, '60억원 이상 ~ 80억원 미만'],
+      [60 * 억, 0.8, '60억원 이상 ~ 80억원 미만'],
+      [59 * 억, 0.7, '40억원 이상 ~ 60억원 미만'],
+      [40 * 억, 0.7, '40억원 이상 ~ 60억원 미만'],
+      [39 * 억, 0.6, '20억원 이상 ~ 40억원 미만'],
+      [20 * 억, 0.6, '20억원 이상 ~ 40억원 미만'],
+      [19 * 억, 0.5, '20억원 미만'],
+      [0, 0.5, '20억원 미만'],
+    ];
+    for (const [amount, rate, label] of probes) {
+      const tier = findRatioTier(amount);
+      expect(tier.rate, `${amount / 억}억원`).toBe(rate);
+      expect(tier.label, `${amount / 억}억원`).toBe(label);
+    }
+  });
+
+  it('음수·NaN 거래금액은 최저 구간으로 둔갑시키지 않고 거부한다', () => {
+    // 0원으로 보정하면 잘못된 입력이 "20억원 미만 50%" 라는 정상 산정값이 돼 버린다.
+    expect(() => findRatioTier(-1)).toThrow('0 이상의 유한한 금액');
+    expect(() => findRatioTier(Number.NaN)).toThrow('0 이상의 유한한 금액');
+    expect(findRatioTier(0).rate).toBe(0.5);
+  });
+
+  it('잘못된 거래금액이 들어오면 비율을 적용하지 않고 입력 오류를 알린다', () => {
+    const r = estimatePenalty({
+      regime: 'art26_29',
+      boardResolution: true,
+      disclosed: true,
+      onTime: false,
+      delayDays: 5,
+      transactionAmount: -1,
+    });
+    expect(r.transactionRatio).toBeUndefined();
+    expect(r.isUpperBound).toBe(true);
+    expect(r.caveats.join(' ')).toContain('올바르지 않아');
+    expect(r.amount).toBe(2_750_000); // 비율 미적용 상한선
+  });
+
+  const late5 = {
+    regime: 'art26_29' as const,
+    boardResolution: true,
+    disclosed: true,
+    onTime: false,
+    hasOmissionOrFalse: false,
+    delayDays: 5,
+  };
+
+  it('거래금액 30억(60%)이면 기준금액이 낮아져 275만 → 165만이 된다', () => {
+    const r = estimatePenalty({ ...late5, transactionAmount: 30 * 억 });
+    // 기본금액 500만 + 일수가산 50만 = 550만 → × 60% = 기준금액 330만
+    // 감경 50%(지연 7일 이하) = 165만 → 330만 − 165만
+    expect(r.standardAmount).toBe(3_300_000);
+    expect(r.amount).toBe(1_650_000);
+    expect(r.transactionRatio).toEqual({ rate: 0.6, label: '20억원 이상 ~ 40억원 미만', transactionAmount: 30 * 억 });
+    expect(r.formula).toContain('적용비율 60%');
+  });
+
+  it('20억원 미만(50%)이 최대 축소폭 — 미적용 대비 약 절반', () => {
+    const withRatio = estimatePenalty({ ...late5, transactionAmount: 10 * 억 });
+    const without = estimatePenalty(late5);
+    expect(withRatio.amount).toBe(1_370_000);
+    expect(without.amount).toBe(2_750_000);
+    expect(without.amount / withRatio.amount).toBeGreaterThan(1.9);
+  });
+
+  it('100억원 이상은 비율 적용 없이 기본금액이 기준금액이다', () => {
+    const r = estimatePenalty({ ...late5, transactionAmount: 100 * 억 });
+    expect(r.transactionRatio?.rate).toBe(1.0);
+    expect(r.standardAmount).toBe(5_500_000);
+    expect(r.amount).toBe(2_750_000);
+    expect(r.caveats).toEqual([]);
+  });
+
+  it('거래금액 미지정이면 값은 종전과 같고, 상한선임을 캐비앳과 구조화 필드로 알린다', () => {
+    const r = estimatePenalty(late5);
+    expect(r.amount).toBe(2_750_000); // 회귀 고정 — 알려진 값을 바꾸지 않는다
+    expect(r.standardAmount).toBe(5_500_000);
+    expect(r.transactionRatio).toBeUndefined();
+    expect(r.isUpperBound).toBe(true); // 중첩 caveat 을 놓쳐도 알 수 있어야 한다
+    expect(r.caveats.join(' ')).toContain('상한선');
+    expect(r.caveats.join(' ')).toContain('절반');
+  });
+
+  it('비율이 확정된 건과 위반 없는 건은 상한선이 아니다', () => {
+    expect(estimatePenalty({ ...late5, transactionAmount: 30 * 억 }).isUpperBound).toBe(false);
+    expect(estimatePenalty({ regime: 'art27_28', disclosed: false }).isUpperBound).toBe(false);
+    expect(
+      estimatePenalty({ regime: 'art26_29', boardResolution: true, disclosed: true, onTime: true }).isUpperBound,
+    ).toBe(false);
+  });
+
+  it('★ 소기업 1% 상한은 일수가산을 포함한 총액에 걸린다 (Codex 지적 반영)', () => {
+    // 자본기준 1억원 → 상한 100만원. 종전엔 가산 전 금액에만 걸어 100만+50만=150만원을
+    // 기본금액으로 써서 상한을 넘겼다. 비율·조정액이 모두 과대해지는 경로였다.
+    const r = estimatePenalty({ ...late5, capitalBase: 1 * 억 });
+    expect(r.baseAmount).toBe(1_000_000);
+    expect(r.dailySurcharge).toBe(500_000);
+    expect(r.standardAmount).toBe(1_000_000); // 150만원이 아니라 상한 100만원
+    expect(r.amount).toBe(500_000); // 100만 − 감경 50만
+    expect(r.formula).toContain('자본 1% 상한');
+  });
+
+  it('★ 조정 상한 기준이 기본금액 총액이라 상한 적중 시 금액이 낮아진다 (§26, 의도된 변경)', () => {
+    // Codex 가 잡은 실제 변화 지점: 종전 155만원 → 132만원.
+    // 감경비율 합계 1.55(지연 3일 75% + 자동연장 30% + 민간투자 50%)로 상한이 물린다.
+    const r = estimatePenalty({
+      regime: 'art26_29',
+      boardResolution: true,
+      disclosed: true,
+      onTime: false,
+      delayDays: 3,
+      autoRenewalSameTerms: true,
+      pppOperator: true,
+    });
+    // 기본금액총액 530만 → 감경 min(530×1.55, 530×0.75=397.5) = 397.5만 → 132.5만 → 1만원 절사
+    expect(r.standardAmount).toBe(5_300_000);
+    expect(r.amount).toBe(1_320_000);
+  });
+
+  it('★ 같은 변경이 §27·§28 에도 적용된다 (종전 40만원 → 28만원)', () => {
+    const r = estimatePenalty({
+      regime: 'art27_28',
+      disclosed: true,
+      onTime: false,
+      delayDays: 3,
+      autoRenewalSameTerms: true,
+      firstViolation: true,
+    });
+    // 기본금액총액 115만 → 감경 min(115×1.25, 115×0.75=86.25) = 86.25만 → 28.75만 → 절사
+    expect(r.standardAmount).toBe(1_150_000);
+    expect(r.amount).toBe(280_000);
+  });
+
+  it('§27·§28은 비율표 대상이 아니다 — 거래금액을 줘도 무시하고 캐비앳도 없다', () => {
+    // 해당 고시는 Ⅲ.2 기준금액 정의와 Ⅵ.2 를 모두 "삭제"로 두었다.
+    const withAmount = estimatePenalty({
+      regime: 'art27_28',
+      disclosed: true,
+      onTime: false,
+      delayDays: 5,
+      transactionAmount: 10 * 억,
+    });
+    const without = estimatePenalty({ regime: 'art27_28', disclosed: true, onTime: false, delayDays: 5 });
+    expect(withAmount.amount).toBe(without.amount);
+    expect(withAmount.transactionRatio).toBeUndefined();
+    expect(withAmount.caveats).toEqual([]);
+  });
+
+  it('위반이 없으면 비율·캐비앳 모두 붙지 않는다', () => {
+    const r = estimatePenalty({
+      regime: 'art26_29',
+      boardResolution: true,
+      disclosed: true,
+      onTime: true,
+      hasOmissionOrFalse: false,
+    });
+    expect(r.amount).toBe(0);
+    expect(r.transactionRatio).toBeUndefined();
+    expect(r.caveats).toEqual([]);
+  });
+
+  it('가중·감경은 기준금액에 곱하고 상한만 기본금액 기준이다 (고시 Ⅵ.3.가)', () => {
+    // 감경비율 합계 1.55(지연 3일 75% + 자동연장 30% + 민간투자 50%)로 상한을 실제로 물린다.
+    const v = {
+      regime: 'art26_29' as const,
+      boardResolution: true,
+      disclosed: true,
+      onTime: false,
+      delayDays: 3,
+      autoRenewalSameTerms: true,
+      pppOperator: true,
+    };
+    const r = estimatePenalty({ ...v, transactionAmount: 10 * 억 });
+    // 기본금액총액 = 500만 + 30만 = 530만, 기준금액 = 265만
+    // 감경 = min(265만 × 1.55 = 410.75만, 530만 × 0.75 = 397.5만) → 397.5만 (상한이 물린다)
+    expect(r.standardAmount).toBe(2_650_000);
+    expect(r.amount).toBe(0); // 265만 − 397.5만 < 0 → 0으로 하한
+    // 상한이 기준금액(265만)이 아니라 기본금액총액(530만) 기준임을 확인
+    const capOnStandard = 2_650_000 * 0.75;
+    expect(5_300_000 * 0.75).toBeGreaterThan(capOnStandard);
   });
 });
 

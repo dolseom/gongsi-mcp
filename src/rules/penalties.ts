@@ -9,6 +9,7 @@
  */
 
 import type { LegalRef, PenaltyResult } from './types.js';
+import { findRatioTier } from './penalty-ratios.js';
 
 const 만 = 10_000;
 const 억 = 100_000_000;
@@ -30,6 +31,11 @@ export interface ViolationInput {
   supplemented?: boolean;
   /** 지연일수 (달력일). 기한 초과 또는 보완 지연 일수 */
   delayDays?: number;
+  /**
+   * 위반행위별 거래금액 (원). art26_29 전용 — 100억원 미만이면 고시 Ⅵ.2 적용비율로
+   * 기준금액이 낮아진다(최저 50%). 미지정 시 비율을 적용하지 않아 산정값은 상한선이 된다.
+   */
+  transactionAmount?: number;
 
   // ── 가중 사유 ──
   /** 공시의무 회피 목적의 고의적 분할거래 */
@@ -137,7 +143,14 @@ function delayMitigationRate(delayDays: number): number {
   return 0;
 }
 
-/** 기본금액 상한 — 자본 규모가 작은 회사 보호 */
+/**
+ * 기본금액 상한 — 자본 규모가 작은 회사 보호 (고시 Ⅵ.1 단서)
+ * "위반 기본금액은 자본금 또는 자본총계 중 큰 금액의 100분의 1을 초과할 수 없으며,
+ *  이를 초과하는 경우 그 100분의 1을 기본금액으로 한다"
+ *
+ * ⚠️ 기본금액에는 일수가산이 포함되므로(별표 9 한 칸에 함께 규정) 이 상한도 가산을 포함한
+ *    총액에 걸어야 한다. 가산 전 금액에만 걸면 상한을 넘은 기본금액이 만들어진다.
+ */
 function applySmallCapCap(base: number, regime: PenaltyRegime, capitalBase?: number): number {
   if (capitalBase === undefined) return base;
   const limit = regime === 'art26_29' ? 50 * 억 : 10 * 억;
@@ -152,7 +165,41 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
   const baseAmount = applySmallCapCap(raw.base, v.regime, v.capitalBase);
   const surchargeRaw = raw.daily * delayDays;
   const dailySurcharge = raw.dailyCap > 0 ? Math.min(surchargeRaw, Math.max(0, raw.dailyCap - baseAmount)) : 0;
-  const beforeAdjust = baseAmount + dailySurcharge;
+  /**
+   * 기본금액 = 별표 9 해당 칸의 금액. 일수가산("1일마다 10만원씩 가산하되 …")은
+   * 그 칸에 함께 규정된 금액이므로 기본금액에 포함해 비율의 피승수·조정 상한의 기준으로 쓴다.
+   * 소기업 1% 상한(Ⅵ.1 단서)도 같은 이유로 가산 포함 총액에 다시 건다.
+   */
+  const basicTotal = applySmallCapCap(baseAmount + dailySurcharge, v.regime, v.capitalBase);
+
+  // ── 기준금액 = 기본금액 × 거래금액별 적용비율 (고시 Ⅵ.2) ──
+  // §27·§28 고시는 Ⅲ.2·Ⅵ.2 가 모두 "삭제"이므로 비율 적용 대상이 아니다.
+  const caveats: string[] = [];
+  let transactionRatio: PenaltyResult['transactionRatio'];
+  let standardAmount = basicTotal;
+  if (v.regime === 'art26_29' && basicTotal > 0) {
+    const validAmount =
+      v.transactionAmount !== undefined && Number.isFinite(v.transactionAmount) && v.transactionAmount >= 0;
+    if (v.transactionAmount !== undefined && !validAmount) {
+      // 음수·NaN 을 조용히 최저구간(50%)으로 처리하면 입력 오류가 정상 산정값으로 둔갑한다.
+      caveats.push(
+        `⚠️ 거래금액 입력값(${v.transactionAmount})이 올바르지 않아 거래금액별 적용비율(고시 Ⅵ.2)을 ` +
+          '적용하지 않았습니다. 0 이상의 금액(원)을 주십시오. 아래 금액은 비율 미적용 상한선입니다.',
+      );
+    }
+    if (validAmount) {
+      const tier = findRatioTier(v.transactionAmount!);
+      transactionRatio = { rate: tier.rate, label: tier.label, transactionAmount: v.transactionAmount! };
+      standardAmount = basicTotal * tier.rate;
+    } else if (v.transactionAmount === undefined) {
+      caveats.push(
+        '⚠️ 거래금액(transactionAmount)을 주지 않아 거래금액별 적용비율(고시 Ⅵ.2)을 적용하지 못했습니다. ' +
+          '이 산정값은 거래금액 100억원 이상 기준이며 사실상 상한선입니다. 거래금액이 100억원 미만이면 ' +
+          '기준금액이 80억원 이상 90%, 60억원 이상 80%, 40억원 이상 70%, 20억원 이상 60%, 20억원 미만 50% 로 ' +
+          '낮아지므로 실제 과태료는 이 값의 최저 절반까지 내려갑니다.',
+      );
+    }
+  }
 
   // ── 가중 ──
   const aggravations: Array<{ reason: string; rate: number }> = [];
@@ -194,13 +241,13 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     }
   }
 
-  // 가중 ≤ 기본금액의 1/2, 감경 ≤ 기본금액의 3/4
+  // 고시 Ⅵ.3.가 — 가중·감경액은 기준금액에 비율을 곱하되, 상한은 기본금액 기준(1/2, 3/4)이다.
   const aggRate = aggravations.reduce((s, a) => s + a.rate, 0);
   const mitRate = mitigations.reduce((s, m) => s + m.rate, 0);
-  const aggAmount = Math.min(beforeAdjust * aggRate, baseAmount * 0.5);
-  const mitAmount = Math.min(beforeAdjust * mitRate, baseAmount * 0.75);
+  const aggAmount = Math.min(standardAmount * aggRate, basicTotal * 0.5);
+  const mitAmount = Math.min(standardAmount * mitRate, basicTotal * 0.75);
 
-  let amount = beforeAdjust + aggAmount - mitAmount;
+  let amount = standardAmount + aggAmount - mitAmount;
 
   // 총액 상한: min(자본 × 10%, 10억원)
   let capApplied = false;
@@ -228,11 +275,28 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     }
   }
 
-  const formulaParts = [
-    `기본금액 ${(baseAmount / 만).toLocaleString('ko-KR')}만원 (${raw.label})`,
-  ];
+  const 만원 = (won: number) => `${(won / 만).toLocaleString('ko-KR')}만원`;
+  const applyingRatio = transactionRatio !== undefined && transactionRatio.rate < 1;
+
+  // 비율을 곱할 때는 (기본금액 + 일수가산) 전체가 피승수임을 괄호로 드러낸다.
+  let basicExpr = `기본금액 ${만원(baseAmount)} (${raw.label})`;
   if (dailySurcharge > 0) {
-    formulaParts.push(`+ 일수가산 ${(dailySurcharge / 만).toLocaleString('ko-KR')}만원 (${delayDays}일 × ${raw.daily / 만}만원)`);
+    basicExpr += ` + 일수가산 ${만원(dailySurcharge)} (${delayDays}일 × ${raw.daily / 만}만원)`;
+  }
+  if (basicTotal < baseAmount + dailySurcharge) {
+    // 소기업 1% 상한(Ⅵ.1 단서)이 물렸다 — 안 밝히면 뒤 숫자와 어긋나 보인다
+    basicExpr += ` → 자본 1% 상한으로 기본금액 ${만원(basicTotal)}`;
+  }
+  if (applyingRatio && (dailySurcharge > 0 || basicTotal < baseAmount + dailySurcharge)) {
+    basicExpr = `(${basicExpr})`;
+  }
+
+  const formulaParts = [basicExpr];
+  if (applyingRatio) {
+    formulaParts.push(
+      `× 거래금액 적용비율 ${Math.round(transactionRatio!.rate * 100)}% (${transactionRatio!.label})` +
+        ` = 기준금액 ${만원(standardAmount)}`,
+    );
   }
   if (aggAmount > 0) formulaParts.push(`+ 가중 ${(aggAmount / 만).toLocaleString('ko-KR')}만원`);
   if (mitAmount > 0) formulaParts.push(`− 감경 ${(mitAmount / 만).toLocaleString('ko-KR')}만원`);
@@ -243,12 +307,17 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     amount,
     baseAmount,
     dailySurcharge,
+    standardAmount,
+    // 비율을 적용하지 못한 §26·§29 건은 확정 추정치가 아니라 상한선이다.
+    isUpperBound: v.regime === 'art26_29' && amount > 0 && transactionRatio === undefined,
+    transactionRatio,
     aggravations,
     mitigations,
     capApplied,
     formula: formulaParts.join(' '),
     nextThreshold,
     legalBasis: REF[v.regime],
+    caveats,
     disclaimer:
       '공정위 고시 기준에 따른 단순 산정값입니다. 실제 부과액은 공정위 재량과 개별 사정에 따라 달라질 수 있으며 확정액이 아닙니다. ' +
       '기한 만료일 다음 날부터 10영업일 이내에 자진 시정·재공시하고 고시 Ⅴ의 사유(신규 지정·편입 30일 이내 위반, ' +

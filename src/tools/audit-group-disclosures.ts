@@ -36,6 +36,7 @@ import {
 import { litDeadline, evaluateCompliance } from '../rules/deadlines.js';
 import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
+import type { PenaltyResult } from '../rules/types.js';
 import { toYMD, isValidYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit');
@@ -97,7 +98,7 @@ interface LateCandidate {
   deadline: string;
   rcept_dt: string;
   delay_days: number;
-  penalty_estimate: unknown;
+  penalty_estimate: PenaltyResult;
   self_correction: { status: string; window_end: string; business_days_remaining?: number };
   viewer_url: string;
 }
@@ -385,6 +386,16 @@ export async function auditGroupDisclosures(
       '개별 사정(수탁기관 보정요청 등)이 있을 수 있습니다. 각 건을 read_disclosure 로 확인한 뒤 판단하세요.',
     '판정 기준: 원본 접수분(정정 제외)의 접수일 vs 원문 이사회 의결일 + 상장(유가·코스닥·코넥스) 3영업일 / 비상장 7영업일.',
   ];
+  if (lateCandidates.some((l) => l.penalty_estimate.isUpperBound)) {
+    // 목록 단계에서는 거래금액을 알 수 없어 거래금액별 적용비율(고시 Ⅵ.2)을 적용할 수 없다.
+    // 중첩된 penalty_estimate.caveats 만으로는 놓치기 쉬우므로 상위 notes 로 올린다.
+    notes.push(
+      '⚠️ 예상 과태료는 **상한선**입니다 (penalty_estimate.isUpperBound=true). 이 감사는 거래금액을 추출하지 않아 ' +
+        '거래금액별 적용비율(고시 Ⅵ.2)을 적용할 수 없습니다 — 거래금액이 100억원 미만이면 실제 금액은 ' +
+        '90~50%로 내려가며 20억원 미만이면 절반입니다. 해당 건의 거래금액을 확인해 ' +
+        'check_disclosure_duty(amount=거래금액) 로 다시 산정하세요.',
+    );
+  }
   if (lateCandidates.some((l) => l.self_correction.status === 'open')) {
     notes.push(
       '⚠️ 자진시정 10영업일 기간이 아직 열려 있는 건이 있습니다. 단, 지연 공시 자체는 면제 대상이 아닙니다 — ' +

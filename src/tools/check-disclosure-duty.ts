@@ -78,7 +78,15 @@ export const checkDisclosureDutyInput = z.object({
   quarter: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional()
     .describe('분기. 지정하면 분기공시(종료 후 2개월), 생략하면 연1회(5/31)'),
 
-  amount: z.number().optional().describe('거래금액 (원). 기준금액과 비교해 공시 대상 여부를 판정한다'),
+  amount: z
+    .number()
+    .nonnegative('거래금액은 0 이상이어야 합니다')
+    .optional()
+    .describe(
+      '거래금액 (원). 기준금액과 비교해 공시 대상 여부를 판정하고, 지연 시 과태료의 ' +
+        '거래금액별 적용비율(고시 Ⅵ.2 — 100억원 미만이면 90~50%)에도 쓰인다. ' +
+        '약관 금융거래는 분기 일괄 거래금액, 상품·용역 감소 특례는 실제 거래금액을 넣는다',
+    ),
   amountBasis: z
     .enum(['actual', 'collateral_limit', 'lease_annualized', 'insurance_premium_total', 'quarterly_sum'])
     .optional()
@@ -482,6 +490,9 @@ export function checkDisclosureDuty(
         disclosed: true,
         onTime: false,
         delayDays: c.delayDays,
+        // 거래금액별 적용비율(고시 Ⅵ.2)은 §26·§29 전용이다. 그 게이트는 estimatePenalty 안에 있으므로
+        // 여기서는 그대로 넘긴다 — §27·§28(비상장사 중요사항·기업집단현황)에서는 무시된다.
+        ...(input.amount !== undefined ? { transactionAmount: input.amount } : {}),
         capitalBase:
           input.totalEquity !== undefined || input.paidInCapital !== undefined
             ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0)
