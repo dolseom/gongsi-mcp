@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { selectCandidates } from '../src/tools/find-precedents.js';
+import { selectCandidates, findPrecedentsInput } from '../src/tools/find-precedents.js';
 import type { Disclosure } from '../src/clients/dart.js';
 
 function row(over: Partial<Disclosure>): Disclosure {
@@ -70,5 +70,26 @@ describe('선례 후보 선정', () => {
       { excludeCorpCode: 'A', onePerCompany: true },
     );
     expect(out.map((r) => r.corp_code)).toEqual(['B']);
+  });
+});
+
+describe('다년 선례 스캔 범위', () => {
+  const parse = (lookback: number) =>
+    findPrecedentsInput.safeParse({ report_name_contains: '자금차입', lookback_days: lookback });
+
+  it('3년·5년 요청을 받아들인다 — 실무 질문이 "3년치·5년치 사례"다', () => {
+    // 종전 상한 365일이 이 질문을 원천 차단하고 있었다.
+    expect(parse(1095).success).toBe(true); // 3년
+    expect(parse(1825).success).toBe(true); // 5년
+  });
+
+  it('5년을 넘는 요청은 거부한다 — 표본 스캔도 무한정 넓힐 수는 없다', () => {
+    expect(parse(1826).success).toBe(false);
+  });
+
+  it('기존 범위는 그대로 유효하다', () => {
+    expect(parse(180).success).toBe(true);
+    expect(parse(365).success).toBe(true);
+    expect(parse(6).success).toBe(false); // 최소 7일
   });
 });
