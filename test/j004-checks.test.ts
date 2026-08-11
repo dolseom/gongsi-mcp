@@ -27,6 +27,14 @@ describe('decideJ004Verdict — 대사 실패가 consistent 로 둔갑하지 않
     expect(decideJ004Verdict(0, 0, true, 1)).toBe('cross_check_incomplete');
   });
 
+  it('경고가 있어도 대사 실패를 가리지 않는다 (Codex 6차 — warnings_only 가 미완료를 숨기던 경로)', () => {
+    expect(decideJ004Verdict(0, 1, true, 1)).toBe('cross_check_incomplete');
+  });
+
+  it('불일치(error)는 대사 실패보다 우선한다 — 가장 나쁜 신호가 이긴다', () => {
+    expect(decideJ004Verdict(2, 0, true, 1)).toBe('inconsistencies_found');
+  });
+
   it('기존 판정은 그대로다', () => {
     expect(decideJ004Verdict(0, 0, true, 0)).toBe('consistent');
     expect(decideJ004Verdict(2, 0, true, 0)).toBe('inconsistencies_found');

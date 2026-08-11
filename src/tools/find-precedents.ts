@@ -199,12 +199,12 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
     if (r.truncated) truncatedAny = true;
     matched.push(...r.rows.filter((row) => row.report_nm.includes(keyword)));
 
+    // 시작일 도달 판정을 조기중단보다 먼저 — 마지막 창에서 후보가 다 모이면
+    // 실제로는 끝까지 훑고도 reached_requested_start:false 로 찍히던 경계 오류 (Codex 6차)
+    if (winFrom <= oldest) reachedOldest = true;
     const candidatesSoFar = selectCandidates(matched, { excludeCorpCode, onePerCompany });
     if (candidatesSoFar.length >= wantBuffer) break;
-    if (winFrom <= oldest) {
-      reachedOldest = true;
-      break;
-    }
+    if (reachedOldest) break;
     winTo = addDays(winFrom, -1);
   }
 
@@ -230,6 +230,16 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
 
   const candidates = selectCandidates(matched, { excludeCorpCode, onePerCompany });
   if (candidates.length === 0) {
+    // 일치 공시는 있었는데 제외 조건이 전부 걸러낸 경우 — "찾지 못했다"고 말하면 오보다 (Codex 6차)
+    if (matched.length > 0) {
+      throw new ToolError(
+        'document_not_found',
+        `${scannedFrom}~${today} 구간에서 보고서명에 '${keyword}' 가 들어간 공시 ${matched.length}건을 찾았으나 ` +
+          `전부 제외 조건(exclude_corp)에 해당해 남은 후보가 없습니다. ` +
+          `exclude_corp 를 빼거나 lookback_days 를 늘려보세요.`,
+        { keyword, preset: preset.label, matched_in_scanned: matched.length, coverage },
+      );
+    }
     // ★ 훑지 못한 구간을 훑은 것처럼 말하면 "그 유형은 없다"는 잘못된 확신을 준다.
     //   실제 스캔 구간(scannedFrom)으로 안내하고, 왜 거기서 멈췄는지도 밝힌다.
     const scope = truncatedAny
@@ -288,7 +298,11 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
       'body_unparsable',
       `'${keyword}' 선례 ${candidates.length}건을 찾았으나 원문을 파싱할 수 있는 건이 없었습니다. ` +
         `viewer_url 로 직접 확인하세요.`,
-      { candidates: candidates.slice(0, 5).map((c) => ({ rcept_no: c.rcept_no, corp_name: c.corp_name, viewer_url: viewerUrl(c.rcept_no) })) },
+      {
+        candidates: candidates.slice(0, 5).map((c) => ({ rcept_no: c.rcept_no, corp_name: c.corp_name, viewer_url: viewerUrl(c.rcept_no) })),
+        // 0건 에러와 같은 범위 계약 — 이 결과가 어느 구간에 대한 것인지 항상 알 수 있게 (Codex 6차)
+        coverage,
+      },
     );
   }
 
@@ -301,9 +315,14 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   const exhaustiveHint =
     '요청 기간 전체의 정확한 건수가 필요하면 search_disclosures(mode:"batch", report_name_contains, ' +
     'date_from·date_to를 3개월 이하로)로 구간을 나눠 훑으세요.';
+  // ★ "전수로 확인했습니다"는 절단이 없을 때만 말한다 — 절단 경고와 정반대 단정이
+  //   같은 응답에 공존하면 소비자(LLM)가 안심 문장만 채택할 수 있다 (Codex 6차 치명 지적)
+  const scannedScopePhrase = truncatedAny
+    ? `${scannedFrom}~${today} 구간도 일부 창이 페이지 상한에 걸려 전수가 아닙니다`
+    : `${scannedFrom}~${today} 구간은 전수로 확인했습니다`;
   if (coverage.stopped_early_on_enough_matches) {
     notes.push(
-      `사례가 충분히 모여 ${scannedFrom} 에서 멈췄습니다 — ${scannedFrom}~${today} 구간은 전수로 확인했지만 ` +
+      `사례가 충분히 모여 ${scannedFrom} 에서 멈췄습니다 — ${scannedScopePhrase}. ` +
         `그 이전(요청 시작일 ${oldest})은 보지 않았으므로 total_matched 는 요청 기간 전체의 건수가 아닙니다. ` +
         exhaustiveHint,
     );
@@ -311,14 +330,17 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   if (budgetExhausted) {
     notes.push(
       `시간 예산(${SCAN_BUDGET_SECONDS}초)에 걸려 ${scannedFrom} 이전 구간은 훑지 않았습니다 ` +
-        `(요청 시작일 ${oldest}). ${scannedFrom}~${today} 구간은 전수로 확인했습니다 — ` +
+        `(요청 시작일 ${oldest}). ${scannedScopePhrase} — ` +
         `이 결과로 "그 이전에는 없다"고 결론내지 마세요. ${exhaustiveHint}`,
     );
   }
   if (reachedOldest && !truncatedAny) {
     notes.push(
-      `요청 구간(${oldest}~${today}) 전체를 전수로 확인했습니다 — total_matched ${candidates.length}건이 ` +
-        `이 기간의 전부입니다(보고서명 부분일치 기준, 최종보고서 기준).`,
+      `요청 구간(${oldest}~${today}) 전체를 전수로 확인했습니다 — 보고서명 일치 공시는 총 ${matched.length}건` +
+        (matched.length !== candidates.length
+          ? `이고, 제외·회사당 1건 적용 후 남은 후보(total_matched)가 ${candidates.length}건입니다`
+          : `입니다`) +
+        ' (부분일치·최종보고서 기준).',
     );
   }
   if (truncatedAny) {
@@ -334,6 +356,9 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
     searched_from: scannedFrom,
     searched_to: today,
     coverage,
+    /** 훑은 구간에서 보고서명이 일치한 공시 총건수 (제외·회사당 1건 적용 전) */
+    matched_in_scanned: matched.length,
+    /** 제외·회사당 1건 적용 후 남은 선례 후보 수 — 일치 공시 총건수가 아니다 */
     total_matched: candidates.length,
     returned: precedents.length,
     ...(notes.length ? { notes } : {}),

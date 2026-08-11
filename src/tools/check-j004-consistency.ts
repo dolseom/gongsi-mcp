@@ -114,9 +114,11 @@ export function decideJ004Verdict(
   crossFailed: number,
 ): 'inconsistencies_found' | 'warnings_only' | 'not_checkable' | 'cross_check_incomplete' | 'consistent' {
   if (errors > 0) return 'inconsistencies_found';
+  // 대사 미수행을 경고보다 먼저 — warnings_only 는 "점검은 다 됐고 경고만 남았다"로 읽히므로
+  // 대사 실패를 가리면 그 자체가 거짓 안심이다. 경고 건수는 summary·stats 로 함께 전달된다 (Codex 6차).
+  if (crossFailed > 0) return 'cross_check_incomplete';
   if (warnings > 0) return 'warnings_only';
   if (!coreChecked) return 'not_checkable';
-  if (crossFailed > 0) return 'cross_check_incomplete';
   return 'consistent';
 }
 
@@ -262,13 +264,14 @@ export async function checkJ004Consistency(
     summary:
       errors > 0
         ? `불일치 ${errors}건(경고 ${warnings}건 별도)이 발견됐습니다. 정정 여부 판단은 assess_correction_risk 를 참고하세요.`
-        : warnings > 0
-          ? `치명적 불일치는 없고 경고 ${warnings}건이 있습니다.`
-          : !coreChecked
-            ? '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
-            : crossFailed > 0
-              ? `문서 내부 점검에서는 불일치가 없었으나, 요청한 개별회사 대사 ${crossRequested}건 중 ` +
-                `${crossFailed}건을 수행하지 못했습니다 — 대사까지 확인된 "정합"이 아닙니다.`
+        : crossFailed > 0
+          ? `요청한 개별회사 대사 ${crossRequested}건 중 ${crossFailed}건을 수행하지 못했습니다` +
+            (warnings > 0 ? ` (경고 ${warnings}건 별도)` : '') +
+            ' — 대사까지 확인된 "정합"이 아닙니다. 사유는 crossChecks[].note 를 보세요.'
+          : warnings > 0
+            ? `치명적 불일치는 없고 경고 ${warnings}건이 있습니다.`
+            : !coreChecked
+              ? '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
               : '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.',
     issues: shownIssues,
     ...(truncatedIssues ? { issuesTruncated: true, totalIssues: result.issues.length } : {}),

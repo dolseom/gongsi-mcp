@@ -99,6 +99,63 @@ describe('check_disclosure_duty', () => {
     expect('error' in r2 && r2.error).toBe('invalid_argument');
   });
 
+  it('공시일 하한은 duty별 기준일만 본다 — 무관한 boardDate 가 정상 입력을 거부하지 않는다 (Codex 6차)', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260701',
+      actualDisclosureDate: '20260702',
+      boardDate: '20261231', // unlisted_material 과 무관한 필드 — 검증에 끼면 안 된다
+      today: '20260710',
+    });
+    expect('error' in r).toBe(false);
+  });
+
+  it('의결일 당일 공시는 적법하게 통과한다 (하한은 미만 비교)', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      boardDate: '20260722',
+      actualDisclosureDate: '20260722',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+      today: '20260723',
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.compliance?.onTime).toBe(true);
+  });
+
+  it('group_status 도 연도 오타를 잡는다 — 과거 연도 공시일이 적법으로 통과하던 경로 (Codex 6차 치명)', () => {
+    // 재현: year 2026 2분기 기한 20260831, actualDisclosureDate 20250831(오타) → 종전엔 onTime:true
+    const r = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      quarter: 2,
+      actualDisclosureDate: '20250831',
+      today: '20260901',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+
+    // 연1회(5/31 기한)도 연도가 다르면 잡는다
+    const r2 = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      actualDisclosureDate: '20250520',
+      today: '20260601',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+
+    // 정상: 2026 연1회를 5월에 공시
+    const ok = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      actualDisclosureDate: '20260529',
+      today: '20260601',
+    });
+    if ('error' in ok) throw new Error('예상치 못한 에러 응답');
+    expect(ok.compliance?.onTime).toBe(true);
+  });
+
   it('기준금액 = min(100억, max(5억, 자본×5%)) — 60억', () => {
     const r = checkDisclosureDuty({
       duty: 'large_internal_transaction',

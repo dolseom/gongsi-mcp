@@ -231,26 +231,53 @@ function isQuarterEndYMD(ymd: string): boolean {
   return mmdd === '0331' || mmdd === '0630' || mmdd === '0930' || mmdd === '1231';
 }
 
+/**
+ * duty별 공시일 하한 기준일 — 무관한 날짜 필드가 검증에 끼어들지 않게 duty 로 선택한다 (Codex 6차).
+ * group_status 는 이벤트 입력이 없으므로 공시 대상 분기말(분기공시)·연도 시작일(연1회)을 하한으로 쓴다 —
+ * 연1회 공시가 그 해 5/31 기한인데 실제 공시일 연도가 다르면(2025↔2026 오타) 확실한 이상 신호다.
+ */
+function dutyEventDate(
+  input: CheckDisclosureDutyInput,
+  today: string,
+): { date: string; label: string } | null {
+  switch (input.duty) {
+    case 'large_internal_transaction':
+    case 'public_interest_corp':
+      return input.boardDate ? { date: input.boardDate, label: '이사회 의결일' } : null;
+    case 'unlisted_material':
+      return input.occurredDate ? { date: input.occurredDate, label: '사유 발생일' } : null;
+    case 'omnibus_financial':
+    case 'goods_services_reduced':
+      return input.quarterEnd ? { date: input.quarterEnd, label: '분기 종료일' } : null;
+    case 'group_status': {
+      const y = input.year ?? Number(today.slice(0, 4));
+      if (input.quarter) {
+        const mmdd = { 1: '0331', 2: '0630', 3: '0930', 4: '1231' }[input.quarter];
+        return { date: `${y}${mmdd}`, label: '공시 대상 분기 종료일' };
+      }
+      return { date: `${y}0101`, label: '공시 대상 연도 시작일' };
+    }
+  }
+}
+
 export function checkDisclosureDuty(
   input: CheckDisclosureDutyInput,
 ): DutyResult | ErrorResponse {
   const today = input.today ?? toYMD(new Date());
   const notes: string[] = [];
 
-  // 공시일 하한 검증 — 의결·사유 발생 전에 공시할 수는 없다. 연도 오타(2025↔2026)가
-  // "기한 내 = 적법"으로 둔갑하는 것을 막는다.
+  // 공시일 하한 검증 — 의결·사유 발생·분기말 전에 공시할 수는 없다. 연도 오타(2025↔2026)가
+  // "기한 내 = 적법"으로 둔갑하는 것을 막는다. 기준일은 duty별로 선택한다 (무관 필드 배제).
   // ※ 객체 수준 superRefine 은 MCP 경유 시 유실된다(registerTool 이 .shape 만 받음) — 핸들러에서 검사한다.
-  const eventDate = input.boardDate ?? input.occurredDate ?? input.quarterEnd;
-  if (
-    input.actualDisclosureDate &&
-    eventDate &&
-    toDate(input.actualDisclosureDate) < toDate(eventDate)
-  ) {
-    return errorResponse(
-      'invalid_argument',
-      `actualDisclosureDate(${input.actualDisclosureDate})가 기준일(${eventDate})보다 앞섭니다. ` +
-        '의결일·사유 발생일·분기 종료일 이전에 공시할 수는 없습니다 — 날짜 오타(특히 연도)를 확인하세요.',
-    );
+  if (input.actualDisclosureDate) {
+    const ev = dutyEventDate(input, today);
+    if (ev && toDate(input.actualDisclosureDate) < toDate(ev.date)) {
+      return errorResponse(
+        'invalid_argument',
+        `actualDisclosureDate(${input.actualDisclosureDate})가 ${ev.label}(${ev.date})보다 앞섭니다. ` +
+          '날짜 오타(특히 연도)를 확인하세요.',
+      );
+    }
   }
 
   // ── 기한 계산 ──
