@@ -34,6 +34,14 @@
   ],
   "license": "MIT",
   "author": "dolseom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dolseom/gongsi-mcp.git"
+  },
+  "homepage": "https://github.com/dolseom/gongsi-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/dolseom/gongsi-mcp/issues"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
