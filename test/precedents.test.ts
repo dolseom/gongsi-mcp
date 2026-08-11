@@ -83,7 +83,7 @@ describe('다년 선례 스캔 범위', () => {
     expect(parse(1825).success).toBe(true); // 5년
   });
 
-  it('5년을 넘는 요청은 거부한다 — 표본 스캔도 무한정 넓힐 수는 없다', () => {
+  it('5년을 넘는 요청은 거부한다 — 예산 내 전수 스캔도 무한정 넓힐 수는 없다', () => {
     expect(parse(1826).success).toBe(false);
   });
 

@@ -66,6 +66,8 @@ export interface CrossCheckReport {
   company: string | null;
   matched: boolean;
   matchedName?: string;
+  /** 실제로 숫자 대 숫자로 비교한 필드 수 — 0이면 회사는 찾았어도 대사가 수행되지 않은 것 */
+  fieldsCompared?: number;
   diffCount: number;
   diffs: ConsistencyIssue[];
   /** max_issues 예산에 걸려 diffs 가 잘렸는지 — diffCount 는 전체 건수를 유지한다 */
@@ -198,9 +200,18 @@ export async function checkJ004Consistency(
             company: firstData?.company ?? null,
             matched: cross.matched,
             ...(cross.matchedName ? { matchedName: cross.matchedName } : {}),
+            fieldsCompared: cross.fieldsCompared,
             diffCount: cross.diffs.length,
             diffs: cross.diffs,
-            ...(cross.matched ? {} : { note: '대표회사 취합 표에서 같은 이름의 회사를 찾지 못했습니다 (표기 차이 가능)' }),
+            ...(cross.matched
+              ? cross.fieldsCompared === 0
+                ? {
+                    note:
+                      '회사는 찾았으나 비교 가능한 숫자 필드가 0개입니다 (각주·"-"·자본잠식 표기 등으로 ' +
+                      '양쪽 값이 파싱되지 않음) — 대사가 수행되지 않은 것이므로 "일치"의 근거가 아닙니다',
+                  }
+                : {}
+              : { note: '대표회사 취합 표에서 같은 이름의 회사를 찾지 못했습니다 (표기 차이 가능)' }),
           });
         } catch (err) {
           crossChecks.push({
@@ -246,7 +257,8 @@ export async function checkJ004Consistency(
   // 전부 matched:false 로만 남고 diffCount 0 이라, 이대로 두면 "대사 0건 수행 + verdict consistent"가 된다.
   // 수행하지 못한 대사는 "불일치 없음"의 근거가 아니다 (find_precedents 표본 결함과 같은 유형의 거짓 안심).
   const crossRequested = input.compare_rcept_nos?.length ?? 0;
-  const crossFailed = crossChecks.filter((c) => !c.matched).length;
+  // 이름 매칭 실패뿐 아니라 "매칭됐지만 비교 필드 0개"도 실패다 — 둘 다 대사가 수행되지 않았다
+  const crossFailed = crossChecks.filter((c) => !c.matched || c.fieldsCompared === 0).length;
   if (crossFailed > 0) {
     notes.push(
       `⚠️ 요청한 개별회사 대사 ${crossRequested}건 중 ${crossFailed}건을 수행하지 못했습니다 ` +
@@ -281,7 +293,7 @@ export async function checkJ004Consistency(
       ...result.stats,
       errors,
       warnings,
-      crossChecked: crossChecks.filter((c) => c.matched).length,
+      crossChecked: crossChecks.filter((c) => c.matched && c.fieldsCompared !== 0).length,
       crossCheckFailed: crossFailed,
     },
     notes,

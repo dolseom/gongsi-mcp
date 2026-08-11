@@ -578,10 +578,10 @@ export function crossCheckFinanceRow(
   repRows: FinanceRow[],
   indivRows: FinanceRow[],
   indivCompanyName: string,
-): { matched: boolean; matchedName?: string; diffs: ConsistencyIssue[] } {
+): { matched: boolean; matchedName?: string; diffs: ConsistencyIssue[]; fieldsCompared: number } {
   const indivData = indivRows.filter((r) => !r.isSubtotal && !r.isTotal);
   const target = indivData[0];
-  if (!target) return { matched: false, diffs: [] };
+  if (!target) return { matched: false, diffs: [], fieldsCompared: 0 };
 
   const rawName = (indivCompanyName || target.company).trim();
   const repData = repRows.filter((r) => !r.isSubtotal && !r.isTotal);
@@ -592,7 +592,7 @@ export function crossCheckFinanceRow(
   if (!repMatch) {
     const targetName = normalizeCompanyName(rawName);
     const candidates = repData.filter((r) => normalizeCompanyName(r.company) === targetName);
-    if (candidates.length !== 1) return { matched: false, diffs: [] };
+    if (candidates.length !== 1) return { matched: false, diffs: [], fieldsCompared: 0 };
     repMatch = candidates[0]!;
   }
 
@@ -602,10 +602,14 @@ export function crossCheckFinanceRow(
     ['currentLiabilities', '유동부채'], ['nonCurrentLiabilities', '비유동부채'], ['totalLiabilities', '부채총계'],
     ['paidInCapital', '자본금'], ['totalEquity', '자본총계'],
   ];
+  // 실제로 숫자 대 숫자로 비교한 필드 수 — 각주('(주1)')·'자본잠식'·'-' 등으로 양쪽이 null 이면
+  // 8개 키 전부가 조용히 빠질 수 있다. 0이면 "회사는 찾았지만 대사는 0건 수행"이므로 성공이 아니다.
+  let fieldsCompared = 0;
   for (const [key, label] of keys) {
     const a = repMatch[key];
     const b = target[key];
     if (typeof a !== 'number' || typeof b !== 'number') continue;
+    fieldsCompared++;
     if (Math.abs(a - b) > 0) {
       pushDiff(
         diffs, 'error', '대표회사↔개별회사 대사', repMatch.company, 'cross_doc_mismatch',
@@ -614,7 +618,7 @@ export function crossCheckFinanceRow(
       );
     }
   }
-  return { matched: true, matchedName: repMatch.company, diffs };
+  return { matched: true, matchedName: repMatch.company, diffs, fieldsCompared };
 }
 
 function fmt(n: number): string {

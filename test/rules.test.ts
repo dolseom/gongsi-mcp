@@ -254,6 +254,57 @@ describe('기한 — 유형별', () => {
   });
 });
 
+describe('과태료 0원 경로 차단 — 감경 상한 해석 (Opus 검토 C-1, 고시 원문 재확인 2026-08-11)', () => {
+  // Ⅵ.3.가 산식 이미지: 감경금액 = 기준금액 × 감경비율 합계. 단서의 상한만 "기본금액의 3/4".
+  // Ⅵ.2 비율(2024-08-07 신설)로 기준금액 < 기본금액이면 문언 그대로는 감경금액이 기준금액을
+  // 초과해 0원이 된다 → "감경 후 기준금액의 1/4 잔존" 취지 해석을 채택 (비율 미적용이면 동일).
+  const zeroCase = {
+    regime: 'art26_29' as const,
+    disclosed: true,
+    onTime: false,
+    delayDays: 3,
+    autoRenewalSameTerms: true, // 감경 합계 75% + 30% = 105%
+  };
+
+  it('지연 3일 + 자동연장 + 거래 10억: 0원이 아니라 기준금액의 25%가 남는다', () => {
+    const r = estimatePenalty({ ...zeroCase, transactionAmount: 10 * 억 });
+    // 기본총액 530만 × 50% = 기준 265만, 감경 상한 265×0.75 = 198.75만 → 66.25만 → 66만
+    expect(r.amount).toBe(660_000);
+    expect(r.caveats.join(' ')).toContain('감경비율 합계');
+    expect(r.formula).toContain('감경 상한');
+  });
+
+  it('거래금액을 정확히 줄수록 과태료가 사라지는 역전이 없다 — 금액에 대해 단조', () => {
+    const none = estimatePenalty(zeroCase).amount; // 비율 미적용 상한선 132만
+    const a10 = estimatePenalty({ ...zeroCase, transactionAmount: 10 * 억 }).amount; // 66만
+    const a60 = estimatePenalty({ ...zeroCase, transactionAmount: 60 * 억 }).amount;
+    const a80 = estimatePenalty({ ...zeroCase, transactionAmount: 80 * 억 }).amount;
+    const a100 = estimatePenalty({ ...zeroCase, transactionAmount: 100 * 억 }).amount;
+    expect(a10).toBeGreaterThan(0);
+    expect(a10).toBeLessThanOrEqual(a60);
+    expect(a60).toBeLessThanOrEqual(a80);
+    expect(a80).toBeLessThanOrEqual(a100);
+    expect(a100).toBe(none); // 100억↑ = 비율 1.0 = 미지정 상한선과 동일
+  });
+
+  it('비율 미적용이면 종전 동작과 완전히 같다 — Codex 5차 회귀값 132만 유지', () => {
+    const r = estimatePenalty({ ...zeroCase, pppOperator: true }); // 감경 합계 155%
+    expect(r.amount).toBe(1_320_000); // 530만 − min(·, 530×0.75=397.5만) = 132.5만 → 132만
+    // 기준금액 = 기본금액이라 해석 분기 caveat 는 붙지 않는다
+    expect(r.caveats.join(' ')).not.toContain('감경비율 합계');
+  });
+
+  it('감경 합계가 75% 이하면 상한이 물리지 않는다', () => {
+    const r = estimatePenalty({
+      regime: 'art26_29', disclosed: true, onTime: false, delayDays: 5, // 50%만
+      transactionAmount: 10 * 억,
+    });
+    // 기준 275만 − 137.5만 = 137.5만 → 137만 (battery4 실측과 일치)
+    expect(r.amount).toBe(1_370_000);
+    expect(r.formula).not.toContain('감경 상한');
+  });
+});
+
 describe('과태료 — 별표9 + 고시', () => {
   it('§26 이사회 의결 없이 미공시 = 7,000만원', () => {
     const r = estimatePenalty({
@@ -555,8 +606,10 @@ describe('거래금액별 적용비율 — 고시 Ⅵ.2 (기준금액)', () => {
     expect(r.caveats).toEqual([]);
   });
 
-  it('가중·감경은 기준금액에 곱하고 상한만 기본금액 기준이다 (고시 Ⅵ.3.가)', () => {
-    // 감경비율 합계 1.55(지연 3일 75% + 자동연장 30% + 민간투자 50%)로 상한을 실제로 물린다.
+  it('감경이 아무리 커도 기준금액의 25%는 남는다 — 문언(기본금액 3/4 상한)의 0원 결과를 뒤집은 해석', () => {
+    // ⚠️ 이 테스트는 종전에 amount 0 을 "의도된 동작"으로 고정하고 있었다 (Codex 5차 당시 문언 그대로 구현).
+    //    Opus 검토(C-1)가 "거래금액을 정확히 줄수록 0원이 되는 역전 = 최악의 거짓 안심"임을 지적,
+    //    원문 재확인(2026-08-11) 후 감경 상한을 기준금액의 3/4에도 함께 거는 해석으로 교체했다.
     const v = {
       regime: 'art26_29' as const,
       boardResolution: true,
@@ -564,16 +617,14 @@ describe('거래금액별 적용비율 — 고시 Ⅵ.2 (기준금액)', () => {
       onTime: false,
       delayDays: 3,
       autoRenewalSameTerms: true,
-      pppOperator: true,
+      pppOperator: true, // 감경비율 합계 1.55
     };
     const r = estimatePenalty({ ...v, transactionAmount: 10 * 억 });
     // 기본금액총액 = 500만 + 30만 = 530만, 기준금액 = 265만
-    // 감경 = min(265만 × 1.55 = 410.75만, 530만 × 0.75 = 397.5만) → 397.5만 (상한이 물린다)
+    // 감경 = min(265만 × 1.55, 530만 × 0.75, 265만 × 0.75 = 198.75만) → 198.75만
     expect(r.standardAmount).toBe(2_650_000);
-    expect(r.amount).toBe(0); // 265만 − 397.5만 < 0 → 0으로 하한
-    // 상한이 기준금액(265만)이 아니라 기본금액총액(530만) 기준임을 확인
-    const capOnStandard = 2_650_000 * 0.75;
-    expect(5_300_000 * 0.75).toBeGreaterThan(capOnStandard);
+    expect(r.amount).toBe(660_000); // 265만 − 198.75만 = 66.25만 → 66만 (0원이 아니다)
+    expect(r.caveats.join(' ')).toContain('감경비율 합계'); // 해석 채택을 밝힌다
   });
 });
 

@@ -270,6 +270,32 @@ describe('대표회사 ↔ 개별회사 대사', () => {
     expect(r.diffs.some((d) => d.detail.includes('자본총계'))).toBe(true);
   });
 
+  it('회사는 매칭됐지만 비교 가능한 숫자 필드가 0개면 fieldsCompared=0 — "일치"의 근거가 아니다 (Opus M-3)', () => {
+    const rep = parseFinanceTable(splitSections(repMd).find((s) => s.title.includes('재무현황'))!.tables[1]!)!;
+    // 전 수치가 null — 각주('(주1)')·'자본잠식'·'-' 표기로 양쪽 파싱이 전부 실패한 상황의 재현
+    const nullRow = {
+      group: '비금융회사', company: '에프앤씨티(유)',
+      currentAssets: null, nonCurrentAssets: null, totalAssets: null,
+      currentLiabilities: null, nonCurrentLiabilities: null, totalLiabilities: null,
+      paidInCapital: null, totalEquity: null, debtRatio: null,
+      isSubtotal: false, isTotal: false,
+    };
+    const r = crossCheckFinanceRow(rep, [nullRow], '에프앤씨티(유)');
+    expect(r.matched).toBe(true);
+    expect(r.fieldsCompared).toBe(0);
+    expect(r.diffs).toEqual([]);
+  });
+
+  it('정상 대사는 비교한 필드 수를 보고한다', () => {
+    const rep = parseFinanceTable(splitSections(repMd).find((s) => s.title.includes('재무현황'))!.tables[1]!)!;
+    const indivMd = financeMd([
+      '| 비금융회사 | 에프앤씨티(유) | 491 | 488 | - | 491 | - | - | - | - | 50 | 491 | - |',
+    ]);
+    const indiv = parseFinanceTable(splitSections(indivMd).find((s) => s.title.includes('재무현황'))!.tables[1]!)!;
+    const r = crossCheckFinanceRow(rep, indiv, '에프앤씨티(유)');
+    expect(r.fieldsCompared).toBeGreaterThan(0);
+  });
+
   it('취합 표에 없는 회사는 matched=false', () => {
     const rep = parseFinanceTable(splitSections(repMd).find((s) => s.title.includes('재무현황'))!.tables[1]!)!;
     const indivMd = financeMd([

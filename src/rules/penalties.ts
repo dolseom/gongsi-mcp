@@ -241,11 +241,30 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     }
   }
 
-  // 고시 Ⅵ.3.가 — 가중·감경액은 기준금액에 비율을 곱하되, 상한은 기본금액 기준(1/2, 3/4)이다.
+  // 고시 Ⅵ.3.가 — 가중·감경액은 기준금액에 비율을 곱하되, 문언상 상한은 기본금액 기준(1/2, 3/4)이다.
+  //
+  // ★ 문언 그대로면 0원이 나온다 (2026-08-11 원문 재확인, Opus 교차검토가 발견):
+  //   Ⅵ.2 비율(2024-08-07 신설)로 기준금액 < 기본금액이 된 상태에서 감경비율 합이 100%를 넘으면
+  //   (예: 지연 3일 75% + 자동연장 30% = 105%) 감경금액이 기준금액 자체를 초과해 부과 과태료가
+  //   0원·음수가 된다. 거래금액을 정확히 줄수록 0원이 나오는 역전이라 최악의 거짓 안심이다.
+  //   면제(Ⅴ)가 아닌 감경(Ⅵ.3)만으로 0원이 되는 해석은 체계상 무리로 보아, 감경 상한을
+  //   "감경 후에도 기준금액의 4분의 1이 남는다"는 취지로 기준금액의 4분의 3에도 함께 건다
+  //   (비율 미적용이면 기준금액 = 기본금액이라 종전 동작과 완전히 같다).
+  //   가중 쪽은 문언대로 둔다 — 과대 방향이라 거짓 안심이 아니고, 낮추면 과소 산정 위험이 있다.
   const aggRate = aggravations.reduce((s, a) => s + a.rate, 0);
   const mitRate = mitigations.reduce((s, m) => s + m.rate, 0);
   const aggAmount = Math.min(standardAmount * aggRate, basicTotal * 0.5);
-  const mitAmount = Math.min(standardAmount * mitRate, basicTotal * 0.75);
+  const mitAmount = Math.min(standardAmount * mitRate, basicTotal * 0.75, standardAmount * 0.75);
+  const mitCapBound = mitRate > 0.75; // 감경 상한(3/4)이 실제로 물렸는가
+  if (mitCapBound && standardAmount < basicTotal) {
+    caveats.push(
+      `⚠️ 감경비율 합계가 ${Math.round(mitRate * 100)}%로 75%를 초과합니다. 고시 Ⅵ.3.가 단서의 감경 상한` +
+        '(기본금액의 4분의 3)을 문언 그대로 적용하면 거래금액 적용비율(Ⅵ.2)과 결합해 감경금액이 기준금액을 ' +
+        '초과, 부과 과태료가 0원이 됩니다. 이 산정은 "감경 후에도 기준금액의 4분의 1이 남는다"는 취지 해석을 ' +
+        '채택해 감경을 기준금액의 4분의 3으로 상한했습니다. 실제 부과액은 공정위 재량이며, 0원(사실상 면제)이 ' +
+        '되려면 고시 Ⅴ의 면제 요건 충족 여부를 별도로 확인해야 합니다.',
+    );
+  }
 
   let amount = standardAmount + aggAmount - mitAmount;
 
@@ -299,7 +318,12 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     );
   }
   if (aggAmount > 0) formulaParts.push(`+ 가중 ${(aggAmount / 만).toLocaleString('ko-KR')}만원`);
-  if (mitAmount > 0) formulaParts.push(`− 감경 ${(mitAmount / 만).toLocaleString('ko-KR')}만원`);
+  if (mitAmount > 0) {
+    formulaParts.push(
+      `− 감경 ${(mitAmount / 만).toLocaleString('ko-KR')}만원` +
+        (mitCapBound ? ' (감경 상한: 기준금액의 4분의 3)' : ''),
+    );
+  }
   if (capApplied) formulaParts.push(`→ 상한 적용`);
   formulaParts.push(`= ${(amount / 만).toLocaleString('ko-KR')}만원`);
 
@@ -307,6 +331,7 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     amount,
     baseAmount,
     dailySurcharge,
+    basicTotal,
     standardAmount,
     // 비율을 적용하지 못한 §26·§29 건은 확정 추정치가 아니라 상한선이다.
     isUpperBound: v.regime === 'art26_29' && amount > 0 && transactionRatio === undefined,
