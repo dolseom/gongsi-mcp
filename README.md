@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/hero.jpg" alt="gongsi-mcp — 공시담당자를 위한 공정위 공시 컴플라이언스 MCP 서버" width="100%" />
+  <img src="https://raw.githubusercontent.com/dolseom/gongsi-mcp/main/docs/hero.jpg" alt="gongsi-mcp — 공시담당자를 위한 공정위 공시 컴플라이언스 MCP 서버" width="100%" />
 </p>
 
 # gongsi-mcp
