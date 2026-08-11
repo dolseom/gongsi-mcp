@@ -196,12 +196,23 @@ claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 
 ## 설치 상세
 
-### 0단계: 인증키 발급
+### 0단계: 인증키 발급 — **DART 키 하나면 충분합니다**
 
-- `DART_API_KEY` (필수) — [OpenDART](https://opendart.fss.or.kr)에서 무료 발급 (즉시, 일 20,000건)
-- `EGROUP_API_KEY` (선택) — [공공데이터포털](https://www.data.go.kr)에서 키 발급 후 **기업집단포털 4개 API 각각 활용신청**: `publicYmList` · `appnGroupSttusList` · `appnGroupAffiList` · `financeCompSttusList`. 없으면 DART 단독 기능만 동작하며 판정·검색·원문·재무 도구는 전부 사용 가능
+`DART_API_KEY` 하나만 [OpenDART](https://opendart.fss.or.kr)에서 무료 발급받으세요 (즉시, 일 20,000건).
+
+| 단계 | 필요한 키 | 사용 가능한 기능 |
+|---|---|:---|
+| 키 없음 | — | 공시의무 판정·기한·과태료 계산, 영업일 계산, 정정 리스크 진단, 공정위 Q&A — **핵심 판정 기능은 룰 엔진 + 내장 데이터라 키가 필요 없습니다** |
+| DART 키 | `DART_API_KEY` | + 공시 검색·원문·선례·회사 식별·재무 조회·정합성 점검·기한 감사 — **일반적인 사용은 여기까지로 충분** |
+| 포털 키 추가 | `EGROUP_API_KEY` | + 계열사 전수 목록·집단 재무, 기업집단명("삼성")으로 소속 확인, 집단 단위 일괄 감사 |
+
+<details>
+<summary><b>EGROUP_API_KEY 발급 방법</b> (계열사 전수 조회가 필요해지면 그때)</summary>
+
+[공공데이터포털](https://www.data.go.kr)에서 키 발급 후 **공정위 기업집단포털 4개 API 각각 활용신청**: `publicYmList` · `appnGroupSttusList` · `appnGroupAffiList` · `financeCompSttusList`.
 
 > ⚠️ 공공데이터포털 인증키는 계정당 1개를 모든 API가 공유하지만, **활용신청은 API별로 따로** 해야 합니다. 미신청 API는 같은 키로도 403이 나옵니다 — 키 문제로 오해하기 쉬운 함정.
+</details>
 
 ### 방법 1: setup 마법사 + Claude Code (권장)
 
