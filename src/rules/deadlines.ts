@@ -149,12 +149,26 @@ export function unlistedMajorShareholderDeadline(occurredDate: YMD): DeadlineRes
 }
 
 /**
+ * 분기 종료일 검증 — "2분기니까 7월 말" 같은 흔한 착각을 그대로 받으면
+ * 기한이 통째로 밀려 30일 지연이 "적법"으로 뒤집힌다 (subcontractPaymentDeadline 과 같은 패턴).
+ */
+function assertQuarterEnd(quarterEnd: YMD): void {
+  const mmdd = quarterEnd.slice(4);
+  if (mmdd !== '0331' && mmdd !== '0630' && mmdd !== '0930' && mmdd !== '1231') {
+    throw new Error(
+      `분기 종료일은 3월 31일·6월 30일·9월 30일·12월 31일 중 하나여야 합니다: ${quarterEnd}`,
+    );
+  }
+}
+
+/**
  * 약관에 의한 금융거래 분기별 공시기한 — 고시 §9③⑤
  * 해당 분기 종료 후 익월 10영업일까지
  *
  * @param quarterEnd 분기 종료일 (예: '20260630')
  */
 export function omnibusQuarterlyDeadline(quarterEnd: YMD): DeadlineResult {
+  assertQuarterEnd(quarterEnd);
   // 분기 종료일 다음 날부터 세면 익월 1일부터의 영업일 카운트와 같아진다.
   const raw = addBusinessDays(quarterEnd, 10);
   return finalize(
@@ -170,6 +184,7 @@ export function omnibusQuarterlyDeadline(quarterEnd: YMD): DeadlineResult {
  * 분기 종료 후 45일 (달력일)
  */
 export function goodsServicesReducedDeadline(quarterEnd: YMD): DeadlineResult {
+  assertQuarterEnd(quarterEnd);
   const raw = toYMD(new Date(toDate(quarterEnd).getTime() + 45 * 86_400_000));
   return finalize(raw, `분기 종료(${quarterEnd}) 후 45일 이내 (달력일)`, 0, REF_GOODS_45);
 }

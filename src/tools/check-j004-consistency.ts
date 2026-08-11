@@ -103,6 +103,23 @@ export function applyIssueBudget(
   return { shownIssues, shownCrossChecks, crossChecksTruncated };
 }
 
+/**
+ * verdict 결정 — 수행하지 못한 대사(crossFailed)가 있으면 'consistent' 를 반환하지 않는다.
+ * 대사가 전건 실패해도 diffCount 0 으로만 남아 "정합"이 되던 거짓 안심 경로의 차단 지점이다.
+ */
+export function decideJ004Verdict(
+  errors: number,
+  warnings: number,
+  coreChecked: boolean,
+  crossFailed: number,
+): 'inconsistencies_found' | 'warnings_only' | 'not_checkable' | 'cross_check_incomplete' | 'consistent' {
+  if (errors > 0) return 'inconsistencies_found';
+  if (warnings > 0) return 'warnings_only';
+  if (!coreChecked) return 'not_checkable';
+  if (crossFailed > 0) return 'cross_check_incomplete';
+  return 'consistent';
+}
+
 export async function checkJ004Consistency(
   input: CheckJ004ConsistencyInput,
 ): Promise<Record<string, unknown> | ErrorResponse> {
@@ -222,14 +239,20 @@ export async function checkJ004Consistency(
   // 핵심 표(재무현황)를 하나도 검증하지 못했으면 "정합"이라고 말하지 않는다 —
   // 비-J004 문서·파서 회귀가 가장 신뢰도 높은 정상 판정으로 뒤바뀌는 것을 막는다 (Codex 3차)
   const coreChecked = result.financeRows !== null;
-  const verdict =
-    errors > 0
-      ? 'inconsistencies_found'
-      : warnings > 0
-        ? 'warnings_only'
-        : coreChecked
-          ? 'consistent'
-          : 'not_checkable';
+
+  // 요청받은 대사 중 수행하지 못한 건수 — 회사명 표기 차이·개별문서 표 미검출·문서 로드 실패는
+  // 전부 matched:false 로만 남고 diffCount 0 이라, 이대로 두면 "대사 0건 수행 + verdict consistent"가 된다.
+  // 수행하지 못한 대사는 "불일치 없음"의 근거가 아니다 (find_precedents 표본 결함과 같은 유형의 거짓 안심).
+  const crossRequested = input.compare_rcept_nos?.length ?? 0;
+  const crossFailed = crossChecks.filter((c) => !c.matched).length;
+  if (crossFailed > 0) {
+    notes.push(
+      `⚠️ 요청한 개별회사 대사 ${crossRequested}건 중 ${crossFailed}건을 수행하지 못했습니다 ` +
+        '(사유는 crossChecks[].note 참조). 수행하지 못한 대사는 "불일치 없음"의 근거가 아닙니다.',
+    );
+  }
+
+  const verdict = decideJ004Verdict(errors, warnings, coreChecked, crossFailed);
 
   return {
     rcept_no: input.rcept_no,
@@ -241,9 +264,12 @@ export async function checkJ004Consistency(
         ? `불일치 ${errors}건(경고 ${warnings}건 별도)이 발견됐습니다. 정정 여부 판단은 assess_correction_risk 를 참고하세요.`
         : warnings > 0
           ? `치명적 불일치는 없고 경고 ${warnings}건이 있습니다.`
-          : coreChecked
-            ? '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.'
-            : '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.',
+          : !coreChecked
+            ? '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
+            : crossFailed > 0
+              ? `문서 내부 점검에서는 불일치가 없었으나, 요청한 개별회사 대사 ${crossRequested}건 중 ` +
+                `${crossFailed}건을 수행하지 못했습니다 — 대사까지 확인된 "정합"이 아닙니다.`
+              : '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.',
     issues: shownIssues,
     ...(truncatedIssues ? { issuesTruncated: true, totalIssues: result.issues.length } : {}),
     ...(shownCrossChecks.length > 0 ? { crossChecks: shownCrossChecks } : {}),
@@ -253,6 +279,7 @@ export async function checkJ004Consistency(
       errors,
       warnings,
       crossChecked: crossChecks.filter((c) => c.matched).length,
+      crossCheckFailed: crossFailed,
     },
     notes,
     disclaimer:

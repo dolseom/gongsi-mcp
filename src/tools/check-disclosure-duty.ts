@@ -225,11 +225,33 @@ const DISCLAIMER =
   '본 판정은 공개된 법령·고시에 기반한 참고 정보이며 공정거래위원회의 공식 유권해석이 아닙니다. ' +
   '실제 신고 전 소관 부서 확인을 권장합니다.';
 
+/** 분기 종료일 형식인지 — "2분기 → 7월 말" 착각을 받으면 기한이 밀려 지연이 "적법"으로 뒤집힌다 */
+function isQuarterEndYMD(ymd: string): boolean {
+  const mmdd = ymd.slice(4);
+  return mmdd === '0331' || mmdd === '0630' || mmdd === '0930' || mmdd === '1231';
+}
+
 export function checkDisclosureDuty(
   input: CheckDisclosureDutyInput,
 ): DutyResult | ErrorResponse {
   const today = input.today ?? toYMD(new Date());
   const notes: string[] = [];
+
+  // 공시일 하한 검증 — 의결·사유 발생 전에 공시할 수는 없다. 연도 오타(2025↔2026)가
+  // "기한 내 = 적법"으로 둔갑하는 것을 막는다.
+  // ※ 객체 수준 superRefine 은 MCP 경유 시 유실된다(registerTool 이 .shape 만 받음) — 핸들러에서 검사한다.
+  const eventDate = input.boardDate ?? input.occurredDate ?? input.quarterEnd;
+  if (
+    input.actualDisclosureDate &&
+    eventDate &&
+    toDate(input.actualDisclosureDate) < toDate(eventDate)
+  ) {
+    return errorResponse(
+      'invalid_argument',
+      `actualDisclosureDate(${input.actualDisclosureDate})가 기준일(${eventDate})보다 앞섭니다. ` +
+        '의결일·사유 발생일·분기 종료일 이전에 공시할 수는 없습니다 — 날짜 오타(특히 연도)를 확인하세요.',
+    );
+  }
 
   // ── 기한 계산 ──
   let deadline: DeadlineResult | undefined;
@@ -275,6 +297,13 @@ export function checkDisclosureDuty(
       if (!input.quarterEnd) {
         return errorResponse('invalid_argument', 'quarterEnd(분기 종료일)가 필요합니다.');
       }
+      if (!isQuarterEndYMD(input.quarterEnd)) {
+        return errorResponse(
+          'invalid_argument',
+          `quarterEnd(${input.quarterEnd})가 분기 종료일이 아닙니다. 3/31·6/30·9/30·12/31 중 하나를 넣으세요 — ` +
+            '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
+        );
+      }
       deadline = omnibusQuarterlyDeadline(input.quarterEnd);
       notes.push(
         '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다.',
@@ -284,6 +313,13 @@ export function checkDisclosureDuty(
     case 'goods_services_reduced': {
       if (!input.quarterEnd) {
         return errorResponse('invalid_argument', 'quarterEnd(분기 종료일)가 필요합니다.');
+      }
+      if (!isQuarterEndYMD(input.quarterEnd)) {
+        return errorResponse(
+          'invalid_argument',
+          `quarterEnd(${input.quarterEnd})가 분기 종료일이 아닙니다. 3/31·6/30·9/30·12/31 중 하나를 넣으세요 — ` +
+            '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
+        );
       }
       deadline = goodsServicesReducedDeadline(input.quarterEnd);
       break;

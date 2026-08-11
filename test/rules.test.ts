@@ -12,6 +12,7 @@ import {
 import { calcThreshold, effectiveEquity, 억 } from '../src/rules/thresholds.js';
 import {
   evaluateCompliance,
+  goodsServicesReducedDeadline,
   groupStatusQuarterlyDeadline,
   litDeadline,
   omnibusQuarterlyDeadline,
@@ -150,6 +151,23 @@ describe('기한 — 유형별', () => {
     // 2분기 종료 6/30(화) → 7/1부터 10영업일째 = 7/14(화)
     const d = omnibusQuarterlyDeadline('20260630');
     expect(d.deadline).toBe('20260714');
+  });
+
+  it('분기 종료일이 아니면 던진다 — "2분기 = 7월 말" 착각이 30일 지연을 적법으로 뒤집는다 (P0-1)', () => {
+    // 실측 재현: quarterEnd 20260731 을 받으면 기한이 20260814 가 되어
+    // 실제 기한(20260714) 대비 30일 지연 공시가 "적법"으로 나왔다
+    expect(() => omnibusQuarterlyDeadline('20260731')).toThrow('분기 종료일');
+    expect(() => goodsServicesReducedDeadline('20260731')).toThrow('분기 종료일');
+    expect(() => omnibusQuarterlyDeadline('20260601')).toThrow('분기 종료일');
+    // 정상 분기말 4종은 전부 통과한다
+    for (const q of ['20260331', '20260630', '20260930', '20261231']) {
+      expect(() => omnibusQuarterlyDeadline(q)).not.toThrow();
+      expect(() => goodsServicesReducedDeadline(q)).not.toThrow();
+    }
+  });
+
+  it('상품·용역 감소 특례는 분기 종료 후 45일 (달력일)', () => {
+    expect(goodsServicesReducedDeadline('20260630').deadline).toBe('20260814');
   });
 
   it('하도급 결제조건은 반기 종료일 다음 날부터 45일 (가이드라인 명시 8/14와 일치)', () => {

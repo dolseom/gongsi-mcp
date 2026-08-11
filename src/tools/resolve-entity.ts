@@ -192,7 +192,7 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
  * 포털은 연 1회 갱신이므로 **집단별 계열사 목록 자체를 캐시**한다 —
  * 최초 1회만 API를 돌고, 이후에는 어떤 회사를 조회해도 캐시로 즉답한다.
  */
-async function findGroupByJurirNo(
+export async function findGroupByJurirNo(
   egroup: EgroupClient,
   jurirNo: string,
   yearMonth: string,
@@ -205,17 +205,36 @@ async function findGroupByJurirNo(
   if (store.get(`jurir_group_miss:${yearMonth}:${jurirNo}`)) return null;
 
   const groups = await egroup.groups(yearMonth);
+  if (groups.length === 0) {
+    // 빈 집단 목록은 "미소속"의 근거가 아니다 — 미공개 연월이거나 상류 오류다.
+    // 이대로 순회 0회 → miss 기록이 되면 "기업집단 미소속 = 공시의무 없음"이 박제된다 (get-group-structure 와 동일 가드).
+    throw new ToolError(
+      'group_not_found',
+      `${yearMonth} 기준 지정 기업집단 목록이 비어 있습니다. 해당 연도 지정이 아직 공개되지 않았을 수 있습니다 — ` +
+        `yearMonth 를 전년도 5월(예: ${Number(yearMonth.slice(0, 4)) - 1}05)로 지정해 다시 시도하세요.`,
+      { year_month: yearMonth },
+    );
+  }
   log.info('기업집단 역조회 시작', { jurirNo, groups: groups.length, yearMonth });
 
+  let sawEmptyAffiliates = false;
   for (const g of groups) {
     const affKey = `egroup_affiliates:${yearMonth}:${g.unityGrupCode}`;
     let affiliates: Awaited<ReturnType<EgroupClient['affiliates']>>;
     const affCached = store.get(affKey);
-    if (affCached) {
-      affiliates = JSON.parse(affCached) as typeof affiliates;
+    const cachedList = affCached ? (JSON.parse(affCached) as typeof affiliates) : null;
+    // 캐시된 빈 목록은 과거 오염분일 수 있으므로 무시하고 다시 받는다 (자가 치유)
+    if (cachedList && cachedList.length > 0) {
+      affiliates = cachedList;
     } else {
       affiliates = await egroup.affiliates(yearMonth, g.unityGrupCode);
-      store.set(affKey, JSON.stringify(affiliates));
+      // 빈 목록은 캐시하지 않는다 — 상류 오류를 연단위로 박제하면 1년짜리 오진이 된다
+      // (지정 집단은 소속회사가 반드시 있으므로 빈 응답은 정상값이 아니다. get-group-structure 와 동일 방어)
+      if (affiliates.length > 0) {
+        store.set(affKey, JSON.stringify(affiliates));
+      } else {
+        sawEmptyAffiliates = true;
+      }
     }
 
     const hit = affiliates.find((a) => String(a.jurirno).replace(/-/g, '') === jurirNo);
@@ -233,6 +252,15 @@ async function findGroupByJurirNo(
       store.set(hitKey, JSON.stringify(result));
       return result;
     }
+  }
+  if (sawEmptyAffiliates) {
+    // 일부 집단의 계열사 목록을 받지 못했다 — 이 상태의 "못 찾음"은 미소속의 근거가 아니므로
+    // miss 캐시도, not_found 단정도 하지 않는다.
+    throw new ToolError(
+      'egroup_api_error',
+      '일부 기업집단의 계열사 목록이 비어 있어 미소속 여부를 단정할 수 없습니다. 잠시 후 다시 시도하세요.',
+      { year_month: yearMonth },
+    );
   }
   store.set(`jurir_group_miss:${yearMonth}:${jurirNo}`, '1');
   return null;

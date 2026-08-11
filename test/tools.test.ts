@@ -48,6 +48,57 @@ describe('check_disclosure_duty', () => {
     expect(r.penalty).toBeDefined();
   });
 
+  it('quarterEnd 가 분기 종료일이 아니면 invalid_argument — 30일 지연이 적법으로 뒤집히던 경로 (P0-1)', () => {
+    // 실측 재현: quarterEnd 20260731 + 공시 20260813 이 "기한 20260814 · 적법 · warnings 0" 으로 나왔다.
+    // 정상값 20260630 이면 기한 20260714 → 30일 지연이다.
+    const r = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260731',
+      actualDisclosureDate: '20260813',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+
+    const r2 = checkDisclosureDuty({
+      duty: 'goods_services_reduced',
+      quarterEnd: '20260731',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+
+    // 정상 분기말은 기존 동작 유지
+    const ok = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260630',
+      actualDisclosureDate: '20260813',
+    });
+    if ('error' in ok) throw new Error('예상치 못한 에러 응답');
+    expect(ok.deadline?.deadline).toBe('20260714');
+    expect(ok.compliance?.onTime).toBe(false);
+  });
+
+  it('공시일이 의결일보다 앞서면 invalid_argument — 연도 오타가 적법으로 통과하던 경로 (P0-2)', () => {
+    // 실측 재현: boardDate 20260722 + actualDisclosureDate 20250728(연도 오타)이
+    // "기한 내이므로 적법" + notes/warnings 빈 배열로 나왔다
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      boardDate: '20260722',
+      actualDisclosureDate: '20250728',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+    if ('error' in r) expect(r.message).toContain('앞섭니다');
+
+    // 사유 발생일(비상장 중요사항)·분기 종료일(약관특례)도 같은 하한 검증을 받는다
+    const r2 = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260722',
+      actualDisclosureDate: '20250728',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+  });
+
   it('기준금액 = min(100억, max(5억, 자본×5%)) — 60억', () => {
     const r = checkDisclosureDuty({
       duty: 'large_internal_transaction',

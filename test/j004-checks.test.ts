@@ -10,7 +10,30 @@ import {
   parseFinanceTable,
   type ConsistencyIssue,
 } from '../src/rules/j004-checks.js';
-import { applyIssueBudget, type CrossCheckReport } from '../src/tools/check-j004-consistency.js';
+import {
+  applyIssueBudget,
+  decideJ004Verdict,
+  type CrossCheckReport,
+} from '../src/tools/check-j004-consistency.js';
+
+describe('decideJ004Verdict — 대사 실패가 consistent 로 둔갑하지 않는다 (P1 거짓 안심)', () => {
+  it('대사가 전건 실패하면 이슈 0건이어도 consistent 가 아니라 cross_check_incomplete', () => {
+    // 재현된 경로: 회사명 표기 차이·표 미검출·로드 실패가 전부 diffCount 0 으로 기록되어
+    // errors 0 · warnings 0 · coreChecked true → 종전에는 'consistent' + "불일치가 발견되지 않았습니다"
+    expect(decideJ004Verdict(0, 0, true, 3)).toBe('cross_check_incomplete');
+  });
+
+  it('일부만 실패해도 consistent 를 반환하지 않는다', () => {
+    expect(decideJ004Verdict(0, 0, true, 1)).toBe('cross_check_incomplete');
+  });
+
+  it('기존 판정은 그대로다', () => {
+    expect(decideJ004Verdict(0, 0, true, 0)).toBe('consistent');
+    expect(decideJ004Verdict(2, 0, true, 0)).toBe('inconsistencies_found');
+    expect(decideJ004Verdict(0, 1, true, 0)).toBe('warnings_only');
+    expect(decideJ004Verdict(0, 0, false, 0)).toBe('not_checkable');
+  });
+});
 
 describe('md-table 파서', () => {
   it('공시 표기 숫자를 파싱한다', () => {
