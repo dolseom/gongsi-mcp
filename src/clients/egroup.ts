@@ -79,9 +79,17 @@ export class EgroupClient {
   constructor(serviceKey?: string) {
     const key = serviceKey ?? getConfig().egroupApiKey;
     if (!key) {
+      // README 는 DART 키만 안내한다 — 이 에러가 포털 키의 유일한 안내처이므로 발급 절차를 전부 담는다.
       throw new MissingApiKeyError(
         'EGROUP_API_KEY',
-        '공정위 기업집단포털(기업집단 구조·계열사·재무) 조회에 필요합니다. 미설정 시 DART 단독 기능만 동작합니다.',
+        '기업집단 기능(계열사 전수 목록·집단 재무·집단 단위 감사)에만 필요한 선택 키입니다. ' +
+          '나머지 판정·검색·원문·재무 기능은 이 키 없이 전부 동작합니다.\n' +
+          '발급 방법: ① 공공데이터포털(data.go.kr) 가입 후 인증키 발급(무료) ' +
+          '② "공정위 기업집단포털" API 4종을 각각 활용신청: publicYmList · appnGroupSttusList · ' +
+          'appnGroupAffiList · financeCompSttusList (신청 즉시~1일 내 승인) ' +
+          '③ EGROUP_API_KEY 로 설정 (npx gongsi-mcp setup 재실행 또는 ~/.gongsi-mcp/.env 에 추가).\n' +
+          '⚠️ 인증키는 계정당 1개를 모든 API 가 공유하지만 활용신청은 API 별로 따로 해야 하며, ' +
+          '미신청 API 는 같은 키로도 403 이 납니다.',
       );
     }
     this.serviceKey = key;
