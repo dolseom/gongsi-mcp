@@ -8,7 +8,7 @@
  *     여전히 조용히 자른다 — recall 사고의 본질은 상한값이 아니라 무고지였다. (docs §3-5)
  */
 
-import { getConfig } from '../lib/config.js';
+import { getConfig, USER_AGENT } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
 import { getStore, nextKstMidnightIso } from '../lib/store.js';
 import {
@@ -150,7 +150,7 @@ export class DartClient {
         // NOTE: connect/read 타임아웃 분리는 undici Agent 가 필요하다.
         // 지금은 전체 타임아웃만 적용한다. (TODO: dispatcher 도입 시 분리)
         const res = await fetch(url, {
-          headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
+          headers: { 'User-Agent': USER_AGENT },
           signal: AbortSignal.timeout(cfg.readTimeoutMs),
         });
 

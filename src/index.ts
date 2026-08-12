@@ -7,7 +7,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { loadDotEnv, getConfig, unknownEnvVars } from './lib/config.js';
+import { loadDotEnv, getConfig, unknownEnvVars, VERSION } from './lib/config.js';
 import { getLogger } from './lib/logger.js';
 import { ToolError, toErrorResponse } from './lib/errors.js';
 import {
@@ -38,7 +38,7 @@ import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-d
 loadDotEnv();
 const log = getLogger('server');
 
-const server = new McpServer({ name: 'gongsi-mcp', version: '0.1.0' });
+const server = new McpServer({ name: 'gongsi-mcp', version: VERSION });
 
 /**
  * 도구 핸들러 공통 래퍼.

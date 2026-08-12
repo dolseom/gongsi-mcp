@@ -10,7 +10,7 @@
  * 갱신주기는 연 1회(매년 5/1 기준)다. 캐시 TTL 1년, 5월 초 무효화.
  */
 
-import { getConfig } from '../lib/config.js';
+import { getConfig, USER_AGENT } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
 import { getStore } from '../lib/store.js';
 import { MissingApiKeyError, ToolError, UpstreamForbiddenError } from '../lib/errors.js';
@@ -124,7 +124,7 @@ export class EgroupClient {
     try {
       res = await fetch(url, {
         // ⚠️ 이 헤더가 없으면 403 이다. 지우지 말 것.
-        headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
+        headers: { 'User-Agent': USER_AGENT },
         signal: AbortSignal.timeout(cfg.readTimeoutMs),
       });
     } catch (err) {

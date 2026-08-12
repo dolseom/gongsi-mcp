@@ -25,6 +25,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { USER_AGENT } from './lib/config.js';
 
 const DART_GUIDE = 'https://opendart.fss.or.kr/ → 인증키 신청 (즉시 발급)';
 const EGROUP_GUIDE =
@@ -78,7 +79,7 @@ export async function validateEgroupKey(key: string): Promise<KeyCheck> {
     const url = `https://apis.data.go.kr/1130000/publicYmList/publicYmListApi?${sp}`;
     const res = await fetch(url, {
       // 이 헤더가 없으면 무조건 403 이다 — 검증 결과를 오염시키지 않도록 반드시 붙인다
-      headers: { 'User-Agent': 'gongsi-mcp/0.1.0' },
+      headers: { 'User-Agent': USER_AGENT },
       signal: AbortSignal.timeout(15_000),
     });
     const text = await res.text();

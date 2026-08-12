@@ -7,7 +7,7 @@
  *    참고 MCP는 config와 코드의 변수명이 달라 설정 3개가 조용히 무시되고 있었다.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -33,6 +33,25 @@ function findProjectRoot(): string {
 }
 
 const PROJECT_ROOT = findProjectRoot();
+
+/**
+ * 패키지 버전 — package.json 에서 한 번만 읽는다.
+ * 하드코딩 금지: 0.1.0 때 서버 선언·User-Agent 4곳에 흩어져 있어 범프 시
+ * 불일치 위험이 있었다 (참고 MCP 도 같은 사고를 실제로 겪음 — 피드백 §2-2 ⑦).
+ */
+export const VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8')) as {
+      version?: string;
+    };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
+/** HTTP 요청 공통 User-Agent */
+export const USER_AGENT = `gongsi-mcp/${VERSION}`;
 
 /**
  * `.env` 를 읽어 process.env 에 채운다. Node 21.7+ 내장 — 의존성 없음.

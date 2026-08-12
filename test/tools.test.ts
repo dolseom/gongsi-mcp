@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { checkDisclosureDuty } from '../src/tools/check-disclosure-duty.js';
 import { Store, __setStore, todayKst } from '../src/lib/store.js';
 import { redact } from '../src/lib/logger.js';
@@ -347,6 +349,15 @@ describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
   it('설정에 없는 키 형태도 가려진다', () => {
     const out = redact('serviceKey=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789');
     expect(out).not.toContain('abcdef0123456789abcdef0123456789');
+  });
+});
+
+describe('버전 단일 출처 (피드백 §2-2 ⑦ — 하드코딩 불일치 방지)', () => {
+  it('VERSION 이 package.json 과 일치한다 (루트 탐색 실패 시 0.0.0 폴백이 잡힘)', async () => {
+    const { VERSION, USER_AGENT } = await import('../src/lib/config.js');
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'));
+    expect(VERSION).toBe(pkg.version);
+    expect(USER_AGENT).toBe(`gongsi-mcp/${pkg.version}`);
   });
 });
 
