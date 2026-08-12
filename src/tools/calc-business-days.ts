@@ -275,6 +275,12 @@ export function calcBusinessDays(input: CalcBusinessDaysInput): CalcBusinessDays
       );
     }
     touchedDates = [input.date, target];
+    // 도구 설명이 "건너뛴 비영업일 목록 동봉"을 약속한다 — 이 분기만 빈 배열로 나가면
+    // "구간에 공휴일 없음"으로 읽힌다 (P2-마: 실측 20260810~20261015 에서 추석 연휴 누락 재현)
+    const [lo, hi] = input.date <= target ? [input.date, target] : [target, input.date];
+    const collected = collectSkipped(lo, hi);
+    skipped = collected.days;
+    skippedTruncated = collected.truncated;
     result = {
       to: target,
       businessDays: countBusinessDays(input.date, target),

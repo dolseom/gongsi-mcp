@@ -86,6 +86,16 @@ describe('calc_business_days — 영업일 세기·데이터 경계', () => {
     expect(r.result['calendarDays']).toBe(9);
   });
 
+  it('영업일 세기도 건너뛴 비영업일 목록을 동봉한다 (P2-마 — 빈 배열이면 "공휴일 없음"으로 읽힌다)', () => {
+    // 실측 재현 입력: 이 구간엔 추석 연휴가 있다. 종전엔 skippedNonBusinessDays 가 [] 였다.
+    const r = calcBusinessDays({ date: '20260810', count_business_days_to: '20261015' });
+    const skipped = r.skippedNonBusinessDays;
+    expect(skipped.length).toBeGreaterThan(0);
+    expect(skipped.some((d) => String(d.reason).includes('추석'))).toBe(true);
+    // 내적 정합: 달력일 − 영업일 = 건너뛴 날 수
+    expect(Number(r.result['calendarDays']) - Number(r.result['businessDays'])).toBe(skipped.length);
+  });
+
   it('간격이 3년을 넘으면 invalid_argument 로 거부한다', () => {
     expect(() =>
       calcBusinessDays({ date: '20260101', count_business_days_to: '20300101' }),
