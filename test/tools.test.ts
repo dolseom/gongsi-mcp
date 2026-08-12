@@ -352,6 +352,27 @@ describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
   });
 });
 
+describe('원문 영구 캐시의 rcept_no 불변 전제 (피드백 §2-3 — 암묵 전제의 명시 고정)', () => {
+  // 영구 캐시(TTL 없음)가 안전한 유일한 근거: 원본 접수분은 불변이고 정정은 새 rcept_no 로 온다.
+  // 이 전제가 안 통하는 데이터(목록·검색 결과·집계)는 bodies 테이블에 넣으면 안 된다.
+  it('본문 캐시 키는 rcept_no 단독이며 시간이 지나도 만료되지 않는다', () => {
+    const s = new Store(':memory:');
+    if (!s.ftsAvailable) return;
+    s.storeBody('20260101000001', '원문 내용', '공');
+    const got = s.getBody('20260101000001');
+    expect(got?.content).toBe('원문 내용');
+    // TTL 컬럼·만료 경로가 없다 — 아주 오래된 fetchedAt 이어도 그대로 반환된다는 계약.
+    // (만료를 도입하려면 이 테스트와 storeBody 주석의 전제를 함께 재검토할 것)
+    expect(got?.fetchedAt).toBeTruthy();
+    // 같은 rcept_no 재저장은 교체다 (force_refresh 경로) — 다른 rcept_no 에 영향 없다
+    s.storeBody('20260101000002', '다른 공시', '공');
+    s.storeBody('20260101000001', '갱신된 내용', '공');
+    expect(s.getBody('20260101000001')?.content).toBe('갱신된 내용');
+    expect(s.getBody('20260101000002')?.content).toBe('다른 공시');
+    s.close();
+  });
+});
+
 describe('버전 단일 출처 (피드백 §2-2 ⑦ — 하드코딩 불일치 방지)', () => {
   it('VERSION 이 package.json 과 일치한다 (루트 탐색 실패 시 0.0.0 폴백이 잡힘)', async () => {
     const { VERSION, USER_AGENT } = await import('../src/lib/config.js');

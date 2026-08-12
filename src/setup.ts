@@ -26,6 +26,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { USER_AGENT } from './lib/config.js';
+import { Store } from './lib/store.js';
 
 const DART_GUIDE = 'https://opendart.fss.or.kr/ → 인증키 신청 (즉시 발급)';
 const EGROUP_GUIDE =
@@ -297,6 +298,43 @@ export async function runSetup(argv: string[]): Promise<number> {
     writeFileSync(target.path, upsertEnvContent(existing, updates), { encoding: 'utf-8', mode: 0o600 });
     restrictPermissions(target.path);
     console.log(`\n.env 기록: ${target.path}${bak ? ` (기존 파일 백업: ${bak})` : ''}`);
+
+    // 캐시 DB 자가진단 — 특히 비ASCII(한글 사용자명 등) 경로.
+    // 다른 SQLite 바인딩에서 "한글 경로 + WAL 비호환"이 실측된 사례가 있다 (korean-dart-mcp 피드백 §3-2).
+    // node:sqlite 는 다른 구현이라 단정할 수 없으므로 추정 대신 실제로 한 번 열어 검증한다.
+    {
+      const cacheDb =
+        updates['GONGSI_CACHE_DB'] ?? join(process.cwd(), 'data', 'cache.db');
+      // eslint 없는 프로젝트 — 제어문자 검사 대신 코드포인트로 비ASCII 를 판정한다
+      const nonAscii = [...cacheDb].some((ch) => (ch.codePointAt(0) ?? 0) > 0x7f);
+      try {
+        const probe = new Store(cacheDb);
+        const key = `setup_selftest`;
+        const value = `한글값-${Date.now()}`;
+        probe.set(key, value);
+        const roundTrip = probe.get(key) === value;
+        const fts = probe.ftsAvailable;
+        probe.close();
+        if (!roundTrip) {
+          console.log(`\n⚠️ 캐시 DB 자가진단 실패 (읽기/쓰기 불일치): ${cacheDb}`);
+        } else {
+          console.log(
+            `캐시 DB 자가진단 통과: ${cacheDb}` +
+              `${nonAscii ? ' (비ASCII 경로 — WAL·FTS 동작 실측 확인됨)' : ''}` +
+              `${fts ? '' : ' ⚠️ FTS5 불가 — 원문 전문검색만 비활성화됩니다'}`,
+          );
+        }
+      } catch (err) {
+        console.log(
+          `\n⚠️ 캐시 DB 자가진단 실패: ${cacheDb}\n` +
+            `   사유: ${err instanceof Error ? err.message : String(err)}\n` +
+            (nonAscii
+              ? '   경로에 한글 등 비ASCII 문자가 있습니다 — GONGSI_CACHE_DB 를 ASCII 경로(예: C:\\gongsi-cache\\cache.db)로 지정해 보세요.\n'
+              : '') +
+            '   서버는 기동되지만 캐시 없이는 원문 재다운로드가 반복됩니다.',
+        );
+      }
+    }
 
     // 서버(config.ts)는 패키지 루트 .env 와 ~/.gongsi-mcp/.env 만 자동으로 읽는다 —
     // --env-path 로 다른 곳에 쓰면 "키를 넣었는데 인식이 안 된다"가 된다 (Codex 3차 백로그)

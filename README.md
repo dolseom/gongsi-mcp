@@ -118,7 +118,7 @@ claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 
 ---
 
-## 도구 (12개)
+## 도구 (13개)
 
 **판정·리스크 (공정위 공시 특화 — 이 서버에만 있는 것)**
 
@@ -141,6 +141,7 @@ claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 | `resolve_entity` | 회사·기업집단 통합 식별 — 동명 법인을 임의로 고르지 않음 |
 | `get_group_structure` | 기업집단 개요 + 소속회사 전수 + 재무현황 (공정위 포털 결합) |
 | `get_financials` | 재무제표 조회 — 자본총계·자본금이 판정 도구 입력으로 직결 |
+| `server_info` | 서버 상태 진단 — 버전, 키 인식 여부, 오늘 호출 잔량, 캐시 규모, 공휴일 데이터 검증 연도. "키를 넣었는데 인식이 안 돼요"의 진단 창구 |
 
 ---
 

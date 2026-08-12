@@ -34,6 +34,7 @@ import {
   checkJ004ConsistencyInput,
 } from './tools/check-j004-consistency.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
+import { serverInfo, serverInfoInput } from './tools/server-info.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -281,6 +282,22 @@ server.registerTool(
     inputSchema: checkJ004ConsistencyInput.shape,
   },
   wrap('check_j004_consistency', checkJ004Consistency),
+);
+
+server.registerTool(
+  'server_info',
+  {
+    title: '서버 상태·설정 진단',
+    description:
+      '서버 버전, 인증키 설정 여부(값은 노출하지 않음), 오늘 사용한 API 호출 수와 잔여 예산, ' +
+      '캐시 규모(법인 인덱스·원문 캐시), 공휴일 데이터 검증 연도, Q&A 지식베이스 건수를 돌려줍니다. ' +
+      '로컬 조회만 하므로 인증키·API 호출 없이 동작합니다.\n\n' +
+      '"키를 넣었는데 인식이 안 된다", "조회가 왜 느리냐/한도가 얼마 남았냐", ' +
+      '"공휴일 데이터가 몇 년도까지 있냐" 같은 질문의 진단 창구입니다. ' +
+      '개별 공시·재무 데이터 조회는 각 전용 도구를 사용하세요.',
+    inputSchema: serverInfoInput.shape,
+  },
+  wrap('server_info', serverInfo),
 );
 
 async function main(): Promise<void> {

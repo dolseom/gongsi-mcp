@@ -61,6 +61,13 @@ function loadAll(): Record<string, HolidayYear> {
   return out;
 }
 
+/** 보유 공휴일 데이터 연도별 검증 상태 — server_info 진단용 */
+export function holidayYearsStatus(): Array<{ year: string; verified: boolean; count: number }> {
+  return Object.entries(loadAll())
+    .map(([year, v]) => ({ year, verified: v.verified, count: v.holidays.length }))
+    .sort((a, b) => a.year.localeCompare(b.year));
+}
+
 /** 테스트용 — 공휴일 데이터를 직접 주입 */
 export function __setHolidayData(data: Record<string, HolidayYear>): void {
   cache = data;

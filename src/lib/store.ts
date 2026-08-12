@@ -93,9 +93,12 @@ export class Store {
   private db: DatabaseSync;
   /** FTS5 를 쓸 수 있는지. 없으면 원문 전문검색만 막고 나머지는 정상 동작한다. */
   readonly ftsAvailable: boolean;
+  /** 실제 열린 DB 경로 (진단용) */
+  readonly dbPath: string;
 
   constructor(path?: string) {
     const dbPath = path ?? getConfig().cacheDbPath;
+    this.dbPath = dbPath;
     if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA journal_mode=WAL');
@@ -116,6 +119,18 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /** 캐시 규모 스냅샷 — server_info 진단용 */
+  stats(): { corps: number; bodies: number } {
+    const count = (sql: string): number => {
+      const row = this.db.prepare(sql).get() as Record<string, unknown> | undefined;
+      return row ? Number(Object.values(row)[0]) : 0;
+    };
+    return {
+      corps: count('SELECT COUNT(*) FROM corps'),
+      bodies: this.ftsAvailable ? count('SELECT COUNT(*) FROM bodies') : 0,
+    };
   }
 
   // ---- 일일 호출 카운터 ----
@@ -237,6 +252,13 @@ export class Store {
    * 원문 저장. 재저장은 DELETE + INSERT 를 한 트랜잭션으로 한다 —
    * FTS5 는 REPLACE 거동에 편차가 있다.
    * 파싱에 실패한 원문도 빈 문자열로 저장해 재다운로드를 막는다.
+   *
+   * ★ 영구 캐시(TTL 없음)가 안전한 이유는 **rcept_no 불변 전제** 하나뿐이다:
+   *   원본 접수분의 내용은 제출 후 변하지 않고, 정정은 항상 **새 rcept_no** 로
+   *   접수된다 (J004 정정률 91% 실측에서도 원본이 그대로 남는 것으로 확인).
+   *   이 전제가 깨지는 데이터(목록·검색 결과·집계)는 이 테이블에 넣으면 안 된다 —
+   *   목록 캐시 금지 결정(docs/absorbed-from-dart-mcp.md)과 같은 뿌리다.
+   *   회귀 테스트: test/tools.test.ts "원문 영구 캐시는 rcept_no 불변 전제".
    */
   storeBody(rceptNo: string, content: string, rm = ''): void {
     if (!this.ftsAvailable) return;
