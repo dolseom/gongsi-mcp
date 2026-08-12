@@ -4,7 +4,7 @@
 
 # gongsi-mcp
 
-**공시담당자를 위한 DART + 공정위 기업집단포털 MCP 서버.** 공정거래위원회 기업집단 공시(대규모내부거래·기업집단현황·비상장사 중요사항)의 **대상 판정 · 기한 계산 · 예상 과태료 · 제출 전 자가점검 · 타사 선례**를 — 모든 답에 근거(조문·계산식·원천 데이터)를 동봉해서.
+**공시담당자를 위한 DART 전자공시 + 공정위 기업집단포털 MCP 서버.** 공정거래위원회 기업집단 공시(대규모내부거래·기업집단현황·비상장사 중요사항)의 **대상 판정 · 기한 계산 · 예상 과태료 · 제출 전 자가점검 · 타사 선례**를 — 모든 답에 근거(조문·계산식·원천 데이터)를 동봉해서.
 
 [![npm version](https://img.shields.io/npm/v/gongsi-mcp.svg)](https://www.npmjs.com/package/gongsi-mcp)
 [![Node 22.5+](https://img.shields.io/badge/Node.js-22.5%2B-green)](https://nodejs.org)
