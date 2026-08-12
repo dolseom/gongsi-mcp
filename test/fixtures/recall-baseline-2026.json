@@ -1,0 +1,50 @@
+{
+  "_meta": {
+    "period": "20250801~20260731",
+    "measured_at": "2026-08-12T15:31:00.468Z",
+    "method": "scripts/measure-recall-baseline.mjs — 프로덕션 collectAdaptive 경로, 2개월 창 6개",
+    "note": "rcept_dt 는 소급 추가되지 않으므로 이 고정 기간의 수치는 재측정 시 재현되어야 한다. 불일치 = 수집 파이프라인 회귀 신호."
+  },
+  "j": {
+    "collected_unique": 30063,
+    "reported_total": 30063,
+    "per_window": [
+      {
+        "window": "20250801~20250930",
+        "rows": 7703,
+        "reported": 7703
+      },
+      {
+        "window": "20251001~20251130",
+        "rows": 4468,
+        "reported": 4468
+      },
+      {
+        "window": "20251201~20260131",
+        "rows": 2843,
+        "reported": 2843
+      },
+      {
+        "window": "20260201~20260331",
+        "rows": 7515,
+        "reported": 7515
+      },
+      {
+        "window": "20260401~20260531",
+        "rows": 3594,
+        "reported": 3594
+      },
+      {
+        "window": "20260601~20260731",
+        "rows": 3940,
+        "reported": 3940
+      }
+    ],
+    "issues": []
+  },
+  "equivalence": {
+    "j_without_gong": 0,
+    "gong_not_in_J_within_collected": 0,
+    "all_market_coverage": "partial (85.3%) — 결산시즌 대형 청크 타임아웃. 역방향(공∉J) 완전 검증은 재측정 대기"
+  }
+}
