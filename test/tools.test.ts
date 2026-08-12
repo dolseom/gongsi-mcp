@@ -330,7 +330,8 @@ describe('저장소 (node:sqlite 어댑터)', () => {
 describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
   beforeEach(() => {
     __resetConfig();
-    process.env['DART_API_KEY'] = '0000000000000000000000000000000000000000';
+    // 실키 금지 — 형식만 같은 합성 더미 (40자 hex). 실키를 픽스처로 쓰면 커밋에 키가 박제된다.
+    process.env['DART_API_KEY'] = '0123456789abcdef0123456789abcdef01234567';
   });
   afterEach(() => {
     delete process.env['DART_API_KEY'];
@@ -338,8 +339,8 @@ describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
   });
 
   it('설정된 인증키는 로그에서 가려진다', () => {
-    const out = redact('요청 실패 crtfc_key=0000000000000000000000000000000000000000 path=/list.json');
-    expect(out).not.toContain('0000000000000000000000000000000000000000');
+    const out = redact('요청 실패 crtfc_key=0123456789abcdef0123456789abcdef01234567 path=/list.json');
+    expect(out).not.toContain('0123456789abcdef0123456789abcdef01234567');
     expect(out).toContain('REDACTED');
   });
 
