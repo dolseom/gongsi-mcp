@@ -163,6 +163,11 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
   if (dateFrom > dateTo) {
     throw new ToolError('invalid_argument', `date_from(${dateFrom})이 date_to(${dateTo})보다 늦습니다.`);
   }
+  // 날짜 미지정의 기본 30일은 조용히 적용하면 "그 공시는 없다"로 오독된다 (P2-가 5번)
+  const dateDefaulted = !input.date_from;
+  const dateDefaultNote = dateDefaulted
+    ? `date_from 미지정 — 최근 30일(${dateFrom}~${dateTo})만 조회했습니다. 이전 공시까지 보려면 날짜를 명시하세요.`
+    : null;
 
   const preset: PresetSpec | undefined = input.preset ? PRESETS[input.preset] : undefined;
   const base: ListParams = {
@@ -202,6 +207,7 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
       ...(corpResolved ? { corp: corpResolved } : {}),
       date_from: dateFrom,
       date_to: dateTo,
+      ...(dateDefaultNote ? { date_range_note: dateDefaultNote } : {}),
       total_count: page.totalCount,
       total_page: page.totalPage,
       page_no: page.pageNo,
@@ -225,11 +231,34 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
   const limit = input.limit ?? 200;
   const responseTruncated = kept.length > limit;
 
+  // 수집 불완전은 diagnostics 안에만 두면 "정상 완료 0건"과 구분되지 않는다 (P2-가 1번)
+  const collectionComplete =
+    !batch.diagnostics.partial_results &&
+    !batch.diagnostics.truncated &&
+    batch.diagnostics.chunks_failed === 0;
+  const warnings: string[] = [];
+  if (dateDefaultNote) warnings.push(dateDefaultNote);
+  if (!collectionComplete) {
+    warnings.push(
+      '⚠️ 수집이 불완전합니다 (diagnostics 의 partial_results/truncated/chunks_failed 참조) — ' +
+        '이 결과만으로 "해당 공시 없음"이나 "누락 없음"을 결론내지 마세요.',
+    );
+  }
+  if (nameFilter && kept.length === 0 && batch.rows.length > 0) {
+    // 필터 전량 탈락 — page 모드에는 안내가 있는데 batch 에는 없던 비대칭 (P2-가 4번)
+    warnings.push(
+      `report_name_contains("${nameFilter}") 가 수집된 ${batch.rows.length.toLocaleString()}건을 전부 걸렀습니다. ` +
+        '이 필터는 정규화 없는 부분일치입니다 — DART 보고서명의 공백·괄호 표기가 다르면 탈락하니 더 짧은 키워드로 시도하세요.',
+    );
+  }
+
   return {
     mode: 'batch',
     ...(corpResolved ? { corp: corpResolved } : {}),
     date_from: dateFrom,
     date_to: dateTo,
+    collection_complete: collectionComplete,
+    ...(warnings.length ? { warnings } : {}),
     total_collected: batch.rows.length,
     matched: kept.length,
     returned: Math.min(kept.length, limit),

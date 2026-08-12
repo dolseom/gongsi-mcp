@@ -248,13 +248,23 @@ export async function getFinancials(input: GetFinancialsInput): Promise<unknown>
   }
 
   if (rows.length === 0) {
+    // fs_div 를 명시하면 자동 폴백이 꺼진다 — 그 사실을 말하지 않으면 별도(OFS)엔 있는
+    // 재무제표가 "없습니다"로 읽힌다 (비상장 다수가 별도만 제출, P2-라 14번)
+    const fsDivHint =
+      input.fs_div === 'CFS'
+        ? ` fs_div:"CFS"(연결)를 명시해 별도(OFS) 자동 폴백이 꺼져 있습니다 — ` +
+          `비상장사 다수는 별도만 제출하니 fs_div:"OFS" 로 다시 시도해 보세요.`
+        : input.fs_div === 'OFS'
+          ? ` fs_div:"OFS"(별도)를 명시했습니다 — 연결(CFS)만 있는 회사라면 fs_div 를 빼고 다시 시도해 보세요.`
+          : '';
     throw new ToolError(
       'document_not_found',
-      `${corpName ?? corpCode} 의 ${year}년 재무제표(${input.report ?? 'annual'})가 없습니다. ` +
-        `사업보고서는 보통 다음 해 3월 말 제출됩니다 — year 를 한 해 앞당겨 보거나, ` +
+      `${corpName ?? corpCode} 의 ${year}년 재무제표(${input.report ?? 'annual'})가 없습니다.` +
+        fsDivHint +
+        ` 사업보고서는 보통 다음 해 3월 말 제출됩니다 — year 를 한 해 앞당겨 보거나, ` +
         `외부감사 대상이 아닌 회사는 DART 에 재무제표가 없을 수 있습니다 ` +
         `(그 경우 get_group_structure 의 include_financials 로 포털 재무를 확인하세요).`,
-      { corp_code: corpCode, year, report: input.report ?? 'annual' },
+      { corp_code: corpCode, year, report: input.report ?? 'annual', fs_div: input.fs_div ?? null },
     );
   }
 

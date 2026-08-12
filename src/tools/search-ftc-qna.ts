@@ -64,6 +64,9 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
         `"${input.query}" 와 유사한 공정위 Q&A를 찾지 못했습니다. ` +
           '핵심 명사 위주로 검색어를 바꿔 보세요 (예: "임대차 변경계약", "수익증권 환매").' +
           (input.category ? ' category 필터를 빼고 전체에서 다시 검색해 볼 수도 있습니다.' : ''),
+        // 0건에도 범위 고지는 필수다 — 없으면 "공정위 자료에 그런 규정이 없다"로 오독된다 (P2-마 18번)
+        '⚠️ 이 지식베이스는 공정위 해설서·FAQ·매뉴얼 추출분이며 법령·유권해석의 전수가 아닙니다 — ' +
+          '여기 없다고 해서 규정이 없는 것이 아닙니다. 현행 수치 판정은 check_disclosure_duty 를 사용하세요.',
         ...(staleness ? [staleness] : []),
       ],
       diagnostics: { kbVersion: kb.version, kbEntries: kb.entries.length, matched: 0 },

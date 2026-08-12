@@ -73,20 +73,27 @@ export async function loadDocument(
   const cachedBody = store.getBody(rceptNo);
   const cachedMeta = store.get(metaKey);
   if (cachedBody && cachedMeta) {
-    return { markdown: cachedBody.content, meta: JSON.parse(cachedMeta) as DocMeta, cached: true };
+    const meta = JSON.parse(cachedMeta) as DocMeta;
+    // 오염된 구 캐시 자가 치유: 빈 본문이 '정상(parsable)'로 저장돼 있으면 캐시를 버리고 재다운로드
+    // (이 결함 수정 전 버전이 만든 캐시일 수 있다 — P0-3 빈 계열사 캐시와 같은 패턴)
+    if (!(meta.bodyParsable && !cachedBody.content.trim())) {
+      return { markdown: cachedBody.content, meta, cached: true };
+    }
   }
 
   const dart = client ?? new DartClient();
   const zip = await dart.downloadDocument(rceptNo);
   const picked = pickLargestText(zip);
 
-  if (!picked.content) {
-    // 파싱 불가도 캐시한다 — 같은 공시를 반복 다운로드하지 않게
+  // 파싱 불가도 캐시한다 — 같은 공시를 반복 다운로드하지 않게.
+  // 단 반드시 bodyParsable:false 로 캐시해야 한다: 빈 본문을 '정상'으로 캐시하면
+  // 이후 영구히 "본문 0자 = 이게 전문"으로 읽히는 거짓 안심이 된다 (P2-나 6번).
+  const storeUnparsable = (encoding: string) => {
     const emptyMeta: DocMeta = {
       acode: null,
       aregcik: null,
       formulaVersion: null,
-      encoding: 'utf-8',
+      encoding,
       attachments: picked.attachments,
       bodyParsable: false,
       boardDate: null,
@@ -95,10 +102,19 @@ export async function loadDocument(
     store.storeBody(rceptNo, '');
     store.set(metaKey, JSON.stringify(emptyMeta));
     return { markdown: '', meta: emptyMeta, cached: false };
+  };
+
+  // 길이 0 Uint8Array 는 truthy 다 — null 검사만으로는 빈 항목이 '정상 파싱'으로 통과한다
+  if (!picked.content || picked.content.length === 0) {
+    return storeUnparsable('utf-8');
   }
 
   const { text: xml, encoding } = decodeDocument(picked.content);
   const parsed = parseDocument(xml);
+  // 바이트는 있었는데 변환 결과가 빈 문서 — '정상 파싱된 빈 공시'는 없다
+  if (!parsed.markdown.trim()) {
+    return storeUnparsable(encoding);
+  }
   const meta: DocMeta = {
     acode: parsed.acode,
     aregcik: parsed.aregcik,
