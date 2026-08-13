@@ -4,6 +4,7 @@ import {
   decodeDocument,
   decodeEntities,
   extractBoardDate,
+  extractBoardDateDetail,
 } from '../src/parsers/document.js';
 
 describe('원문 파서 — 표 구조 보존', () => {
@@ -151,5 +152,39 @@ describe('이사회 의결일 정밀 추출', () => {
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.4.31</TD>')).toBeNull();
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2026.2.29</TD>')).toBeNull(); // 평년
     expect(extractBoardDate('<TD>이사회 의결일</TD><TD>2024.2.29</TD>')).toBe('20240229'); // 윤년
+  });
+});
+
+describe('board_date null 원인 구분 (P2-나 7)', () => {
+  it('정상 추출 → found', () => {
+    expect(extractBoardDateDetail('<TD>3. 이사회 의결일</TD><TD>2026.07.22</TD>')).toEqual({
+      date: '20260722',
+      status: 'found',
+    });
+  });
+
+  it('항목 자체가 없으면 label_missing (트랙 B 서식)', () => {
+    expect(extractBoardDateDetail('<TD>1. 거래기간</TD><TD>2026. 2분기</TD>').status).toBe(
+      'label_missing',
+    );
+  });
+
+  it('값이 "-" 면 value_empty — 정당한 무기재와 파서 미스를 구분한다', () => {
+    expect(extractBoardDateDetail('<TD>3. 이사회의결일</TD><TD>-</TD>').status).toBe('value_empty');
+  });
+
+  it('실존하지 않는 날짜는 invalid_date — 원문 거짓기재 신호를 침묵시키지 않는다', () => {
+    expect(extractBoardDateDetail('<TD>이사회 의결일</TD><TD>2026.2.31</TD>').status).toBe(
+      'invalid_date',
+    );
+    expect(extractBoardDateDetail('<TD>이사회 의결일</TD><TD>2026.99.99</TD>').status).toBe(
+      'invalid_date',
+    );
+  });
+
+  it('항목은 있는데 날짜도 "-" 도 아니면 unparsed (파서 한계 자백)', () => {
+    expect(extractBoardDateDetail('<TD>이사회 의결일</TD><TD>추후 확정</TD>').status).toBe(
+      'unparsed',
+    );
   });
 });

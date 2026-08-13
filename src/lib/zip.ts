@@ -204,7 +204,9 @@ export function readFirstEntry(
 export function pickLargestText(
   data: Uint8Array,
   exts = ['.xml', '.html', '.htm', '.xhtml'],
-): { name: string; content: Uint8Array; attachments: string[] } | { name: null; content: null; attachments: string[] } {
+):
+  | { name: string; content: Uint8Array; attachments: string[]; otherTexts: string[] }
+  | { name: null; content: null; attachments: string[]; otherTexts: string[] } {
   const entries = listEntries(data);
   const texts = entries.filter((e) => exts.some((x) => e.name.toLowerCase().endsWith(x)));
   const attachments = entries
@@ -215,7 +217,8 @@ export function pickLargestText(
     })
     .filter(Boolean);
 
-  if (!texts.length) return { name: null, content: null, attachments: [...new Set(attachments)].sort() };
+  if (!texts.length)
+    return { name: null, content: null, attachments: [...new Set(attachments)].sort(), otherTexts: [] };
 
   texts.sort((a, b) => b.uncompressedSize - a.uncompressedSize);
   const picked = texts[0]!;
@@ -223,5 +226,8 @@ export function pickLargestText(
     name: picked.name,
     content: readEntry(data, picked),
     attachments: [...new Set(attachments)].sort(),
+    // 채택 안 된 텍스트 항목 — 본문에도 attachments 에도 안 실리면 존재 자체가 사라져
+    // "본문 1개 = 이게 전문"으로 읽힌다 (P2-나 8). 이름을 남겨 호출부가 고지할 수 있게 한다.
+    otherTexts: texts.slice(1).map((e) => e.name),
   };
 }

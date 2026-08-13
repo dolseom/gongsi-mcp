@@ -1,9 +1,10 @@
 {
   "_meta": {
     "period": "20250801~20260731",
-    "measured_at": "2026-08-12T15:31:00.468Z",
+    "measured_at": "2026-08-13T14:22:43.850Z",
     "method": "scripts/measure-recall-baseline.mjs — 프로덕션 collectAdaptive 경로, 2개월 창 6개",
-    "note": "rcept_dt 는 소급 추가되지 않으므로 이 고정 기간의 수치는 재측정 시 재현되어야 한다. 불일치 = 수집 파이프라인 회귀 신호."
+    "note": "rcept_dt 는 소급 추가되지 않으므로 이 고정 기간의 수치는 재측정 시 재현되어야 한다. 불일치 = 수집 파이프라인 회귀 신호.",
+    "all_market_note": "전체시장(ALL) 완전 수집에는 GONGSI_MAX_PAGES=150 이 필요하다 — 결산시즌 단일 일자(20260401 접수분 13,586건 = 136페이지) 청크는 날짜로 더 쪼갤 수 없어 기본 상한 100 으로는 절단된다 (실측 2026-08-13, 함정 0번의 실측 사례)."
   },
   "j": {
     "collected_unique": 30063,
@@ -42,9 +43,47 @@
     ],
     "issues": []
   },
+  "all_market": {
+    "collected_unique": 269692,
+    "reported_total": 269692,
+    "per_window": [
+      {
+        "window": "20250801~20250930",
+        "rows": 34110,
+        "reported": 34110
+      },
+      {
+        "window": "20251001~20251130",
+        "rows": 29119,
+        "reported": 29119
+      },
+      {
+        "window": "20251201~20260131",
+        "rows": 32987,
+        "reported": 32987
+      },
+      {
+        "window": "20260201~20260331",
+        "rows": 67483,
+        "reported": 67483
+      },
+      {
+        "window": "20260401~20260531",
+        "rows": 70452,
+        "reported": 70452
+      },
+      {
+        "window": "20260601~20260731",
+        "rows": 35541,
+        "reported": 35541
+      }
+    ],
+    "issues": []
+  },
   "equivalence": {
     "j_without_gong": 0,
-    "gong_not_in_J_within_collected": 0,
-    "all_market_coverage": "partial (85.3%) — 결산시즌 대형 청크 타임아웃. 역방향(공∉J) 완전 검증은 재측정 대기"
+    "gong_not_in_J": 0,
+    "j_not_in_all": 0,
+    "all_market_coverage": "complete — 1년 전체시장 269,692건 전수(issues 0) 기준 역방향(공∉J) 완전 검증 (2026-08-13, GONGSI_CONCURRENCY=3 + GONGSI_MAX_PAGES=150)"
   }
 }

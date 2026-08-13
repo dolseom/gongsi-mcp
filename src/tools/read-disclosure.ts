@@ -18,7 +18,8 @@ import { ToolError } from '../lib/errors.js';
 import {
   parseDocument,
   decodeDocument,
-  extractBoardDate,
+  extractBoardDateDetail,
+  type BoardDateStatus,
 } from '../parsers/document.js';
 
 const log = getLogger('read-disclosure');
@@ -55,7 +56,11 @@ export interface DocMeta {
   attachments: string[];
   bodyParsable: boolean;
   boardDate: string | null;
+  /** boardDate 가 null 인 이유 (P2-나 7). 구 캐시 메타에는 없다 — force_refresh 로 재생성된다 */
+  boardDateStatus?: BoardDateStatus;
   pickedEntry: string | null;
+  /** 본문으로 채택되지 않은 나머지 텍스트 항목들 (P2-나 8). 구 캐시 메타에는 없다 */
+  otherTextEntries?: string[];
 }
 
 /**
@@ -115,6 +120,7 @@ export async function loadDocument(
   if (!parsed.markdown.trim()) {
     return storeUnparsable(encoding);
   }
+  const boardDate = extractBoardDateDetail(xml);
   const meta: DocMeta = {
     acode: parsed.acode,
     aregcik: parsed.aregcik,
@@ -122,8 +128,10 @@ export async function loadDocument(
     encoding,
     attachments: picked.attachments,
     bodyParsable: true,
-    boardDate: extractBoardDate(xml),
+    boardDate: boardDate.date,
+    boardDateStatus: boardDate.status,
     pickedEntry: picked.name,
+    otherTextEntries: picked.otherTexts,
   };
   store.storeBody(rceptNo, parsed.markdown);
   store.set(metaKey, JSON.stringify(meta));
@@ -167,12 +175,42 @@ export async function readDisclosure(input: ReadDisclosureInput): Promise<unknow
   const limit = input.max_chars ?? 60_000;
   const truncated = body.length > limit;
 
+  // board_date null 의 원인별 안내 (P2-나 7) — 특히 invalid_date 는 원문 거짓기재 신호라 침묵하면 안 된다
+  const BOARD_DATE_NOTES: Record<BoardDateStatus, string | null> = {
+    found: null,
+    label_missing:
+      '이 서식에는 이사회 의결일 항목이 없습니다 (약관에 의한 금융거래 트랙 B 서식 등) — 파싱 실패가 아닙니다.',
+    value_empty:
+      '원문의 이사회 의결일 값이 "-" 입니다 (기공시 재약정·변경공시 등 정당한 무기재일 수 있습니다).',
+    invalid_date:
+      '⚠️ 원문에 실존하지 않는 날짜가 이사회 의결일로 기재되어 있습니다 (예: "2026.2.31") — ' +
+      '원문 오기 또는 거짓기재 신호입니다. viewer_url 에서 원문을 직접 확인하세요.',
+    unparsed:
+      '이사회 의결일 항목은 있으나 날짜를 추출하지 못했습니다 (표기 변형 가능) — viewer_url 에서 확인하세요.',
+  };
+  const boardDateNote =
+    meta.boardDate === null && meta.boardDateStatus ? BOARD_DATE_NOTES[meta.boardDateStatus] : null;
+
   return {
     rcept_no: input.rcept_no,
     viewer_url: viewerUrl(input.rcept_no),
     acode: meta.acode,
     // 이사회 의결일 — check_disclosure_duty 의 boardDate 입력으로 그대로 쓸 수 있다
     board_date: meta.boardDate,
+    ...(meta.boardDate === null && meta.boardDateStatus
+      ? { board_date_status: meta.boardDateStatus }
+      : {}),
+    ...(boardDateNote ? { board_date_note: boardDateNote } : {}),
+    // 어떤 항목을 본문으로 골랐고 무엇이 남았는지 — "본문 1개 = 전문" 오독 방지 (P2-나 8)
+    picked_entry: meta.pickedEntry,
+    ...(meta.otherTextEntries?.length
+      ? {
+          other_text_entries: meta.otherTextEntries,
+          other_text_note:
+            `본문으로 채택되지 않은 텍스트 항목이 ${meta.otherTextEntries.length}건 더 있습니다 — ` +
+            '이 응답의 body 가 공시 전체가 아닐 수 있습니다. 전체는 viewer_url 에서 확인하세요.',
+        }
+      : {}),
     submitter_corp_code: meta.aregcik,
     encoding: meta.encoding,
     attachments: meta.attachments,

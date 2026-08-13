@@ -207,13 +207,31 @@ export function parseDocument(rawXml: string): ParsedDocument {
 }
 
 /**
+ * board_date null 의 원인 구분 (P2-나 7) — 성질이 전혀 다른 4가지를 하나의 null 로 뭉개면 안 된다:
+ * - label_missing: 서식에 의결일 항목 자체가 없다 (약관특례 트랙 B 등)
+ * - value_empty:   항목은 있으나 값이 "-" (기공시 재약정·변경공시 등 정당한 무기재)
+ * - invalid_date:  실존하지 않는 날짜가 기재됨 ("2026.2.31") — **원문 오기·거짓기재 신호**
+ * - unparsed:      항목은 있으나 표기 변형으로 추출 실패 (파서 한계)
+ */
+export type BoardDateStatus = 'found' | 'label_missing' | 'value_empty' | 'invalid_date' | 'unparsed';
+
+export interface BoardDateDetail {
+  date: string | null;
+  status: BoardDateStatus;
+}
+
+/**
  * 정밀 추출 — 판정에 쓰는 필드만.
  * 서식마다 "이사회 의결일"/"이사회의결일" 표기가 섞여 있으므로 글자 사이 공백을 허용해 매칭한다.
  */
 export function extractBoardDate(rawXml: string): string | null {
+  return extractBoardDateDetail(rawXml).date;
+}
+
+export function extractBoardDateDetail(rawXml: string): BoardDateDetail {
   const plain = stripCommentsAndCdata(rawXml).replace(/<[^>]+>/g, ' ');
   const m = /이\s*사\s*회\s*의\s*결\s*일/.exec(plain);
-  if (!m) return null;
+  if (!m) return { date: null, status: 'label_missing' };
 
   let after = plain.slice(m.index + m[0].length, m.index + m[0].length + 400);
   // 다음 항목 번호("4. 동일인…" 등)에서 창을 끊는다 — 의결일이 "-" 인 서식(약관 특례)에서
@@ -239,9 +257,17 @@ export function extractBoardDate(rawXml: string): string | null {
   };
 
   const date = /(\d{4})\s*[.\-년]\s*(\d{1,2})\s*[.\-월]\s*(\d{1,2})/.exec(after);
-  if (date) return valid(date[1]!, date[2]!, date[3]!);
+  if (date) {
+    const v = valid(date[1]!, date[2]!, date[3]!);
+    return v ? { date: v, status: 'found' } : { date: null, status: 'invalid_date' };
+  }
   // 아포스트로피 2자리 연도 — "'26. 7.23" (삼성생명 등에서 실측). 오인 방지를 위해 ' 필수
   const short = /'(\d{2})\s*[.\-]\s*(\d{1,2})\s*[.\-]\s*(\d{1,2})/.exec(after);
-  if (short) return valid(`20${short[1]!}`, short[2]!, short[3]!);
-  return null;
+  if (short) {
+    const v = valid(`20${short[1]!}`, short[2]!, short[3]!);
+    return v ? { date: v, status: 'found' } : { date: null, status: 'invalid_date' };
+  }
+  // 날짜 패턴이 아예 없다 — 값이 "-"(무기재)인지 추출 실패인지 구분
+  if (/^[\s:：.|]*[-–—]/.test(after)) return { date: null, status: 'value_empty' };
+  return { date: null, status: 'unparsed' };
 }
