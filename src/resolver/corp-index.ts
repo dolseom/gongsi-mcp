@@ -249,9 +249,17 @@ export async function fetchJurirNo(corpCode: string, client: DartClient): Promis
   try {
     const profile = await client.companyProfile(corpCode);
     const jurirNo = String(profile['jurir_no'] ?? '').replace(/-/g, '').trim();
-    if (jurirNo) {
+    // 13자리 숫자만 ok·캐시한다 (Codex 7차 중간 2) — "N/A" 같은 malformed 값을 캐시하면
+    // 그 키로 전 집단 역조회가 돌고 jurir_group_miss 가 영구 박제된다
+    if (/^\d{13}$/.test(jurirNo)) {
       store.setJurirNo(corpCode, jurirNo);
       return { status: 'ok', jurirNo };
+    }
+    if (jurirNo) {
+      return {
+        status: 'error',
+        message: `기업개황 응답의 법인등록번호 형식이 올바르지 않습니다 ('${jurirNo.slice(0, 20)}') — 13자리 숫자가 아닙니다`,
+      };
     }
     return { status: 'absent' };
   } catch (err) {

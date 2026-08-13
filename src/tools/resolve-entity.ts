@@ -99,7 +99,15 @@ export async function verifyYearMonth(
           '(포털은 연 1회, 매년 5월 전후 갱신).',
       };
     }
-    return { ym: inferred };
+    // 목록은 있는데 추정 년월도, 그 이전 공개분도 없다 — "검증 성공"처럼 침묵하면 안 된다
+    // (Codex 7차 중간 3: 미래 년월만 있는 비정상 응답이 조용히 추정값 사용으로 둔갑하던 경로)
+    return {
+      ym: inferred,
+      note:
+        `포털 공개년월 목록에 추정 년월 ${inferred} 도, 그 이전 공개분도 없습니다 ` +
+        `(목록: ${published.slice(-3).join(', ')}) — 응답 형식 변화 가능성이 있습니다. ` +
+        '조회가 실패하면 yearMonth 를 직접 지정하세요.',
+    };
   } catch (err) {
     log.warn('공개년월 목록 확인 실패 — 추정값을 유지한다', {
       inferred,
@@ -183,6 +191,7 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
   }
 
   // ── 기업집단 해석 ──
+  let groupError: ToolError | null = null;
   if (tryGroup || input.includeGroup) {
     let yearMonth = input.yearMonth ?? inferYearMonth();
     try {
@@ -240,6 +249,7 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
     } catch (err) {
       // 기업집단포털은 선택 기능이다 — 실패해도 회사 해석 결과는 살린다
       if (err instanceof ToolError) {
+        groupError = err;
         results['group_error'] = { error: err.code, message: err.message };
         // group 키 부재를 "미소속"으로 읽지 않게 명시한다 — not_found(확인된 미소속)와 다르다 (Opus M-5)
         if (!results['group']) {
@@ -251,8 +261,22 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
     }
   }
 
-  if (!company && !results['group'] && !results['group_candidates']) {
+  // status:'unknown' 자리표시자는 "해석 성공"이 아니다 — 성공으로 세면 아래 최상위 status:'ok' 가
+  // 실패를 포장한다 (Codex 7차 치명 5: type:"group" 포털 실패가 ok 로 나가던 경로)
+  const groupUnknown =
+    (results['group'] as Record<string, unknown> | undefined)?.['status'] === 'unknown';
+  if (
+    type === 'group' &&
+    groupError &&
+    (!results['group'] || groupUnknown) &&
+    !results['group_candidates']
+  ) {
+    // 사용자가 그룹만 명시적으로 요청했는데 그룹 조회가 통째로 실패했다 — 부분 성공이 아니다
+    throw groupError;
+  }
+  if (!company && (!results['group'] || groupUnknown) && !results['group_candidates']) {
     if (companyError) throw companyError;
+    if (groupError) throw groupError;
     throw new ToolError('corp_not_found', `'${input.query}' 를 회사·기업집단 어느 쪽으로도 찾지 못했습니다.`);
   }
 

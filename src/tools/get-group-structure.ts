@@ -74,7 +74,14 @@ export function toWon(s: string | undefined): number | string | null {
 async function cachedJson<T>(key: string, fetcher: () => Promise<T>): Promise<{ value: T; cached: boolean }> {
   const store = getStore();
   const hit = store.get(key);
-  if (hit) return { value: JSON.parse(hit) as T, cached: true };
+  if (hit) {
+    const parsed = JSON.parse(hit) as T;
+    // 오염된 구버전 빈 캐시([])는 무시하고 다시 받는다 — "빈 목록 미캐시" 규칙 도입 전에
+    // 박제된 캐시가 계속 계열사 0개를 정상 응답으로 내던 경로 (Codex 7차 중간 5, P0-3 과 같은 패턴)
+    if (!(Array.isArray(parsed) && parsed.length === 0)) {
+      return { value: parsed, cached: true };
+    }
+  }
   const value = await fetcher();
   // 빈 목록은 캐시하지 않는다 — 상류 오류를 연단위로 박제하면 1년짜리 오진이 된다
   if (!(Array.isArray(value) && value.length === 0)) {

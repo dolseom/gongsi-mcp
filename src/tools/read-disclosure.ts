@@ -201,6 +201,15 @@ export async function readDisclosure(input: ReadDisclosureInput): Promise<unknow
       ? { board_date_status: meta.boardDateStatus }
       : {}),
     ...(boardDateNote ? { board_date_note: boardDateNote } : {}),
+    // 구버전 캐시 메타는 아래 신설 필드들이 영구히 비어 있다 — 침묵하면 "상태 이상 없음"으로
+    // 읽히므로 미검증임을 자백한다 (Codex 7차 치명 4)
+    ...(meta.boardDateStatus === undefined && meta.bodyParsable
+      ? {
+          legacy_cache_note:
+            '구버전 캐시 메타라 board_date_status(의결일 미추출 원인)·other_text_entries(미채택 텍스트 항목) ' +
+            '정보가 없습니다 — 이 필드들의 부재를 "이상 없음"으로 읽지 마세요. force_refresh:true 로 재생성됩니다.',
+        }
+      : {}),
     // 어떤 항목을 본문으로 골랐고 무엇이 남았는지 — "본문 1개 = 전문" 오독 방지 (P2-나 8)
     picked_entry: meta.pickedEntry,
     ...(meta.otherTextEntries?.length

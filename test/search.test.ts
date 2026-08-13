@@ -154,15 +154,35 @@ describe('적응형 분할 수집', () => {
     expect(r.diagnostics.partial_results).toBe(false);
   });
 
-  it('실측 0 청크는 여전히 수집을 생략한다 (호출 절약 유지)', async () => {
-    // 앞 3일만 데이터가 있고 뒤는 실측 0 — 창 자체를 실측하는 경로
-    const rows = makeRows('20260101', '20260103', () => 10);
+  it('부모가 양수인데 왼쪽 실측이 0 이면 그 실측도 신뢰하지 않고 수집한다 (Codex 7차 치명 2)', async () => {
+    // 반대 방향 측정 불일치: 왼쪽 측정이 과소(0)로 오면 오른쪽 파생값이 부모 전체가 되고,
+    // 왼쪽은 "실측 0"이라는 이유로 건너뛰어 실제 180건이 조용히 사라지던 경로
+    const rows = makeRows('20260101', '20260112', () => 30); // 360건
+    class UnderClient extends FakeClient {
+      override async measure(p: ListParams): Promise<number> {
+        if (`${p.bgnDe}-${p.endDe}` === '20260101-20260106') {
+          this.measureCalls++;
+          return 0; // 실제 180 — 과소 신고. 부모(360)와 모순되는 실측 0 은 신뢰하면 안 된다
+        }
+        return super.measure(p);
+      }
+    }
+    const client = new UnderClient(rows);
+    const r = await collectAdaptive(client, BASE, '20260101', '20260112', OPTS);
+    expect(r.rows.length).toBe(360);
+    expect(r.diagnostics.partial_results).toBe(false);
+  });
+
+  it('모순 신호 없는 독립 실측 0 창은 여전히 수집을 생략한다 (호출 절약 유지)', async () => {
+    // corp_code 없는 전체시장 검색은 90일 창으로 나뉜다 — 데이터가 없는 창은 창 단위 실측 0
+    const rows = makeRows('20260110', '20260220', () => 3); // 첫 창(1~3월)에만 데이터
     const client = new FakeClient(rows);
-    const r = await collectAdaptive(client, BASE, '20260101', '20260103', OPTS);
-    expect(r.rows.length).toBe(30);
-    // 실측 0 이었다면 collect 자체가 없어야 하는 시나리오는 emptyResult 경로로 이미 커버되므로
-    // 여기서는 파생이 아닌 청크의 count=0 스킵 로직이 살아 있는지만 본다
-    const zeroSkipped = r.diagnostics.date_chunks.filter((c) => c.count === 0 && c.pages === 0);
+    const r = await collectAdaptive(client, {}, '20260101', '20260731', OPTS);
+    expect(r.rows.length).toBe(rows.length);
+    expect(r.diagnostics.partial_results).toBe(false);
+    // 실측 0 창(4월 이후)에는 collect 가 한 번도 가지 않아야 한다
+    const zeroSkipped = r.diagnostics.date_chunks.filter((c) => c.count === 0 && c.pages === 0 && !c.derived);
+    expect(zeroSkipped.length).toBeGreaterThan(0); // 스킵된 청크가 실제로 존재해야 이 테스트가 의미 있다
     for (const c of zeroSkipped) {
       expect(client.collectCalls.some((cc) => cc.from === c.from && cc.to === c.to)).toBe(false);
     }

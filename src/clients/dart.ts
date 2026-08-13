@@ -237,11 +237,24 @@ export class DartClient {
     if (status === '013') {
       return { status, totalCount: 0, totalPage: 0, pageNo: p.pageNo ?? 1, list: [] };
     }
+    // 카운트 필드는 유한 비음수만 통과시킨다 (Codex 7차 중간 4) — NaN 은 모든 비교(> limit,
+    // rows.length < totalCount)에서 false 라 절단·불완전 수집이 collection_complete 로 둔갑한다
+    const toCount = (v: unknown, field: string): number => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new DartApiError(
+          status,
+          `응답의 ${field} 가 올바른 숫자가 아닙니다 ('${String(v).slice(0, 30)}')`,
+          '응답 형식 이상 — 이 호출은 실패로 처리해 조용한 불완전 수집을 막습니다',
+        );
+      }
+      return Math.floor(n);
+    };
     return {
       status,
-      totalCount: Number(data['total_count'] ?? 0),
-      totalPage: Number(data['total_page'] ?? 1),
-      pageNo: Number(data['page_no'] ?? p.pageNo ?? 1),
+      totalCount: toCount(data['total_count'] ?? 0, 'total_count'),
+      totalPage: toCount(data['total_page'] ?? 1, 'total_page'),
+      pageNo: toCount(data['page_no'] ?? p.pageNo ?? 1, 'page_no'),
       list: (data['list'] as Disclosure[] | undefined) ?? [],
     };
   }

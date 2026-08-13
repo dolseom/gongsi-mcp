@@ -49,7 +49,9 @@ function assertCompleteSet(s: SetBaseline, total: number): void {
   expect(s.issues).toEqual([]);
 }
 
-describe('1년 recall 기준선 (20250801~20260731 실측 고정)', () => {
+// ⚠️ 이 테스트는 픽스처의 내적 정합성만 고정한다 — 현재 코드의 recall 을 측정하지 않는다.
+// 수집 파이프라인(batch.ts 등)을 고쳤으면 build 후 스크립트 재실행으로 재현을 확인할 것 (docs 참조).
+describe('1년 recall 기준선 픽스처 정합성 (20250801~20260731 실측 고정, 오프라인)', () => {
   it('J 전수: 수집 = DART 신고 = 30,063 (recall 100%, 창별 일치, issues 0)', () => {
     assertCompleteSet(fixture.j, 30_063);
   });

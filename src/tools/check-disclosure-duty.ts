@@ -546,27 +546,36 @@ export function checkDisclosureDuty(
 
   // 대상이 아니라고 판정했으면 지연·과태료를 붙이지 않는다 — "대상 아님 + 20일 지연"은 모순이다
   // (Codex 3차 지적: 상장회사 not_required 응답에 지연·과태료가 동봉되던 실버그)
+  // 이사회 의결 여부는 §26 계열 의결형 의무에서만 과태료 칸을 가른다. 약관특례(§9)·상품용역
+  // 감소(§9의2)·하도급 결제조건은 의결 요건 자체가 없어 "의결 X" 칸이 성립하지 않는다 → true 고정.
+  // 의결형 의무인데 입력이 없으면 undefined 로 넘겨 estimatePenalty 가 가정 caveat 를 붙인다 (P2-다 10).
+  const boardResolutionDuty =
+    input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp';
+  // 의결형 의무에서 의결 없이 공시한 것은 **기한과 무관하게** 별도 위반이다 (별표9 "의결 X/공시" 칸).
+  // 기한 내라고 "적법"이라 말하면 최악의 거짓 안심이 된다 (Codex 7차 치명 1)
+  const noBoardResolution = boardResolutionDuty && input.boardResolution === false;
+
   if (deadline && input.actualDisclosureDate && verdict !== 'not_required') {
     const c = evaluateCompliance(deadline.deadline, input.actualDisclosureDate);
     compliance = { ...c, actualDisclosureDate: input.actualDisclosureDate };
     summary +=
       ' ' +
       (c.onTime
-        ? `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이므로 **적법**합니다.`
-        : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.`);
+        ? noBoardResolution
+          ? `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이지만, ` +
+            `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 §26, 별표 9 "의결 X/공시" 칸). ` +
+            `기한 준수가 이 위반을 치유하지 않습니다.`
+          : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이므로 **적법**합니다.`
+        : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.` +
+          (noBoardResolution ? ' 이사회 의결 없이 공시한 위반도 별도로 성립합니다 (별표 9 "의결 X" 칸).' : ''));
 
-    if (!c.onTime && (input.estimatePenaltyIfLate ?? true)) {
-      // 이사회 의결 여부는 §26 계열 의결형 의무에서만 과태료 칸을 가른다. 약관특례(§9)·상품용역
-      // 감소(§9의2)·하도급 결제조건은 의결 요건 자체가 없어 "의결 X" 칸이 성립하지 않는다 → true 고정.
-      // 의결형 의무인데 입력이 없으면 undefined 로 넘겨 estimatePenalty 가 가정 caveat 를 붙인다 (P2-다 10).
-      const boardResolutionDuty =
-        input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp';
+    if ((!c.onTime || noBoardResolution) && (input.estimatePenaltyIfLate ?? true)) {
       const capitalInputs = [input.totalEquity, input.paidInCapital].filter((x) => x !== undefined);
       penalty = estimatePenalty({
         regime,
         boardResolution: boardResolutionDuty ? input.boardResolution : true,
         disclosed: true,
-        onTime: false,
+        onTime: c.onTime,
         delayDays: c.delayDays,
         // 거래금액별 적용비율(고시 Ⅵ.2)은 §26·§29 전용이다. 그 게이트는 estimatePenalty 안에 있으므로
         // 여기서는 그대로 넘긴다 — §27·§28(비상장사 중요사항·기업집단현황)에서는 무시된다.
@@ -579,6 +588,12 @@ export function checkDisclosureDuty(
         ...(capitalInputs.length === 1 ? { capitalBaseIncomplete: true } : {}),
       });
     }
+  } else if (noBoardResolution && verdict === 'required') {
+    // 공시 전이라도 의결 없는 진행은 경고한다 — 의결부터가 의무의 일부다
+    notes.push(
+      '⚠️ 이사회 의결 없이 진행 중이라고 입력하셨습니다. 대규모내부거래는 **사전 이사회 의결 + 공시**가 ' +
+        '모두 의무입니다 (법 §26) — 의결 없이 공시하면 기한을 지켜도 별표 9 "의결 X" 칸의 과태료 대상입니다.',
+    );
   }
 
   const deadlineOut = deadline

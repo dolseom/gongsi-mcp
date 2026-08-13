@@ -49,6 +49,60 @@ describe('selfCorrectionWindow', () => {
   });
 });
 
+describe('의결 없는 공시 — 기한 준수가 위반을 가리지 않는다 (Codex 7차 치명 1)', () => {
+  const base = {
+    duty: 'large_internal_transaction' as const,
+    listing: 'listed' as const,
+    boardDate: '20260701',
+    totalEquity: 100_000_000_000,
+    paidInCapital: 100_000_000_000,
+    amount: 10_000_000_000,
+    today: '20260710',
+  };
+
+  it('boardResolution:false + 기한 내 공시 → "적법" 단정 금지 + 의결 X 과태료 동봉', () => {
+    const r = checkDisclosureDuty({
+      ...base,
+      boardResolution: false,
+      actualDisclosureDate: '20260702',
+    });
+    if ('error' in r) throw new Error(String(r.message));
+    expect(r.summary).toContain('별도의 위반');
+    expect(r.summary).not.toContain('적법');
+    // 별표 9 "의결 X / 공시 / 누락·거짓 없음" 칸 = 5,000만원 (거래 100억 → 비율 100%, 지연 0 → 감경 없음)
+    expect(r.penalty).toBeDefined();
+    expect((r.penalty as { amount: number }).amount).toBe(50_000_000);
+  });
+
+  it('boardResolution:false + 지연 공시 → 지연 문구에도 의결 위반이 병기된다', () => {
+    const r = checkDisclosureDuty({
+      ...base,
+      boardResolution: false,
+      actualDisclosureDate: '20260710',
+    });
+    if ('error' in r) throw new Error(String(r.message));
+    expect(r.summary).toContain('지연');
+    expect(r.summary).toContain('의결 X');
+  });
+
+  it('boardResolution:true + 기한 내는 종전대로 적법 + 과태료 없음', () => {
+    const r = checkDisclosureDuty({
+      ...base,
+      boardResolution: true,
+      actualDisclosureDate: '20260702',
+    });
+    if ('error' in r) throw new Error(String(r.message));
+    expect(r.summary).toContain('적법');
+    expect(r.penalty).toBeUndefined();
+  });
+
+  it('공시 전이라도 boardResolution:false 면 의결 의무 경고를 동봉한다', () => {
+    const r = checkDisclosureDuty({ ...base, boardResolution: false });
+    if ('error' in r) throw new Error(String(r.message));
+    expect(r.notes.some((n) => n.includes('의결 없이 진행'))).toBe(true);
+  });
+});
+
 describe('check_disclosure_duty 골든타임 연동', () => {
   const base = {
     duty: 'large_internal_transaction' as const,

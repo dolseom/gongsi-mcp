@@ -45,9 +45,11 @@ export interface DateChunk {
   /** 계획 시점의 측정 건수. 미측정이면 -1 */
   count: number;
   /**
-   * count 가 API 측정이 아니라 산술(부모 − 왼쪽)로 파생된 경우 (P2-가 2).
-   * 파생 0 은 실측 0 이 아니므로 수집을 건너뛰면 안 된다 — 측정 시점 차이로
+   * count 0 을 신뢰해 수집을 생략하면 안 되는 청크 (P2-가 2 + Codex 7차 치명 2).
+   * 두 경우다: ① 산술 파생(부모 − 왼쪽) 0 — 실측이 아니다 ② 부모가 양수인데 자식 실측이 0 —
+   * 측정 시점 불일치·상류 오신고 신호라 실측이어도 못 믿는다. 어느 쪽이든 건너뛰면
    * 실제 건이 있는 구간이 "조용히 미수집 + partial_results:false"가 된다.
+   * 수집 생략은 모순 신호가 없는 독립 실측 0 에만 허용한다.
    */
   derived?: boolean;
 }
@@ -324,7 +326,14 @@ export async function collectAdaptive(
       count: rightCount,
       ...(rightCount >= 0 ? { derived: true } : {}),
     });
-    stack.push({ from: c.from, to: mid, count: leftCount });
+    // 왼쪽은 실측이지만, 부모가 양수인데 0 이면 측정 시점 불일치 신호다 — 신뢰해 생략하면
+    // 반대 방향으로 같은 조용한 미수집이 난다 (Codex 7차 치명 2: "왼쪽 실측 0" 반례)
+    stack.push({
+      from: c.from,
+      to: mid,
+      count: leftCount,
+      ...(leftCount === 0 && c.count > 0 ? { derived: true } : {}),
+    });
   }
   chunks.sort((a, b) => (a.from < b.from ? -1 : 1));
 

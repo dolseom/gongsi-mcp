@@ -110,6 +110,8 @@ interface SkippedRow {
   rcept_dt: string;
   reason: string;
   viewer_url: string;
+  /** board_date_missing 행의 미추출 원인 (구버전 캐시 메타에는 없다) */
+  board_date_status?: string;
 }
 
 /** 테스트에서 실제 API 없이 판정 로직을 검증하기 위한 주입점 */
@@ -291,6 +293,7 @@ export async function auditGroupDisclosures(
   const trackB: SkippedRow[] = [];
   const boardDateMissing: SkippedRow[] = [];
   const unparsable: SkippedRow[] = [];
+  let boardDateInvalid = 0;
   let onTime = 0;
   let docDownloads = 0;
   let docCacheHits = 0;
@@ -344,12 +347,29 @@ export async function auditGroupDisclosures(
         continue;
       }
       if (!meta.boardDate) {
+        // 미추출 원인을 성질별로 구분한다 (Codex 7차 치명 3) — 특히 invalid_date(실존하지 않는
+        // 날짜 기재)는 원문 오기·거짓기재 신호인데 정당한 "-" 와 같은 바구니에 넣으면 안 된다.
+        // 구버전 캐시 메타는 boardDateStatus 가 없다 — 그 경우 종전 문구를 유지한다.
+        const REASON_BY_STATUS: Record<string, string> = {
+          invalid_date:
+            '⚠️ 원문에 실존하지 않는 날짜가 이사회 의결일로 기재됨 (예: "2026.2.31") — 원문 오기 또는 ' +
+            '거짓기재 신호입니다. 지연 여부를 판정할 수 없으므로 반드시 원문을 확인하세요',
+          value_empty:
+            '원문 의결일 값이 "-" — 기공시 재약정·변경공시의 정당한 무기재일 수 있습니다',
+          label_missing:
+            '서식에 이사회 의결일 항목이 없음 — 서식 분류를 확인하세요 (트랙 B 는 위에서 분리됩니다)',
+          unparsed:
+            '의결일 항목은 있으나 날짜 추출 실패 (표기 변형 가능) — read_disclosure 로 원문을 확인하세요',
+        };
+        if (meta.boardDateStatus === 'invalid_date') boardDateInvalid++;
         boardDateMissing.push({
           corp_name: r.corp_name,
           rcept_no: r.rcept_no,
           report_nm: r.report_nm,
           rcept_dt: r.rcept_dt,
+          ...(meta.boardDateStatus ? { board_date_status: meta.boardDateStatus } : {}),
           reason:
+            (meta.boardDateStatus && REASON_BY_STATUS[meta.boardDateStatus]) ??
             '이사회 의결일 미추출 — 기공시 재약정·변경공시의 정당한 "-" 이거나 표기 변형입니다. read_disclosure 로 원문을 확인하세요',
           viewer_url: viewerUrl(r.rcept_no),
         });
@@ -430,6 +450,13 @@ export async function auditGroupDisclosures(
   if (batch.diagnostics.partial_results || batch.diagnostics.truncated) {
     notes.push('⚠️ 목록 수집이 불완전합니다 (diagnostics.list 참조) — 이 결과로 "누락 없음"을 결론내지 마세요.');
   }
+  if (boardDateInvalid > 0) {
+    notes.push(
+      `⚠️ 원문에 **실존하지 않는 날짜**가 의결일로 기재된 공시가 ${boardDateInvalid}건 있습니다 ` +
+        '(board_date_missing 중 board_date_status:"invalid_date") — 원문 오기 또는 거짓기재 신호입니다. ' +
+        '해당 건은 지연 판정이 불가능하므로 반드시 원문을 직접 확인하세요.',
+    );
+  }
   if (population.codeValidationSkipped) {
     notes.push(
       '⚠️ 법인코드 인덱스가 비어 있어 corp_code 존재 검증을 건너뛰었습니다 — 코드에 오타가 있으면 ' +
@@ -466,6 +493,7 @@ export async function auditGroupDisclosures(
       late_candidates: lateCandidates.length,
       omnibus_track_b: trackB.length,
       board_date_missing: boardDateMissing.length,
+      ...(boardDateInvalid > 0 ? { board_date_invalid: boardDateInvalid } : {}),
       unparsable: unparsable.length,
       corrections_excluded: correctionsSkipped,
     },

@@ -158,10 +158,15 @@ export function searchQna(
     }
     let gramHits = 0;
     let qGramCount = 0; // 질문에서 일치한 서로 다른 bigram 수 (아래 짧은 복합어 하한용)
-    for (const g of grams) {
+    let qFirstGram = false;
+    let qLastGram = false;
+    for (let gi = 0; gi < grams.length; gi++) {
+      const g = grams[gi]!;
       if (q.includes(g)) {
         gramHits += 2;
         qGramCount += 1;
+        if (gi === 0) qFirstGram = true;
+        if (gi === grams.length - 1) qLastGram = true;
       } else if (a.includes(g)) gramHits += 1;
     }
     score += gramHits * 0.05;
@@ -173,9 +178,14 @@ export function searchQna(
     // 5자 질의는 bigram 이 4개뿐인 데다, 코퍼스에는 조사가 끼어("지분율에는 변동") 경계 bigram("율변")이
     // 절대 안 맞는다 → 최대 6점. 그래서 **질문에서** bigram 이 3개 이상 & 75% 이상 맞으면 통과시킨다.
     // 질문만 세는 이유는 토큰 가중치와 같다 — 답변은 조문 인용이 많아 아무 질의에나 걸린다.
-    // (무관 질의 9종 실측: 이 경로로 새로 통과하는 오탐 0건, 2026-08-13)
+    //
+    // ★ 추가 조건: **첫·끝 bigram 이 둘 다 질문에 있어야 한다** (Codex 7차 중간 1).
+    // 복합어에서 빠지는 bigram 은 조사·띄어쓰기가 끼는 **가운데 경계**("지분율|변동"의 '율변')다.
+    // 끝 bigram 이 빠졌다는 건 마지막 형태소가 다르다는 뜻 — "금융상품권"(상품권 질의)이 끝 글자만
+    // 무시된 채 "금융상품" Q&A 를 공식 근거처럼 받던 오탐 경로를 막는다 (실측 반례).
     const tokenMatched = score >= 1;
-    const shortCompoundMatched = qGramCount >= 3 && qGramCount >= grams.length * 0.75;
+    const shortCompoundMatched =
+      qGramCount >= 3 && qGramCount >= grams.length * 0.75 && qFirstGram && qLastGram;
     if (tokenMatched || gramHits >= 8 || shortCompoundMatched) matches.push({ entry, score });
   }
 
