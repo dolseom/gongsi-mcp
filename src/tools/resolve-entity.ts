@@ -64,6 +64,51 @@ export function inferYearMonth(now = new Date()): string {
   return m >= 5 ? `${y}05` : `${y - 1}05`;
 }
 
+/**
+ * 추정 공개년월을 포털 실공개 목록(publicYmList)과 대조한다 (P2-라 15).
+ *
+ * 5월이라고 당해년 05 스냅샷이 반드시 올라와 있는 게 아니다 — 아직 미공개면 존재하지 않는
+ * 년월로 조회하게 되고, 그 빈 응답이 corp_not_found("그런 기업집단 없음")로 둔갑한다.
+ * 존재가 확인된 년월만 영구 캐시한다 (한 번 공개된 스냅샷은 사라지지 않는다).
+ * 목록이 비거나 조회가 실패하면 추정값을 유지한다 — 빈 응답을 근거로 판단하지 않는다 (함정 11번).
+ */
+export async function verifyYearMonth(
+  egroup: EgroupClient,
+  inferred: string,
+): Promise<{ ym: string; note?: string }> {
+  const store = getStore();
+  const cacheKey = `egroup_ym_verified:${inferred}`;
+  if (store.get(cacheKey)) return { ym: inferred };
+  try {
+    const items = (await egroup.publicYearMonths('0001')) as Array<Record<string, string>>;
+    const published = items
+      .map((i) => i['othbcYm'])
+      .filter((ym): ym is string => typeof ym === 'string' && /^\d{6}$/.test(ym))
+      .sort();
+    if (published.length === 0) return { ym: inferred };
+    if (published.includes(inferred)) {
+      store.set(cacheKey, '1');
+      return { ym: inferred };
+    }
+    const fallback = [...published].reverse().find((ym) => ym < inferred);
+    if (fallback) {
+      return {
+        ym: fallback,
+        note:
+          `추정 공개년월 ${inferred} 이(가) 포털에 아직 공개되지 않아 최신 공개분 ${fallback} 기준으로 조회했습니다 ` +
+          '(포털은 연 1회, 매년 5월 전후 갱신).',
+      };
+    }
+    return { ym: inferred };
+  } catch (err) {
+    log.warn('공개년월 목록 확인 실패 — 추정값을 유지한다', {
+      inferred,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { ym: inferred };
+  }
+}
+
 export async function resolveEntity(input: ResolveEntityInput): Promise<unknown> {
   const type = input.type ?? 'auto';
   const kind = detectIdentifier(input.query);
@@ -121,16 +166,34 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
       ...(company.normalizedMatch ? { normalized_match: true } : {}),
     };
     if (!company.jurirNo) {
-      results['note_jurir_no'] =
-        '법인등록번호가 아직 없습니다. 기업집단포털과 대사하려면 fetchJurirNo=true 로 다시 호출하세요 (DART 호출 1회 소비).';
+      // 실패·부재·미시도를 구분한다 (P2-라 13) — 실패인데 "다시 호출하세요"만 주면
+      // 안내대로 해도 같은 실패가 반복되고, "이 회사는 법인등록번호가 없다"로 오독된다
+      if (company.jurirNoFetchError) {
+        results['note_jurir_no'] =
+          `기업개황 API 조회가 실패해 법인등록번호를 확인하지 못했습니다 (${company.jurirNoFetchError}). ` +
+          '법인등록번호가 없는 것이 아니라 이번에 못 읽은 것입니다 — 잠시 후 fetchJurirNo=true 로 재시도하세요.';
+      } else if (input.fetchJurirNo) {
+        results['note_jurir_no'] =
+          'DART 기업개황 응답에 법인등록번호가 없습니다 (드문 경우). 기업집단포털 조인은 불가능합니다.';
+      } else {
+        results['note_jurir_no'] =
+          '법인등록번호가 아직 없습니다. 기업집단포털과 대사하려면 fetchJurirNo=true 로 다시 호출하세요 (DART 호출 1회 소비).';
+      }
     }
   }
 
   // ── 기업집단 해석 ──
   if (tryGroup || input.includeGroup) {
-    const yearMonth = input.yearMonth ?? inferYearMonth();
+    let yearMonth = input.yearMonth ?? inferYearMonth();
     try {
       const egroup = new EgroupClient();
+
+      // 사용자가 명시하지 않았으면 추정 년월이 실제로 공개돼 있는지 확인한다 (P2-라 15)
+      if (!input.yearMonth) {
+        const v = await verifyYearMonth(egroup, yearMonth);
+        yearMonth = v.ym;
+        if (v.note) results['year_month_note'] = v.note;
+      }
 
       if (tryGroup && !company) {
         const { exact, candidates } = await egroup.findGroup(input.query, yearMonth);
@@ -163,7 +226,15 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
           };
         } else {
           const found = await findGroupByJurirNo(egroup, jurirNo, yearMonth);
-          results['group'] = found ?? { status: 'not_found', year_month: yearMonth };
+          // not_found 를 "미소속 확정"으로 읽지 않게 스냅샷 주기를 함께 알린다 (P2-라 16) —
+          // 포털은 연 1회(매년 5/1 기준) 갱신이라 그 이후 신규 편입은 다음 지정 전까지 안 잡힌다
+          results['group'] = found ?? {
+            status: 'not_found',
+            year_month: yearMonth,
+            note:
+              `${yearMonth} 지정 기준(연 1회, 매년 5/1) 스냅샷에서 찾지 못했다는 뜻입니다. ` +
+              '그 이후 계열 편입된 회사는 다음 지정 전까지 이 조회로 잡히지 않습니다 — 미소속 확정이 아닙니다.',
+          };
         }
       }
     } catch (err) {

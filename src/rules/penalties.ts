@@ -61,6 +61,12 @@ export interface ViolationInput {
 
   /** 상한 산정용: max(자본금, 자본총계) */
   capitalBase?: number;
+  /**
+   * capitalBase 가 자본총계·자본금 중 **한쪽 값만으로** 만들어진 경우 (P2-다 12).
+   * 소기업 상한(Ⅵ.1 단서)은 둘 중 큰 금액 기준인데, 한쪽만 알면 과소평가될 수 있고
+   * 그러면 상한이 잘못 발동해 과태료가 caveat 없이 깎인다 — true 면 caveat 를 동봉한다.
+   */
+  capitalBaseIncomplete?: boolean;
 }
 
 const REF: Record<PenaltyRegime, LegalRef[]> = {
@@ -175,6 +181,27 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
   // ── 기준금액 = 기본금액 × 거래금액별 적용비율 (고시 Ⅵ.2) ──
   // §27·§28 고시는 Ⅲ.2·Ⅵ.2 가 모두 "삭제"이므로 비율 적용 대상이 아니다.
   const caveats: string[] = [];
+
+  // 조용한 낙관 기본값 2종은 가정임을 밝힌다 (P2-다 10·12) — 위반이 아예 없으면(금액 0) 소음이라 생략
+  if (basicTotal > 0) {
+    if (v.regime === 'art26_29' && v.boardResolution === undefined) {
+      caveats.push(
+        '⚠️ 이사회 의결 여부(boardResolution)가 입력되지 않아 **의결을 거친 것으로 가정**했습니다. ' +
+          '의결 없이 진행된 사건이라면 별표 9의 "의결 X" 칸이 적용되어 기본금액이 크게 올라갑니다' +
+          '(의결 X/미공시 7,000만원, 의결 X/공시 5,000만원~) — 의결이 없었다면 boardResolution:false 로 재산정하세요.',
+      );
+    }
+    if (v.capitalBaseIncomplete && v.capitalBase !== undefined) {
+      const smallCapLimit = v.regime === 'art26_29' ? 50 * 억 : 10 * 억;
+      if (v.capitalBase <= smallCapLimit) {
+        caveats.push(
+          '⚠️ 자본총계·자본금 중 **한쪽만 입력**되었습니다. 소기업 기본금액 상한(고시 Ⅵ.1 단서, 자본 1%)은 ' +
+            '둘 중 큰 금액 기준인데 입력된 한쪽 값으로만 판단했습니다 — 미입력 쪽이 더 크면 상한 적용 여부·금액이 ' +
+            '달라져 실제 과태료가 이 값보다 클 수 있습니다. 두 값을 모두 주고 재산정하세요.',
+        );
+      }
+    }
+  }
   let transactionRatio: PenaltyResult['transactionRatio'];
   let standardAmount = basicTotal;
   if (v.regime === 'art26_29' && basicTotal > 0) {

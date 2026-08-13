@@ -163,6 +163,15 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe('지연이 확인되면 예상 과태료도 함께 산정할지 (기본 true)'),
 
+  boardResolution: z
+    .boolean()
+    .optional()
+    .describe(
+      '과태료 산정용: 이사회 의결을 실제로 거쳤는지. 대규모내부거래·공익법인(§26 계열)에서 의결 없이 ' +
+        '공시하거나 미공시한 사건은 별표 9의 "의결 X" 칸(기본금액 5,000만~7,000만원)이 적용되어 금액이 ' +
+        '크게 달라집니다. 생략하면 의결을 거친 것으로 가정하고 그 가정을 caveat 로 알립니다',
+    ),
+
   disclosureStatus: z
     .enum(['not_disclosed', 'disclosed'])
     .optional()
@@ -547,9 +556,15 @@ export function checkDisclosureDuty(
         : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.`);
 
     if (!c.onTime && (input.estimatePenaltyIfLate ?? true)) {
+      // 이사회 의결 여부는 §26 계열 의결형 의무에서만 과태료 칸을 가른다. 약관특례(§9)·상품용역
+      // 감소(§9의2)·하도급 결제조건은 의결 요건 자체가 없어 "의결 X" 칸이 성립하지 않는다 → true 고정.
+      // 의결형 의무인데 입력이 없으면 undefined 로 넘겨 estimatePenalty 가 가정 caveat 를 붙인다 (P2-다 10).
+      const boardResolutionDuty =
+        input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp';
+      const capitalInputs = [input.totalEquity, input.paidInCapital].filter((x) => x !== undefined);
       penalty = estimatePenalty({
         regime,
-        boardResolution: true,
+        boardResolution: boardResolutionDuty ? input.boardResolution : true,
         disclosed: true,
         onTime: false,
         delayDays: c.delayDays,
@@ -557,9 +572,11 @@ export function checkDisclosureDuty(
         // 여기서는 그대로 넘긴다 — §27·§28(비상장사 중요사항·기업집단현황)에서는 무시된다.
         ...(input.amount !== undefined ? { transactionAmount: input.amount } : {}),
         capitalBase:
-          input.totalEquity !== undefined || input.paidInCapital !== undefined
+          capitalInputs.length > 0
             ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0)
             : undefined,
+        // 한쪽만 주면 max() 가 과소평가될 수 있다 — 소기업 상한 오적용 caveat 용 (P2-다 12)
+        ...(capitalInputs.length === 1 ? { capitalBaseIncomplete: true } : {}),
       });
     }
   }

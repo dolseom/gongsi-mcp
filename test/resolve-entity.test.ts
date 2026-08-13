@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { EgroupClient } from '../src/clients/egroup.js';
 import { Store, __setStore } from '../src/lib/store.js';
-import { findGroupByJurirNo } from '../src/tools/resolve-entity.js';
+import { findGroupByJurirNo, verifyYearMonth } from '../src/tools/resolve-entity.js';
 
 /**
  * P0-3 회귀 고정 — 계열사 캐시 오염 (함정 11번 재발 경로).
@@ -109,5 +109,75 @@ describe('resolve_entity — 계열사 캐시 오염 방지 (P0-3)', () => {
     // 캐시가 실제 목록으로 교체됐다
     const cached = store.get(`egroup_affiliates:${YM}:K1000032`);
     expect((JSON.parse(cached!) as unknown[]).length).toBe(1);
+  });
+});
+
+describe('공개년월 실검증 (P2-라 15)', () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(':memory:');
+    __setStore(store);
+  });
+
+  afterEach(() => {
+    __setStore(null);
+    store.close();
+    vi.unstubAllGlobals();
+  });
+
+  function ymXml(yms: string[]): string {
+    const items = yms
+      .map((ym) => `<publicYm><othbcYm>${ym}</othbcYm><jobSeCode>0001</jobSeCode></publicYm>`)
+      .join('');
+    return (
+      `<publicYmList><resultCode>00</resultCode><resultMsg>OK</resultMsg>` +
+      `<totalCount>${yms.length}</totalCount>${items}</publicYmList>`
+    );
+  }
+
+  function stubYmList(body: string): ReturnType<typeof vi.fn> {
+    const f = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes('publicYmList')) return new Response(body, { status: 200 });
+      throw new Error(`예상치 못한 호출: ${u}`);
+    });
+    vi.stubGlobal('fetch', f);
+    return f;
+  }
+
+  it('추정 년월이 아직 미공개면 최신 공개분으로 폴백하고 note 를 남긴다', async () => {
+    stubYmList(ymXml(['202405', '202505']));
+    const v = await verifyYearMonth(new EgroupClient('test-key'), '202605');
+    expect(v.ym).toBe('202505');
+    expect(v.note).toContain('202605');
+    expect(v.note).toContain('202505');
+  });
+
+  it('추정 년월이 공개돼 있으면 그대로 쓰고 영구 캐시한다 (재호출 시 API 미소비)', async () => {
+    const f = stubYmList(ymXml(['202505', '202605']));
+    const client = new EgroupClient('test-key');
+    const v1 = await verifyYearMonth(client, '202605');
+    expect(v1).toEqual({ ym: '202605' });
+    expect(store.get('egroup_ym_verified:202605')).toBe('1');
+    const callsAfterFirst = f.mock.calls.length;
+    const v2 = await verifyYearMonth(client, '202605');
+    expect(v2).toEqual({ ym: '202605' });
+    expect(f.mock.calls.length).toBe(callsAfterFirst); // 캐시 적중 — 추가 호출 없음
+  });
+
+  it('목록이 비면 추정값을 유지하고 캐시하지 않는다 (빈 응답 판단 금지)', async () => {
+    stubYmList(ymXml([]));
+    const v = await verifyYearMonth(new EgroupClient('test-key'), '202605');
+    expect(v).toEqual({ ym: '202605' });
+    expect(store.get('egroup_ym_verified:202605')).toBeNull();
+  });
+
+  it('조회가 실패해도 추정값을 유지한다 — 검증은 부가 기능이다', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('네트워크 오류');
+    }));
+    const v = await verifyYearMonth(new EgroupClient('test-key'), '202605');
+    expect(v).toEqual({ ym: '202605' });
   });
 });

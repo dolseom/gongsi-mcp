@@ -24,9 +24,11 @@ describe('assess_correction_risk — 정정 리스크 진단', () => {
     expect(r.recommendation).toContain('즉시 정정');
   });
 
-  it('거래 변경은 위반이 아니라 새 공시의무로 안내한다 (§26 계열은 재의결)', () => {
+  it('거래 변경은 "위반 아님" 단정이 아니라 이행 여부에 달린 것으로 안내한다 (P2-다 11)', () => {
+    // 변경 재의결·재공시를 이미 놓쳤다면 Ⅱ.라 위반이 성립해 있다 — 이행 여부를 안 물었으므로 depends
     const r = assessCorrectionRisk({ errorType: 'transaction_changed', regime: 'art26_29' });
-    expect(r.originalViolation.established).toBe(false);
+    expect(r.originalViolation.established).toBe('depends');
+    expect(r.originalViolation.explanation).toContain('이미 성립');
     expect(r.recommendation).toContain('이사회 의결');
     expect(r.legalBasis.some((b) => b.source.includes('Ⅱ.라'))).toBe(true);
   });

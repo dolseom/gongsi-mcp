@@ -305,6 +305,50 @@ describe('과태료 0원 경로 차단 — 감경 상한 해석 (Opus 검토 C-1
   });
 });
 
+describe('낙관 기본값의 가정 고지 (P2-다 10·12)', () => {
+  const lateCase = {
+    regime: 'art26_29' as const,
+    disclosed: true,
+    onTime: false,
+    delayDays: 5,
+  };
+
+  it('boardResolution 미입력이면 금액은 종전과 같되 "의결 가정" caveat 가 붙는다', () => {
+    const r = estimatePenalty(lateCase);
+    expect(r.amount).toBe(2_750_000); // 의결 O 가정 — 종전 동작 유지
+    expect(r.caveats.join(' ')).toContain('의결을 거친 것으로 가정');
+  });
+
+  it('boardResolution 을 명시하면 가정 caveat 가 붙지 않는다', () => {
+    const withTrue = estimatePenalty({ ...lateCase, boardResolution: true });
+    expect(withTrue.caveats.join(' ')).not.toContain('의결을 거친 것으로 가정');
+    const withFalse = estimatePenalty({ ...lateCase, boardResolution: false });
+    expect(withFalse.caveats.join(' ')).not.toContain('의결을 거친 것으로 가정');
+    expect(withFalse.amount).toBeGreaterThan(withTrue.amount); // 의결 X 칸이 실제로 적용된다
+  });
+
+  it('자본 한쪽만 입력 + 소기업 상한 구간이면 과소평가 가능성 caveat 가 붙는다', () => {
+    const r = estimatePenalty({ ...lateCase, capitalBase: 30 * 억, capitalBaseIncomplete: true });
+    expect(r.caveats.join(' ')).toContain('한쪽만 입력');
+  });
+
+  it('자본을 둘 다 입력했으면(incomplete 아님) caveat 가 없다', () => {
+    const r = estimatePenalty({ ...lateCase, capitalBase: 30 * 억 });
+    expect(r.caveats.join(' ')).not.toContain('한쪽만 입력');
+  });
+
+  it('상한 구간 밖(자본 > 50억)이면 한쪽만 입력해도 caveat 불요 — 상한이 어차피 안 걸린다', () => {
+    const r = estimatePenalty({ ...lateCase, capitalBase: 100 * 억, capitalBaseIncomplete: true });
+    expect(r.caveats.join(' ')).not.toContain('한쪽만 입력');
+  });
+
+  it('위반 없음(0원)에는 가정 caveat 를 붙이지 않는다 — 소음 방지', () => {
+    const r = estimatePenalty({ regime: 'art26_29', disclosed: true, onTime: true });
+    expect(r.amount).toBe(0);
+    expect(r.caveats.join(' ')).not.toContain('가정');
+  });
+});
+
 describe('과태료 — 별표9 + 고시', () => {
   it('§26 이사회 의결 없이 미공시 = 7,000만원', () => {
     const r = estimatePenalty({

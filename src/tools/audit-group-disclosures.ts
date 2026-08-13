@@ -133,6 +133,7 @@ interface Population {
   corpCodes: Map<string, string>; // corp_code → 표시 이름
   group: Record<string, unknown> | null;
   unjoined: string[]; // 집단 소속인데 corp_code 미조인이라 감사에서 빠진 회사
+  codeValidationSkipped?: boolean; // 법인코드 인덱스가 비어 있어 corp_code 존재 검증을 못 한 경우
 }
 
 async function resolvePopulation(input: AuditGroupDisclosuresInput): Promise<Population> {
@@ -165,10 +166,26 @@ async function resolvePopulation(input: AuditGroupDisclosuresInput): Promise<Pop
 
   // companies 경로
   const corpCodes = new Map<string, string>();
+  // 인덱스가 비어 있으면(신규 설치 직후 등) 존재 검증이 불가능하다 — 막지 말고 아래에서 notes 로 알린다
+  const canValidateCodes = store.corpCount() > 0;
+  let codeValidationSkipped = false;
   for (const q of input.companies!) {
     const t = q.trim();
     if (/^\d{8}$/.test(t)) {
       const rec = store.getCorpByCode(t);
+      if (!rec) {
+        // 이름 경로는 CorpNotFoundError 를 던지는데 코드 경로만 무검증이었다 (P2-마 20) —
+        // 오타 코드가 모집단에 들어가면 "감사 완료, 지연 0건"이라는 거짓 안심으로 귀결된다.
+        if (canValidateCodes) {
+          throw new ToolError(
+            'corp_not_found',
+            `corp_code '${t}' 가 DART 법인코드 목록(${store.corpCount().toLocaleString()}건)에 없습니다. ` +
+              '오타이거나 폐지된 코드일 수 있습니다 — 회사명으로 다시 지정하거나 resolve_entity 로 확인하세요.',
+            { corp_code: t },
+          );
+        }
+        codeValidationSkipped = true;
+      }
       corpCodes.set(t, rec?.corpName ?? t);
       continue;
     }
@@ -187,7 +204,7 @@ async function resolvePopulation(input: AuditGroupDisclosuresInput): Promise<Pop
     }
     corpCodes.set(matches[0]!.corpCode, matches[0]!.corpName);
   }
-  return { corpCodes, group: null, unjoined: [] };
+  return { corpCodes, group: null, unjoined: [], codeValidationSkipped };
 }
 
 /**
@@ -412,6 +429,20 @@ export async function auditGroupDisclosures(
   }
   if (batch.diagnostics.partial_results || batch.diagnostics.truncated) {
     notes.push('⚠️ 목록 수집이 불완전합니다 (diagnostics.list 참조) — 이 결과로 "누락 없음"을 결론내지 마세요.');
+  }
+  if (population.codeValidationSkipped) {
+    notes.push(
+      '⚠️ 법인코드 인덱스가 비어 있어 corp_code 존재 검증을 건너뛰었습니다 — 코드에 오타가 있으면 ' +
+        '해당 회사의 공시가 0건으로 잡혀 "지연 없음"처럼 보일 수 있습니다. resolve_entity 로 코드를 확인하세요.',
+    );
+  }
+  if (originals.length === 0) {
+    // 판정 대상 0건 = "적법 확인"이 아니다 (P2-마 20) — 기간·모집단 오설정과 구분할 수 없다
+    notes.push(
+      'ℹ️ 이 기간·모집단에서 판정 대상 공시가 0건입니다. "지연 후보 0건"은 공시가 없었다는 뜻이지 ' +
+        '적법을 확인했다는 뜻이 아닙니다 — 기간(from/to)과 대상 회사가 의도한 범위인지, ' +
+        '목록 수집이 완전한지(diagnostics.list)를 함께 확인하세요.',
+    );
   }
 
   log.info('감사 완료', {

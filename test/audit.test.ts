@@ -178,6 +178,45 @@ describe('판정 로직', () => {
   });
 });
 
+describe('corp_code 존재 검증 (P2-마 20)', () => {
+  const seed = () =>
+    store.upsertCorps([
+      { corpCode: '00000001', corpName: '테스트회사', stockCode: null, jurirNo: null, modifyDate: null },
+    ]);
+
+  it('인덱스가 있으면 미존재 8자리 코드를 corp_not_found 로 거부한다 (이름 경로와 대칭)', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    await expect(
+      auditGroupDisclosures({ ...BASE_INPUT, companies: ['99999999'] }, deps),
+    ).rejects.toMatchObject({ code: 'corp_not_found' });
+  });
+
+  it('인덱스가 있고 코드가 실존하면 통과하고 이름이 붙는다', async () => {
+    seed();
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(1);
+    expect(r.notes.some((n: string) => n.includes('존재 검증을 건너뛰'))).toBe(false);
+  });
+
+  it('인덱스가 비어 있으면 막지 않되 검증 생략을 notes 로 알린다', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.notes.some((n: string) => n.includes('존재 검증을 건너뛰'))).toBe(true);
+  });
+
+  it('판정 대상 0건이면 "적법 확인이 아니다" 안내를 동봉한다', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.disclosures_scanned).toBe(0);
+    expect(r.notes.some((n: string) => n.includes('0건') && n.includes('적법을 확인했다는 뜻이 아닙니다'))).toBe(
+      true,
+    );
+  });
+});
+
 describe('입력 검증', () => {
   it('group 도 companies 도 없으면 invalid_argument', async () => {
     await expect(

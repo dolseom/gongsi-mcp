@@ -133,6 +133,8 @@ export interface ResolvedCorp extends CorpRecord {
   matchedBy: IdentifierKind;
   /** 상호 완전일치가 아니라 정규화 후 일치인 경우 */
   normalizedMatch?: boolean;
+  /** fetchJurirNo 요청이 API 실패로 무산된 경우 — "법인등록번호 없음"과 구분해야 한다 (P2-라 13) */
+  jurirNoFetchError?: string;
 }
 
 /**
@@ -222,33 +224,41 @@ export async function resolveCorp(
   if (normalizedMatch) result.normalizedMatch = true;
 
   if (opts.fetchJurirNo && !found.jurirNo) {
-    const jurirNo = await fetchJurirNo(found.corpCode, client);
-    if (jurirNo) result.jurirNo = jurirNo;
+    const r = await fetchJurirNo(found.corpCode, client);
+    if (r.status === 'ok') result.jurirNo = r.jurirNo;
+    else if (r.status === 'error') result.jurirNoFetchError = r.message;
   }
   return result;
 }
+
+/** fetchJurirNo 결과 — 실패(error)를 부재(absent)로 뭉개면 재시도 안내가 거짓말이 된다 (P2-라 13) */
+export type JurirNoFetch =
+  | { status: 'ok'; jurirNo: string }
+  | { status: 'absent' } // 응답은 정상인데 법인등록번호 필드가 빈 경우 — 확인된 부재
+  | { status: 'error'; message: string }; // 조회 실패 — 부재로 단정하면 안 된다
 
 /**
  * 기업개황 API 로 법인등록번호를 채운다.
  * `corpCode.xml` 에 없는 유일한 핵심 필드이며, 기업집단포털 조인의 전제다.
  */
-export async function fetchJurirNo(corpCode: string, client: DartClient): Promise<string | null> {
+export async function fetchJurirNo(corpCode: string, client: DartClient): Promise<JurirNoFetch> {
   const store = getStore();
   const cached = store.getCorpByCode(corpCode);
-  if (cached?.jurirNo) return cached.jurirNo;
+  if (cached?.jurirNo) return { status: 'ok', jurirNo: cached.jurirNo };
 
   try {
     const profile = await client.companyProfile(corpCode);
     const jurirNo = String(profile['jurir_no'] ?? '').replace(/-/g, '').trim();
     if (jurirNo) {
       store.setJurirNo(corpCode, jurirNo);
-      return jurirNo;
+      return { status: 'ok', jurirNo };
     }
+    return { status: 'absent' };
   } catch (err) {
     log.warn('기업개황 조회 실패', {
       corpCode,
       error: err instanceof Error ? err.name : String(err),
     });
+    return { status: 'error', message: err instanceof Error ? err.message : String(err) };
   }
-  return null;
 }

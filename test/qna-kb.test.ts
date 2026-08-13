@@ -129,6 +129,23 @@ describe('검색 품질 (회귀 고정)', () => {
     expect(searchQna('오늘 점심 메뉴 추천')).toEqual([]);
   });
 
+  it('띄어쓰기 없는 짧은 복합어("지분율변동")도 탈락하지 않는다 (P2-마 17)', () => {
+    // 코퍼스에는 "지분율변동" 이 붙어서 나오지 않는다("지분율에는 변동") — 토큰·경계 bigram 이
+    // 전부 빗나가도, 질문 bigram 3/4 일치로 통과해야 한다. 종전에는 0건이었다 (실측 2026-08-13).
+    const r = searchQna('지분율변동');
+    expect(r.length).toBeGreaterThan(0);
+    expect(
+      r.some((m) => (m.entry.question + (m.entry.answer ?? '')).includes('지분율')),
+    ).toBe(true);
+  });
+
+  it('짧은 복합어 완화가 무관 질의까지 열지는 않는다', () => {
+    // 4~5자 붙여쓰기 무관 질의 — 질문 bigram 3개 이상 & 75% 를 우연히는 못 채운다
+    expect(searchQna('김치찌개는')).toEqual([]);
+    expect(searchQna('운동화추천')).toEqual([]);
+    expect(searchQna('스마트폰을')).toEqual([]);
+  });
+
   it('초장문 질의도 잘라서 처리한다 — 이벤트 루프 점유 방지 (Codex 중간 10)', () => {
     const long = '대규모내부거래 '.repeat(20_000); // 20만+ 자
     const t0 = Date.now();

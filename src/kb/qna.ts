@@ -157,16 +157,26 @@ export function searchQna(
       else if (a.includes(t)) score += 1;
     }
     let gramHits = 0;
+    let qGramCount = 0; // 질문에서 일치한 서로 다른 bigram 수 (아래 짧은 복합어 하한용)
     for (const g of grams) {
-      if (q.includes(g)) gramHits += 2;
-      else if (a.includes(g)) gramHits += 1;
+      if (q.includes(g)) {
+        gramHits += 2;
+        qGramCount += 1;
+      } else if (a.includes(g)) gramHits += 1;
     }
     score += gramHits * 0.05;
 
     // 신뢰 하한 — 토큰이 하나도 안 맞으면 bigram 우연 일치(예: "강아지 예방접종"의 '접종' 1개)만으로
     // "공정위 공식 근거"처럼 반환되면 안 된다. bigram 뭉치가 실질적으로 겹칠 때만 통과시킨다.
+    //
+    // 단 하한 8은 띄어쓰기 없는 짧은 복합어를 전량 탈락시킨다 (실측: "지분율변동" 0건 / "지분율 변동" 5건).
+    // 5자 질의는 bigram 이 4개뿐인 데다, 코퍼스에는 조사가 끼어("지분율에는 변동") 경계 bigram("율변")이
+    // 절대 안 맞는다 → 최대 6점. 그래서 **질문에서** bigram 이 3개 이상 & 75% 이상 맞으면 통과시킨다.
+    // 질문만 세는 이유는 토큰 가중치와 같다 — 답변은 조문 인용이 많아 아무 질의에나 걸린다.
+    // (무관 질의 9종 실측: 이 경로로 새로 통과하는 오탐 0건, 2026-08-13)
     const tokenMatched = score >= 1;
-    if (tokenMatched || gramHits >= 8) matches.push({ entry, score });
+    const shortCompoundMatched = qGramCount >= 3 && qGramCount >= grams.length * 0.75;
+    if (tokenMatched || gramHits >= 8 || shortCompoundMatched) matches.push({ entry, score });
   }
 
   matches.sort((x, y) => {

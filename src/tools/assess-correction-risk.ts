@@ -211,15 +211,22 @@ export function assessCorrectionRisk(input: AssessCorrectionRiskInput): Correcti
       break;
     }
     case 'transaction_changed': {
+      // 'depends' 인 이유 (P2-다 11): "위반 아님" 단정은 변경 재의결·재공시를 **이미 이행했을 때만** 참이다.
+      // 이 도구는 이행 여부를 입력받지 않으므로, 이미 놓친 상태라면 Ⅱ.라 위반이 성립해 있고
+      // 지연 감경률도 깎이는 중인데 "위반 아님"이 최악의 거짓 안심이 된다.
       originalViolation = {
-        established: false,
-        type: '위반 아님 — 새로운 공시의무 발생',
+        established: 'depends',
+        type: '원 공시의 오류 아님 — 변경 건의 새 공시의무 이행 여부에 달림',
         explanation:
           input.regime === 'art26_29'
             ? '거래의 주요내용이 변경된 경우는 원 공시의 오류가 아니라 **다시 이사회 의결을 거쳐 공시할 의무**가 ' +
-              '새로 발생한 것입니다. 이를 이행하지 않으면 그것이 별도의 위반입니다 (과태료 고시 Ⅱ.라).'
+              '새로 발생한 것입니다. 이 의무를 기한 내 이행했다면 위반이 아니지만, 변경 후 재의결·재공시 없이 ' +
+              '이미 기한을 넘겼다면 그 자체가 별도의 위반으로 **이미 성립해 있으며** (과태료 고시 Ⅱ.라) ' +
+              '지연일수 감경도 달력일 기준으로 매일 축소되는 중입니다. 이행 여부와 기한을 먼저 확인하세요 ' +
+              '(변경 의결일 기준 — check_disclosure_duty).'
             : '공시한 내용에 변동이 생긴 경우는 원 공시의 오류가 아니라 변동사항에 대한 공시의무가 새로 ' +
-              '발생했는지의 문제입니다. 해당 항목의 공시 요건을 check_disclosure_duty 로 판정하세요.',
+              '발생했는지의 문제입니다. 새 의무가 성립하는데 기한을 이미 넘겼다면 지연 위반이 성립해 있습니다. ' +
+              '해당 항목의 공시 요건과 기한을 check_disclosure_duty 로 판정하세요.',
       };
       recommendation =
         input.regime === 'art26_29'
