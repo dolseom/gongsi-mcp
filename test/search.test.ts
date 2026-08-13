@@ -135,6 +135,51 @@ describe('적응형 분할 수집', () => {
     expect(r.rows.length).toBe(expected);
   });
 
+  it('산술 파생 0 청크도 수집한다 — 측정 불일치가 조용한 미수집이 되지 않는다 (P2-가 2)', async () => {
+    // 왼쪽 측정이 부풀려지면(측정 시점 차이 재현) 오른쪽 파생 건수가 0 이 된다.
+    // 종전에는 그 구간을 collect 없이 건너뛰어 실제 180건이 partial_results:false 로 사라졌다.
+    const rows = makeRows('20260101', '20260112', () => 30); // 360건
+    class LyingClient extends FakeClient {
+      override async measure(p: ListParams): Promise<number> {
+        if (`${p.bgnDe}-${p.endDe}` === '20260101-20260106') {
+          this.measureCalls++;
+          return 360; // 실제 180 — 과대 신고로 오른쪽 파생 건수를 0 으로 만든다
+        }
+        return super.measure(p);
+      }
+    }
+    const client = new LyingClient(rows);
+    const r = await collectAdaptive(client, BASE, '20260101', '20260112', OPTS);
+    expect(r.rows.length).toBe(360); // 오른쪽 절반(20260107~)의 180건이 살아 있어야 한다
+    expect(r.diagnostics.partial_results).toBe(false);
+  });
+
+  it('실측 0 청크는 여전히 수집을 생략한다 (호출 절약 유지)', async () => {
+    // 앞 3일만 데이터가 있고 뒤는 실측 0 — 창 자체를 실측하는 경로
+    const rows = makeRows('20260101', '20260103', () => 10);
+    const client = new FakeClient(rows);
+    const r = await collectAdaptive(client, BASE, '20260101', '20260103', OPTS);
+    expect(r.rows.length).toBe(30);
+    // 실측 0 이었다면 collect 자체가 없어야 하는 시나리오는 emptyResult 경로로 이미 커버되므로
+    // 여기서는 파생이 아닌 청크의 count=0 스킵 로직이 살아 있는지만 본다
+    const zeroSkipped = r.diagnostics.date_chunks.filter((c) => c.count === 0 && c.pages === 0);
+    for (const c of zeroSkipped) {
+      expect(client.collectCalls.some((cc) => cc.from === c.from && cc.to === c.to)).toBe(false);
+    }
+  });
+
+  it('창 측정 실패를 diagnostics 로 표면화한다 — total 은 하한임을 알린다 (P2-가 3)', async () => {
+    const rows = makeRows('20260101', '20260112', () => 5);
+    const client = new FakeClient(rows);
+    client.failMeasureFor.add('20260101-20260112'); // 창 측정만 실패, 분할 측정은 성공
+    const r = await collectAdaptive(client, BASE, '20260101', '20260112', OPTS);
+    expect(r.rows.length).toBe(60); // 수집 자체는 전량 성공
+    expect(r.diagnostics.measure_failures).toBeGreaterThanOrEqual(1);
+    expect(r.diagnostics.total_count_incomplete).toBe(true);
+    // 과소 신고된 total 을 진짜 전체 건수로 읽으면 안 된다는 것이 이 필드의 존재 이유
+    expect(r.diagnostics.total_count_reported).toBeLessThan(60);
+  });
+
   it('dedup 은 rcept_no 단일 키 — 같은 회사·같은 날 다중 제출이 잘리지 않는다', async () => {
     // 같은 날 같은 보고서명 5건 (rcept_no 만 다름) — 행복나래 실증 사례의 재현
     const rows = makeRows('20260701', '20260701', () => 5);

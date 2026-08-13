@@ -111,8 +111,10 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
   // ② 집단 특정 — 코드 직접 지정 또는 이름 매칭
   const q = input.group.trim();
   let group: GroupSummary | undefined;
+  let matchKind: 'code' | 'exact' | 'partial' = 'exact';
   if (isGroupCode(q)) {
     group = allGroups.find((g) => g.unityGrupCode === q);
+    matchKind = 'code';
   } else {
     const norm = (s: string) => s.replace(/[\s()㈜]/g, '');
     const target = norm(q);
@@ -122,7 +124,9 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
         .filter((g) => norm(g.unityGrupNm).includes(target))
         .slice(0, 5);
       if (candidates.length === 1) {
+        // 부분일치 단독 후보 자동 선택 — 정확일치와 구분되는 플래그를 응답에 남긴다 (P2-마 23)
         group = candidates[0];
+        matchKind = 'partial';
       } else if (candidates.length > 1) {
         throw new ToolError(
           'group_not_found',
@@ -169,6 +173,7 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
 
   // ⑤ DART corp_code 조인 — 로컬 인덱스만 본다 (API 호출 없음)
   let joined = 0;
+  let ambiguousJoins = 0;
   const rows = affiliates.map((a) => {
     const jurirNo = String(a.jurirno).replace(/-/g, '');
     const row: Record<string, unknown> = {
@@ -186,6 +191,14 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
         row['corp_code'] = matches[0].corpCode;
         row['corp_name_dart'] = matches[0].corpName;
         row['listed'] = !!matches[0].stockCode;
+      } else if (matches.length > 1) {
+        // 같은 법인등록번호에 corp_code 가 2건 이상 — "캐시에 없어서"가 아니라 중복이라 미조인이다 (P2-마 22).
+        // 이 구분이 없으면 안내(fetchJurirNo)를 따라도 영원히 조인되지 않는다.
+        ambiguousJoins++;
+        row['corp_code_ambiguous'] = matches.map((m) => ({
+          corp_code: m.corpCode,
+          corp_name: m.corpName,
+        }));
       }
     }
     const fin = financeByJurir.get(jurirNo);
@@ -228,6 +241,11 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
       affiliate_count: Number(group.sumCmpnyCo) || group.sumCmpnyCo,
       mutual_investment_restricted: group.invstmntLmtt,
       year_month: yearMonth,
+      // 어떻게 매칭됐는지 — 부분일치 자동 선택이 정확일치처럼 보이지 않게 (P2-마 23)
+      matched_by: matchKind,
+      ...(matchKind === 'partial'
+        ? { match_note: `'${q}' 부분일치 단독 후보를 자동 선택했습니다 — 의도한 집단인지 이름을 확인하세요.` }
+        : {}),
     },
     affiliate_returned: rows.length,
     ...affiliatesOut,
@@ -240,9 +258,17 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
         ? {
             joined,
             unjoined: rows.length - joined,
+            // 미조인 원인은 두 가지다 — "캐시에 없음"만 말하면 중복(ambiguous) 건은
+            // 안내대로 fetchJurirNo 를 해도 영원히 조인되지 않는다 (P2-마 22)
+            ...(ambiguousJoins > 0 ? { ambiguous: ambiguousJoins } : {}),
             note:
               joined < rows.length
-                ? 'corp_code 미조인 회사는 법인등록번호가 DART 캐시에 없는 경우입니다. resolve_entity(fetchJurirNo=true) 로 채워지며, 공시 역수집(J공시 → 기업개황)으로도 채워집니다.'
+                ? 'corp_code 미조인 회사는 대부분 법인등록번호가 DART 캐시에 없는 경우입니다 — ' +
+                  'resolve_entity(fetchJurirNo=true) 로 채워지며, 공시 역수집(J공시 → 기업개황)으로도 채워집니다.' +
+                  (ambiguousJoins > 0
+                    ? ` 단 ${ambiguousJoins}개사는 같은 법인등록번호에 corp_code 가 2건 이상이라(합병 전후 법인 등) ` +
+                      '자동 조인하지 않았습니다 — 해당 행의 corp_code_ambiguous 후보 중에서 직접 고르세요.'
+                    : '')
                 : undefined,
           }
         : { skipped: true },

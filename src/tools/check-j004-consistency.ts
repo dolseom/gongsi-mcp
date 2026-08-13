@@ -159,6 +159,24 @@ export async function checkJ004Consistency(
       '재무현황 표를 찾지 못해 항등식·소계 점검을 건너뛰었습니다. 분기용 개별회사 공시(대표회사 참조 문서)이거나 표 구조가 다른 문서일 수 있습니다.',
     );
   }
+  // 손익현황도 재무현황과 같은 규칙으로 자백한다 (P2-나 9) — 섹션은 있는데 표 인식이 실패하면
+  // 아무 말 없이 넘어가던 비대칭. 침묵은 "손익도 점검됐고 문제 없음"으로 읽힌다.
+  if (result.incomeSection && !result.incomeChecked) {
+    notes.push(
+      `손익현황 섹션("${result.incomeSection}")은 있으나 표를 인식하지 못해 손익 점검을 수행하지 ` +
+        '못했습니다 — 손익 항목은 **미점검**입니다. 원문 표를 직접 확인하세요.',
+    );
+  }
+  // 파싱된 행 ≠ 검증된 행 (P2-마 19) — 각주·'-'·'자본잠식' 셀은 숫자 파싱이 안 돼
+  // 항등식 분기가 이슈 없이 건너뛴다. 그 행까지 "검증 완료"로 집계하면 과대 신고다.
+  if (result.stats.financeRowsVerified < result.stats.financeRowsChecked) {
+    const skipped = result.stats.financeRowsChecked - result.stats.financeRowsVerified;
+    notes.push(
+      `재무현황 ${result.stats.financeRowsChecked}행 중 ${skipped}행은 값이 파싱되지 않아(각주·"-"·자본잠식 ` +
+        `표기 등) 항등식 검증을 수행하지 못했습니다 — 실제 검증된 행은 ${result.stats.financeRowsVerified}행입니다 ` +
+        '(stats.financeRowsVerified). 건너뛴 행은 "문제 없음"의 근거가 아닙니다.',
+    );
+  }
 
   // ── 대표회사 ↔ 개별회사 대사 ──
   const crossChecks: CrossCheckReport[] = [];

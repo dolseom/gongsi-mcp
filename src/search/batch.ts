@@ -44,6 +44,12 @@ export interface DateChunk {
   to: string;
   /** 계획 시점의 측정 건수. 미측정이면 -1 */
   count: number;
+  /**
+   * count 가 API 측정이 아니라 산술(부모 − 왼쪽)로 파생된 경우 (P2-가 2).
+   * 파생 0 은 실측 0 이 아니므로 수집을 건너뛰면 안 된다 — 측정 시점 차이로
+   * 실제 건이 있는 구간이 "조용히 미수집 + partial_results:false"가 된다.
+   */
+  derived?: boolean;
 }
 
 export interface ChunkOutcome extends DateChunk {
@@ -68,6 +74,10 @@ export interface BatchDiagnostics {
   dedup_dropped: number;
   /** 계획 시점 측정한 전체 건수 */
   total_count_reported: number;
+  /** 측정 호출 실패 횟수 — 0 이면 생략 (P2-가 3: stderr 로그로만 삼키지 않는다) */
+  measure_failures?: number;
+  /** 창 측정 실패로 total_count_reported 가 하한값(과소)일 때 true (P2-가 3) */
+  total_count_incomplete?: boolean;
 }
 
 export interface BatchResult {
@@ -235,14 +245,17 @@ export async function collectAdaptive(
 
   let total = 0;
   let anyUnmeasured = false;
+  let measureFailures = 0;
   for (const w of windows) {
     try {
       w.count = await client.measure({ ...base, bgnDe: w.from, endDe: w.to });
       measureCalls++;
       total += w.count;
     } catch (err) {
-      // 측정 실패 창은 미측정(-1) 그대로 수집 대상으로 남긴다 (docs §1-2 B3)
+      // 측정 실패 창은 미측정(-1) 그대로 수집 대상으로 남긴다 (docs §1-2 B3).
+      // stderr 로그로만 삼키지 않는다 — total 과소 신고를 diagnostics 로 알린다 (P2-가 3)
       anyUnmeasured = true;
+      measureFailures++;
       log.warn('측정 실패, 창을 미측정 상태로 수집', {
         from: w.from,
         to: w.to,
@@ -294,6 +307,7 @@ export async function collectAdaptive(
       measureCalls++;
     } catch (err) {
       // 측정 실패 시 원청크 유지 — 더 쪼개면 호출만 늘어난다 (docs §1-2 B3)
+      measureFailures++;
       log.warn('측정 실패, 청크 분할 중단', {
         from: c.from,
         to: c.to,
@@ -303,7 +317,13 @@ export async function collectAdaptive(
       continue;
     }
     const rightCount = c.count >= 0 ? Math.max(0, c.count - leftCount) : -1;
-    stack.push({ from: addDays(mid, 1), to: c.to, count: rightCount });
+    // 오른쪽 건수는 산술 파생이다 — 0 이어도 실측 0 과 같은 신뢰도가 아니므로 표시한다 (P2-가 2)
+    stack.push({
+      from: addDays(mid, 1),
+      to: c.to,
+      count: rightCount,
+      ...(rightCount >= 0 ? { derived: true } : {}),
+    });
     stack.push({ from: c.from, to: mid, count: leftCount });
   }
   chunks.sort((a, b) => (a.from < b.from ? -1 : 1));
@@ -320,7 +340,9 @@ export async function collectAdaptive(
   async function worker(): Promise<void> {
     while (next < chunks.length) {
       const c = chunks[next++]!;
-      if (c.count === 0) {
+      // 실측 0 만 수집을 생략한다. 산술 파생 0(derived)은 측정 시점 차이로 실제 건이 있을 수
+      // 있으므로 수집해서 확인한다 — 건너뛰면 "정상 완료 0건"과 구분 불가다 (P2-가 2)
+      if (c.count === 0 && !c.derived) {
         outcomes.push({ ...c, pages: 0 });
         continue;
       }
@@ -369,6 +391,10 @@ export async function collectAdaptive(
       truncated: truncatedAny,
       dedup_dropped: dedupDropped,
       total_count_reported: total,
+      ...(measureFailures > 0 ? { measure_failures: measureFailures } : {}),
+      // 창 측정이 실패한 채 total 을 합산했다면 이 값은 하한이다 — range_too_large 사전 예측도
+      // 같은 total 을 쓰므로 과소 예측 가능성을 함께 알린다 (P2-가 3)
+      ...(anyUnmeasured ? { total_count_incomplete: true } : {}),
     },
   };
 }

@@ -86,4 +86,22 @@ describe('판정용 핵심 지표 추출', () => {
     expect(m['paid_in_capital']).toBe(1_000_000_000); // 공백 낀 이름도 잡는다
     expect(m['total_assets']).toBe(9_000_000_000);
   });
+
+  it('연결(CFS) 값에는 "그대로 쓸 수 있다"고 말하지 않는다 (P2-마 21)', () => {
+    // 연결 자본총계는 비지배지분 포함이라 기준금액이 과대해져 "공시의무 없음"으로 기우는 위험 방향
+    const bs = [
+      { sj_div: 'BS', account_id: 'ifrs-full_Equity', account_nm: '자본총계', thstrm_amount: '5000000000' },
+    ].map((r) => normalizeAccount(r, 1));
+    const cfs = extractKeyMetrics(bs, { fsDiv: 'CFS', report: 'annual' });
+    expect(String(cfs['note'])).not.toContain('그대로 쓸 수 있습니다');
+    expect((cfs['caveats'] as string[]).join(' ')).toContain('연결');
+
+    const quarterly = extractKeyMetrics(bs, { fsDiv: 'OFS', report: 'q1' });
+    expect((quarterly['caveats'] as string[]).join(' ')).toContain('사업연도말');
+
+    // 별도 + 연차만 무조건 문구를 유지한다
+    const ofsAnnual = extractKeyMetrics(bs, { fsDiv: 'OFS', report: 'annual' });
+    expect(String(ofsAnnual['note'])).toContain('그대로 쓸 수 있습니다');
+    expect(ofsAnnual['caveats']).toBeUndefined();
+  });
 });

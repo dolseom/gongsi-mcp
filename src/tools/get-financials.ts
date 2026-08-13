@@ -184,22 +184,51 @@ export function normalizeAccount(
 }
 
 /**
- * 판정 입력용 핵심 지표 — BS 에서 자본총계·자본금을 뽑는다.
- * check_disclosure_duty 의 totalEquity / paidInCapital 로 그대로 쓴다 (단위: 원).
+ * 판정 입력용 핵심 지표 — BS 에서 자본총계·자본금을 뽑는다 (단위: 원).
+ *
+ * ⚠️ note 를 무조건 "그대로 쓸 수 있다"로 달면 안 된다 (P2-마 21):
+ * 고시 §2③의 기준은 "주총 승인된 **최근 사업연도말**" 재무제표인데, 이 값은 요청한
+ * 보고서(report)의 당기 금액이고 기본 fs_div 는 **연결(CFS)** 이다. 연결 자본총계는
+ * 비지배지분이 포함되어 별도보다 크므로 기준금액이 과대해져 **"미달 = 공시의무 없음"
+ * 쪽으로 기우는** 위험 방향이다.
  */
-export function extractKeyMetrics(bsAccounts: NormalizedAccount[]): Record<string, unknown> {
+export function extractKeyMetrics(
+  bsAccounts: NormalizedAccount[],
+  ctx?: { fsDiv: 'CFS' | 'OFS'; report: string },
+): Record<string, unknown> {
   const find = (names: string[], ids: string[]): NormalizedAccount | undefined =>
     bsAccounts.find((a) => ids.includes(a.account_id)) ??
     bsAccounts.find((a) => names.includes(a.account_nm.replace(/\s+/g, '')));
   const equity = find(['자본총계'], ['ifrs-full_Equity', 'ifrs_Equity']);
   const capital = find(['자본금'], ['ifrs-full_IssuedCapital', 'ifrs_IssuedCapital']);
   const assets = find(['자산총계'], ['ifrs-full_Assets', 'ifrs_Assets']);
+
+  const caveats: string[] = [];
+  if (ctx?.fsDiv === 'CFS') {
+    caveats.push(
+      '⚠️ 이 값은 **연결(CFS)** 기준입니다. 연결 자본총계는 비지배지분이 포함되어 별도보다 클 수 있고, ' +
+        '기준금액이 과대해지면 "기준 미달 = 공시의무 없음"으로 잘못 기울 수 있습니다. ' +
+        '대규모내부거래 판정에는 별도(fs_div:"OFS") 값으로 확인하세요 ' +
+        '(포털 재무의 caplTotamt 도 개별 기준입니다).',
+    );
+  }
+  if (ctx && ctx.report !== 'annual') {
+    caveats.push(
+      `⚠️ 이 값은 ${ctx.report} 보고서의 당기 금액입니다. 고시 §2③의 자본총계 기준은 ` +
+        '"주주총회 승인된 최근 사업연도말" — 연차(report:"annual") 값을 쓰세요.',
+    );
+  }
+
   return {
     total_equity: equity?.amounts['thstrm_amount']?.value ?? null,
     paid_in_capital: capital?.amounts['thstrm_amount']?.value ?? null,
     total_assets: assets?.amounts['thstrm_amount']?.value ?? null,
     unit: '원',
-    note: 'total_equity/paid_in_capital 은 check_disclosure_duty 의 totalEquity/paidInCapital 입력으로 그대로 쓸 수 있습니다.',
+    note:
+      caveats.length === 0
+        ? 'total_equity/paid_in_capital 은 check_disclosure_duty 의 totalEquity/paidInCapital 입력으로 그대로 쓸 수 있습니다.'
+        : 'check_disclosure_duty 입력으로 쓰기 전에 caveats 를 확인하세요 — 기준(고시 §2③)과 이 값의 정의가 다릅니다.',
+    ...(caveats.length ? { caveats } : {}),
   };
 }
 
@@ -304,7 +333,7 @@ export async function getFinancials(input: GetFinancialsInput): Promise<unknown>
         }
       : {}),
     unit,
-    key_metrics: extractKeyMetrics(bsAll),
+    key_metrics: extractKeyMetrics(bsAll, { fsDiv, report: input.report ?? 'annual' }),
     statements,
     total_accounts: Object.values(statements).reduce((s, a) => s + a.length, 0),
     diagnostics: {

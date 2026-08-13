@@ -152,6 +152,30 @@ describe('J004 재무현황 점검', () => {
     expect(issue?.detail).toContain('자산총계');
   });
 
+  it('값이 파싱되지 않는 행은 검증 행 수에서 제외한다 (P2-마 19 — 과대 신고 방지)', () => {
+    const md = financeMd([
+      '| 금융회사 | A사 | 1,000 | 100 | 2,000 | 3,000 | 500 | 1,500 | 2,000 | - | 100 | 1,000 | 200.00 |',
+      // 핵심 필드가 전부 각주·텍스트라 항등식 3종이 모두 조용히 건너뛰는 행
+      '| 금융회사 | 주석사 | - | - | - | 3,000 (주1) | - | - | 주2 참조 | - | 100 | 자본잠식 | - |',
+    ]);
+    const r = checkJ004Document(md);
+    expect(r.stats.financeRowsChecked).toBe(2); // 파싱된 행
+    expect(r.stats.financeRowsVerified).toBe(1); // 실제 검증 가능한 행 — 같은 값이면 안 된다
+    expect(r.issues).toEqual([]); // 건너뛴 행은 이슈도 없다 — 그래서 침묵이 위험했다
+  });
+
+  it('손익현황 섹션이 있는데 표 인식이 실패하면 incomeChecked=false (P2-나 9)', () => {
+    const md = [
+      '## (3) 회사 손익현황',
+      '| 알아볼 수 없는 구조 |',
+      '| --- |',
+      '| 텍스트만 |',
+    ].join('\n');
+    const r = checkJ004Document(md);
+    expect(r.incomeSection).toContain('손익현황');
+    expect(r.incomeChecked).toBe(false);
+  });
+
   it('부채비율 불일치는 경고로 잡되 소액 분모는 건너뛴다', () => {
     const md = financeMd([
       '| 금융회사 | D사 | 100,000 | - | 100,000 | 200,000 | 50,000 | 50,000 | 100,000 | - | 100 | 100,000 | 500.00 |',

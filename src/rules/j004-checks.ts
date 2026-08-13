@@ -517,12 +517,36 @@ export function checkGenericTotals(section: string, table: MdTable): Consistency
   return issues;
 }
 
+/**
+ * 항등식 점검이 실제로 수행될 수 있는 행인지 (P2-마 19).
+ * checkFinanceRows 의 세 항등식은 필드 조합이 null 이면 이슈 없이 조용히 건너뛴다 —
+ * 각주('1,234 (주1)')·'자본잠식' 셀은 parseDisclosureNumber 가 null 을 주므로,
+ * "파싱된 행 수"를 "검증된 행 수"로 신고하면 건너뛴 행이 검증 완료로 둔갑한다.
+ */
+export function isFinanceRowVerifiable(r: FinanceRow): boolean {
+  return (
+    (r.totalAssets !== null && (r.currentAssets !== null || r.nonCurrentAssets !== null)) ||
+    (r.totalLiabilities !== null &&
+      (r.currentLiabilities !== null || r.nonCurrentLiabilities !== null)) ||
+    (r.totalAssets !== null && r.totalLiabilities !== null && r.totalEquity !== null)
+  );
+}
+
 /** 문서 전체 점검 결과 */
 export interface DocCheckResult {
   issues: ConsistencyIssue[];
   financeRows: FinanceRow[] | null;
   incomeSection: string | null;
-  stats: { sectionsScanned: number; tablesScanned: number; financeRowsChecked: number };
+  /** 손익현황 표가 실제로 파싱·점검됐는지 — 섹션 존재(incomeSection)와 다르다 (P2-나 9) */
+  incomeChecked: boolean;
+  stats: {
+    sectionsScanned: number;
+    tablesScanned: number;
+    /** 재무현황 표에서 파싱된 데이터 행 수 (검증 수행 여부와 무관) */
+    financeRowsChecked: number;
+    /** 그중 항등식 점검이 실제로 수행 가능했던 행 수 — checked 와 다르면 건너뛴 행이 있다 */
+    financeRowsVerified: number;
+  };
 }
 
 export function checkJ004Document(
@@ -533,8 +557,10 @@ export function checkJ004Document(
   const issues: ConsistencyIssue[] = [];
   let financeRows: FinanceRow[] | null = null;
   let incomeSection: string | null = null;
+  let incomeChecked = false;
   let tablesScanned = 0;
   let financeRowsChecked = 0;
+  let financeRowsVerified = 0;
 
   for (const sec of sections) {
     const isFinance = sec.title.includes('재무현황');
@@ -548,7 +574,9 @@ export function checkJ004Document(
         const parsed = parseFinanceTable(table);
         if (parsed) {
           financeRows = parsed;
-          financeRowsChecked = parsed.filter((r) => !r.isSubtotal && !r.isTotal).length;
+          const dataRows = parsed.filter((r) => !r.isSubtotal && !r.isTotal);
+          financeRowsChecked = dataRows.length;
+          financeRowsVerified = dataRows.filter(isFinanceRowVerifiable).length;
           issues.push(...checkFinanceRows(sec.title, parsed));
           continue;
         }
@@ -556,6 +584,7 @@ export function checkJ004Document(
       if (isIncome) {
         const parsed = parseIncomeTable(table);
         if (parsed) {
+          incomeChecked = true;
           issues.push(...checkIncomeRows(sec.title, parsed));
           continue;
         }
@@ -569,7 +598,13 @@ export function checkJ004Document(
     issues,
     financeRows,
     incomeSection,
-    stats: { sectionsScanned: sections.length, tablesScanned, financeRowsChecked },
+    incomeChecked,
+    stats: {
+      sectionsScanned: sections.length,
+      tablesScanned,
+      financeRowsChecked,
+      financeRowsVerified,
+    },
   };
 }
 
