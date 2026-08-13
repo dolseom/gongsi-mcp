@@ -229,6 +229,37 @@ describe('J004 손익현황 점검 (키워드 앵커 정밀 점검)', () => {
   });
 });
 
+describe('검증 가능 행 0행이면 verdict 는 consistent 가 아니다 (Opus 7차 중간 3)', () => {
+  it('재무표를 찾았어도 verified 0 이면 not_checkable — 캐시 시딩으로 도구 전체 경로 검증', async () => {
+    const { Store, __setStore } = await import('../src/lib/store.js');
+    const { checkJ004Consistency } = await import('../src/tools/check-j004-consistency.js');
+    const store = new Store(':memory:');
+    __setStore(store);
+    try {
+      const rcept = '20260101000001';
+      // 핵심 셀이 전부 각주·텍스트라 항등식이 한 건도 수행되지 않는 재무현황 표
+      const md = financeMd([
+        '| 금융회사 | 주석사 | - | - | - | 3,000 (주1) | - | - | 주2 참조 | - | 100 | 자본잠식 | - |',
+      ]);
+      store.storeBody(rcept, md);
+      store.set(
+        `docmeta:${rcept}`,
+        JSON.stringify({
+          acode: '80622', aregcik: null, formulaVersion: '6.0', encoding: 'utf-8',
+          attachments: [], bodyParsable: true, boardDate: null, pickedEntry: 'doc.xml',
+        }),
+      );
+      const r = (await checkJ004Consistency({ rcept_no: rcept })) as Record<string, any>;
+      expect(r.stats.financeRowsVerified).toBe(0);
+      expect(r.verdict).toBe('not_checkable'); // 종전에는 'consistent' + "불일치 없음"이었다
+      expect(String(r.summary)).toContain('검증 가능한 행이 0행');
+    } finally {
+      __setStore(null);
+      store.close();
+    }
+  });
+});
+
 describe('J004 일반 표 합계 점검 (opt-in)', () => {
   const ownershipMd = [
     '## (1) 소유지분현황',

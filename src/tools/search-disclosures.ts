@@ -244,6 +244,14 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
         '이 결과만으로 "해당 공시 없음"이나 "누락 없음"을 결론내지 마세요.',
     );
   }
+  // 측정 실패로 total 이 하한값이면 최상위로 알린다 (Opus 7차 중간 4) — collection_complete 는
+  // "수집한 청크는 완전"이라는 뜻일 뿐, 신고 건수 대조(total_count_reported)의 신뢰성과는 별개다
+  if (batch.diagnostics.total_count_incomplete) {
+    warnings.push(
+      '⚠️ 창 측정이 일부 실패해 diagnostics.total_count_reported 는 하한값입니다 — ' +
+        '수집 건수와 신고 건수의 대조로 누락 여부를 판단하지 마세요 (measure_failures 참조).',
+    );
+  }
   if (nameFilter && kept.length === 0 && batch.rows.length > 0) {
     // 필터 전량 탈락 — page 모드에는 안내가 있는데 batch 에는 없던 비대칭 (P2-가 4번)
     warnings.push(

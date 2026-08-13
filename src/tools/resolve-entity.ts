@@ -90,23 +90,20 @@ export async function verifyYearMonth(
       store.set(cacheKey, '1');
       return { ym: inferred };
     }
-    const fallback = [...published].reverse().find((ym) => ym < inferred);
-    if (fallback) {
-      return {
-        ym: fallback,
-        note:
-          `추정 공개년월 ${inferred} 이(가) 포털에 아직 공개되지 않아 최신 공개분 ${fallback} 기준으로 조회했습니다 ` +
-          '(포털은 연 1회, 매년 5월 전후 갱신).',
-      };
-    }
-    // 목록은 있는데 추정 년월도, 그 이전 공개분도 없다 — "검증 성공"처럼 침묵하면 안 된다
-    // (Codex 7차 중간 3: 미래 년월만 있는 비정상 응답이 조용히 추정값 사용으로 둔갑하던 경로)
+    // 폴백은 "추정값 미만 중 최신"이 아니라 **목록 전체의 최신**이다 (Opus 7차 중간 1).
+    // 공표 월은 05 로 고정된 적이 없다 (실측: 2013~2016년 04월, 2017년 09월 공표) —
+    // inferYearMonth 의 YYYY05 가정이 빗나간 해에 "ym < inferred" 폴백은 실존하는 더 최신
+    // 스냅샷을 건너뛰고 전년도로 내려가면서 그걸 "최신 공개분"이라고 단언하게 된다.
+    // 공개 목록에 있는 년월은 존재가 확인된 스냅샷이므로 추정값보다 커도 그것이 현행이다.
+    const latest = published[published.length - 1]!;
     return {
-      ym: inferred,
+      ym: latest,
       note:
-        `포털 공개년월 목록에 추정 년월 ${inferred} 도, 그 이전 공개분도 없습니다 ` +
-        `(목록: ${published.slice(-3).join(', ')}) — 응답 형식 변화 가능성이 있습니다. ` +
-        '조회가 실패하면 yearMonth 를 직접 지정하세요.',
+        latest > inferred
+          ? `추정 공개년월 ${inferred} 대신 포털의 실제 최신 공개분 ${latest} 기준으로 조회했습니다 ` +
+            '(공표 월은 해마다 다를 수 있습니다).'
+          : `추정 공개년월 ${inferred} 이(가) 포털에 아직 공개되지 않아 최신 공개분 ${latest} 기준으로 조회했습니다 ` +
+            '(포털은 연 1회 갱신, 공표 월은 해마다 다를 수 있습니다).',
     };
   } catch (err) {
     log.warn('공개년월 목록 확인 실패 — 추정값을 유지한다', {

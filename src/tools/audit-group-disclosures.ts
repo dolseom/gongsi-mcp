@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
+import { loadCorpIndex, corpIndexIsStale } from '../resolver/corp-index.js';
 import { getGroupStructure } from './get-group-structure.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
@@ -174,16 +175,31 @@ async function resolvePopulation(input: AuditGroupDisclosuresInput): Promise<Pop
   for (const q of input.companies!) {
     const t = q.trim();
     if (/^\d{8}$/.test(t)) {
-      const rec = store.getCorpByCode(t);
+      let rec = store.getCorpByCode(t);
+      if (!rec && canValidateCodes && corpIndexIsStale()) {
+        // 로컬 인덱스는 자동 갱신되지 않는다 (Opus 7차 중간 2: 실측 11일에 신규 125건) —
+        // 신규 등록 법인을 "오타"로 거부하는 회귀를 막기 위해, 낡았으면 1회 갱신 후 재조회한다.
+        try {
+          await loadCorpIndex(new DartClient());
+          rec = store.getCorpByCode(t);
+        } catch (err) {
+          log.warn('법인코드 인덱스 갱신 실패 — 기존 인덱스로 판단', {
+            error: err instanceof Error ? err.name : String(err),
+          });
+        }
+      }
       if (!rec) {
         // 이름 경로는 CorpNotFoundError 를 던지는데 코드 경로만 무검증이었다 (P2-마 20) —
         // 오타 코드가 모집단에 들어가면 "감사 완료, 지연 0건"이라는 거짓 안심으로 귀결된다.
         if (canValidateCodes) {
+          const loadedAt = store.get('corps_loaded_at'); // corp-index.ts LOADED_AT_KEY
           throw new ToolError(
             'corp_not_found',
-            `corp_code '${t}' 가 DART 법인코드 목록(${store.corpCount().toLocaleString()}건)에 없습니다. ` +
-              '오타이거나 폐지된 코드일 수 있습니다 — 회사명으로 다시 지정하거나 resolve_entity 로 확인하세요.',
-            { corp_code: t },
+            `corp_code '${t}' 가 DART 법인코드 목록(${store.corpCount().toLocaleString()}건` +
+              `${loadedAt ? `, 적재 ${loadedAt.slice(0, 10)}` : ''})에 없습니다. ` +
+              '오타·폐지 코드이거나 인덱스 적재 이후 신규 등록된 법인일 수 있습니다 — ' +
+              '회사명으로 다시 지정하거나 resolve_entity 로 확인하세요.',
+            { corp_code: t, ...(loadedAt ? { corps_loaded_at: loadedAt } : {}) },
           );
         }
         codeValidationSkipped = true;
@@ -352,8 +368,8 @@ export async function auditGroupDisclosures(
         // 구버전 캐시 메타는 boardDateStatus 가 없다 — 그 경우 종전 문구를 유지한다.
         const REASON_BY_STATUS: Record<string, string> = {
           invalid_date:
-            '⚠️ 원문에 실존하지 않는 날짜가 이사회 의결일로 기재됨 (예: "2026.2.31") — 원문 오기 또는 ' +
-            '거짓기재 신호입니다. 지연 여부를 판정할 수 없으므로 반드시 원문을 확인하세요',
+            '⚠️ 의결일 자리에서 실존하지 않는 날짜가 읽힘 (예: "2026.2.31") — 원문 오기·거짓기재 신호이거나 ' +
+            '드물게 파서 오인일 수 있습니다. 지연 여부를 판정할 수 없으므로 반드시 원문을 확인하세요',
           value_empty:
             '원문 의결일 값이 "-" — 기공시 재약정·변경공시의 정당한 무기재일 수 있습니다',
           label_missing:
@@ -452,10 +468,20 @@ export async function auditGroupDisclosures(
   }
   if (boardDateInvalid > 0) {
     notes.push(
-      `⚠️ 원문에 **실존하지 않는 날짜**가 의결일로 기재된 공시가 ${boardDateInvalid}건 있습니다 ` +
-        '(board_date_missing 중 board_date_status:"invalid_date") — 원문 오기 또는 거짓기재 신호입니다. ' +
-        '해당 건은 지연 판정이 불가능하므로 반드시 원문을 직접 확인하세요.',
+      `⚠️ 의결일 자리에서 **실존하지 않는 날짜**가 읽힌 공시가 ${boardDateInvalid}건 있습니다 ` +
+        '(board_date_missing 중 board_date_status:"invalid_date") — 원문 오기·거짓기재 신호이거나 드물게 ' +
+        '파서 오인일 수 있습니다. 해당 건은 지연 판정이 불가능하므로 반드시 원문을 직접 확인하세요.',
     );
+  }
+  {
+    // 구버전 캐시 메타는 미추출 원인 분류가 없다 — 침묵하면 "원인 분류 결과 이상 없음"으로 읽힌다
+    const legacyMeta = boardDateMissing.filter((b) => !b.board_date_status).length;
+    if (legacyMeta > 0) {
+      notes.push(
+        `ℹ️ board_date_missing ${legacyMeta}건은 구버전 캐시 메타라 미추출 원인(board_date_status)이 ` +
+          '분류되지 않았습니다 — read_disclosure(force_refresh:true) 로 재생성하면 원인(정당한 "-"/오기/파서 한계)이 갈립니다.',
+      );
+    }
   }
   if (population.codeValidationSkipped) {
     notes.push(

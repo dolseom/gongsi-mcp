@@ -256,9 +256,16 @@ export function extractBoardDateDetail(rawXml: string): BoardDateDetail {
     return `${y}${String(moN).padStart(2, '0')}${String(dN).padStart(2, '0')}`;
   };
 
-  const date = /(\d{4})\s*[.\-년]\s*(\d{1,2})\s*[.\-월]\s*(\d{1,2})/.exec(after);
-  if (date) {
-    const v = valid(date[1]!, date[2]!, date[3]!);
+  // 날짜 아닌 숫자열(계좌번호 "1234.56.789012", 금액 "12345.67.89" 등)은 연도 범위로 걸러
+  // **건너뛴다** (Opus 7차 사소 6 — 잡음을 invalid_date "거짓기재 신호"로 단정하던 오탐).
+  // 단 연도가 그럴듯한데 달력에 없는 날짜("2026.2.31")는 거기서 **멈춘다** — 창 안의 뒤쪽
+  // 날짜를 계속 스캔해 채택하면 오기 신호가 사라지고 엉뚱한 날짜가 의결일로 둔갑한다.
+  const yearPlausible = (y: number): boolean => y >= 1990 && y <= 2099;
+  const dateRe = /(\d{4})\s*[.\-년]\s*(\d{1,2})\s*[.\-월]\s*(\d{1,2})/g;
+  let dm: RegExpExecArray | null;
+  while ((dm = dateRe.exec(after)) !== null) {
+    if (!yearPlausible(Number(dm[1]!))) continue; // 날짜 아닌 숫자열 — 무시하고 계속
+    const v = valid(dm[1]!, dm[2]!, dm[3]!);
     return v ? { date: v, status: 'found' } : { date: null, status: 'invalid_date' };
   }
   // 아포스트로피 2자리 연도 — "'26. 7.23" (삼성생명 등에서 실측). 오인 방지를 위해 ' 필수
@@ -267,7 +274,9 @@ export function extractBoardDateDetail(rawXml: string): BoardDateDetail {
     const v = valid(`20${short[1]!}`, short[2]!, short[3]!);
     return v ? { date: v, status: 'found' } : { date: null, status: 'invalid_date' };
   }
-  // 날짜 패턴이 아예 없다 — 값이 "-"(무기재)인지 추출 실패인지 구분
-  if (/^[\s:：.|]*[-–—]/.test(after)) return { date: null, status: 'value_empty' };
+  // 날짜 패턴이 아예 없다 — 값이 "-"(무기재)인지 추출 실패인지 구분.
+  // 대시 바로 뒤에 글자가 붙으면("-당해 거래는…") 값이 아니라 서술의 불릿이다 (Opus 7차 사소 5) —
+  // 그걸 "정당한 무기재"로 분류하면 안심 방향 오분류가 된다. 대시가 홀로 설 때만 value_empty.
+  if (/^[\s:：.|]*[-–—](?![^\s|])/.test(after)) return { date: null, status: 'value_empty' };
   return { date: null, status: 'unparsed' };
 }

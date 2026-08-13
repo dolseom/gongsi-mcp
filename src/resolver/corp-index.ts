@@ -11,7 +11,7 @@
 
 import type { DartClient } from '../clients/dart.js';
 import { getStore, type CorpRecord } from '../lib/store.js';
-import { getLogger } from '../lib/logger.js';
+import { getLogger, redact } from '../lib/logger.js';
 import { readFirstEntry } from '../lib/zip.js';
 import { AmbiguousCorpError, CorpNotFoundError, ToolError } from '../lib/errors.js';
 
@@ -267,6 +267,8 @@ export async function fetchJurirNo(corpCode: string, client: DartClient): Promis
       corpCode,
       error: err instanceof Error ? err.name : String(err),
     });
-    return { status: 'error', message: err instanceof Error ? err.message : String(err) };
+    // 이 message 는 도구 응답에 실린다 — 상류 에러 원문은 redact 를 거친다 (Opus 7차 사소 8.
+    // 현 경로로 키가 새는 사례는 확인되지 않았지만, 이 프로젝트는 실제 키 유출을 겪었다)
+    return { status: 'error', message: redact(err instanceof Error ? err.message : String(err)) };
   }
 }

@@ -268,8 +268,10 @@ export async function checkJ004Consistency(
   );
 
   // 핵심 표(재무현황)를 하나도 검증하지 못했으면 "정합"이라고 말하지 않는다 —
-  // 비-J004 문서·파서 회귀가 가장 신뢰도 높은 정상 판정으로 뒤바뀌는 것을 막는다 (Codex 3차)
-  const coreChecked = result.financeRows !== null;
+  // 비-J004 문서·파서 회귀가 가장 신뢰도 높은 정상 판정으로 뒤바뀌는 것을 막는다 (Codex 3차).
+  // "표를 찾았다"만으로는 부족하다 — 검증 가능한 행이 0행이면(전부 각주·"-"·자본잠식) 점검이
+  // 한 건도 수행되지 않은 것이다 (Opus 7차 중간 3: crossChecks 의 fieldsCompared=0 과 같은 모양)
+  const coreChecked = result.financeRows !== null && result.stats.financeRowsVerified > 0;
 
   // 요청받은 대사 중 수행하지 못한 건수 — 회사명 표기 차이·개별문서 표 미검출·문서 로드 실패는
   // 전부 matched:false 로만 남고 diffCount 0 이라, 이대로 두면 "대사 0건 수행 + verdict consistent"가 된다.
@@ -301,7 +303,10 @@ export async function checkJ004Consistency(
           : warnings > 0
             ? `치명적 불일치는 없고 경고 ${warnings}건이 있습니다.`
             : !coreChecked
-              ? '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
+              ? result.financeRows !== null
+                ? '재무현황 표는 찾았으나 검증 가능한 행이 0행이라(각주·"-"·자본잠식 표기 등) 정합성을 ' +
+                  '판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
+                : '핵심 표(재무현황)를 찾지 못해 정합성을 판정할 수 없습니다 — "정합"이 아니라 "미점검"입니다.'
               : '기계 검증 가능한 항목에서 불일치가 발견되지 않았습니다.',
     issues: shownIssues,
     ...(truncatedIssues ? { issuesTruncated: true, totalIssues: result.issues.length } : {}),

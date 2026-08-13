@@ -179,10 +179,13 @@ describe('판정 로직', () => {
 });
 
 describe('corp_code 존재 검증 (P2-마 20)', () => {
-  const seed = () =>
+  const seed = () => {
     store.upsertCorps([
       { corpCode: '00000001', corpName: '테스트회사', stockCode: null, jurirNo: null, modifyDate: null },
     ]);
+    // 신선한 인덱스로 표시 — 낡았으면 미존재 코드에서 실제 갱신(네트워크)을 시도한다 (Opus 7차 중간 2)
+    store.set('corps_loaded_at', new Date().toISOString());
+  };
 
   it('인덱스가 있으면 미존재 8자리 코드를 corp_not_found 로 거부한다 (이름 경로와 대칭)', async () => {
     seed();

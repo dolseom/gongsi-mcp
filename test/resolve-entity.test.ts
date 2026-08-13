@@ -154,6 +154,15 @@ describe('공개년월 실검증 (P2-라 15)', () => {
     expect(v.note).toContain('202505');
   });
 
+  it('추정값보다 최신인 공개분이 있으면 그것을 쓴다 — 공표 월은 05 고정이 아니다 (Opus 7차)', async () => {
+    // 실측: 2013~2016년은 04월, 2017년은 09월 공표. "ym < inferred" 폴백이었다면
+    // 201709 라는 실존 최신 스냅샷을 두고 201604 로 내려가 그걸 "최신"이라 단언했다
+    stubYmList(ymXml(['201505', '201604', '201709']));
+    const v = await verifyYearMonth(new EgroupClient('test-key'), '201705');
+    expect(v.ym).toBe('201709');
+    expect(v.note).toContain('201709');
+  });
+
   it('추정 년월이 공개돼 있으면 그대로 쓰고 영구 캐시한다 (재호출 시 API 미소비)', async () => {
     const f = stubYmList(ymXml(['202505', '202605']));
     const client = new EgroupClient('test-key');

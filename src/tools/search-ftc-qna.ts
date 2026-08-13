@@ -33,6 +33,8 @@ export const searchFtcQnaInput = z.object({
 export type SearchFtcQnaInput = z.infer<typeof searchFtcQnaInput>;
 
 interface QnaResult {
+  /** 토큰(단어) 일치 없이 bigram 부분일치로만 걸린 결과 — 관련성 확신이 낮다 (Opus 7차 제안) */
+  weak_match?: boolean;
   id: string;
   category: QnaCategory;
   question: string;
@@ -89,9 +91,19 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
     );
   }
 
+  // 토큰 일치 없이 bigram 만으로 통과한 결과(score < 1)는 강한 일치와 겉모습이 같아선 안 된다 —
+  // "지분율변동" 류 복합어 완화 경로의 결과가 전부 여기 해당한다 (실측 score 0.30 vs 강한 일치 3.4+)
+  if (matches.some((m) => m.score < 1)) {
+    notes.push(
+      'ℹ️ weak_match:true 항목은 단어 일치 없이 부분 문자열(bigram)로만 걸린 결과입니다 — ' +
+        '관련성을 질문 본문으로 직접 확인한 뒤 인용하세요.',
+    );
+  }
+
   return {
     query: input.query,
     results: matches.map((m) => ({
+      ...(m.score < 1 ? { weak_match: true } : {}),
       id: m.entry.id,
       category: m.entry.category,
       question: m.entry.question,

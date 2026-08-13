@@ -19,7 +19,7 @@ import {
   type AffiliateFinance,
   type GroupSummary,
 } from '../clients/egroup.js';
-import { inferYearMonth } from './resolve-entity.js';
+import { inferYearMonth, verifyYearMonth } from './resolve-entity.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
@@ -93,10 +93,19 @@ async function cachedJson<T>(key: string, fetcher: () => Promise<T>): Promise<{ 
 export async function getGroupStructure(input: GetGroupStructureInput): Promise<unknown> {
   const egroup = new EgroupClient();
   const store = getStore();
-  const yearMonth = input.year_month ?? inferYearMonth();
   const joinDart = input.join_dart ?? true;
   let apiCalls = 0;
   let cacheHits = 0;
+
+  // resolve_entity 와 같은 검증을 태운다 (Opus 7차 사소 9) — 같은 추정(inferYearMonth)을 쓰는
+  // 두 도구가 한쪽만 검증하면 기준월이 갈려 결과 대조가 어긋난다 (P0-3 비대칭 교훈)
+  let yearMonth = input.year_month ?? inferYearMonth();
+  let yearMonthNote: string | undefined;
+  if (!input.year_month) {
+    const v = await verifyYearMonth(egroup, yearMonth);
+    yearMonth = v.ym;
+    yearMonthNote = v.note;
+  }
 
   // ① 지정 집단 목록 (연단위 캐시)
   const groupsRes = await cachedJson<GroupSummary[]>(`egroup_groups:${yearMonth}`, async () => {
@@ -280,6 +289,7 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
           }
         : { skipped: true },
       data_freshness: `포털은 연 1회(매년 5/1 기준) 갱신 — ${yearMonth} 기준`,
+      ...(yearMonthNote ? { year_month_note: yearMonthNote } : {}),
     },
   };
 }
