@@ -268,12 +268,20 @@ export function evaluateCompliance(
   return { onTime: delay <= 0, delayDays: Math.max(0, delay) };
 }
 
-/** 기한까지 남은 영업일 수 (음수면 이미 경과) */
+/** 기한까지 남은 영업일 수 (음수면 이미 경과 — 경과분도 **영업일** 기준) */
 export function businessDaysRemaining(today: YMD, deadline: YMD): number {
   let cur = today;
   let count = 0;
   if (toDate(deadline) < toDate(today)) {
-    return -countCalendarDays(deadline, today);
+    // 미래는 영업일로 세면서 과거만 달력일로 세면 dDay 의 의미가 방향에 따라 갈린다
+    // (검토 백로그: 과거 기한에서 달력일 음수가 dDay 로 노출) — 양방향 모두 영업일로 통일
+    let back = deadline;
+    let passed = 0;
+    while (back !== today) {
+      back = toYMD(new Date(toDate(back).getTime() + 86_400_000));
+      if (isBusinessDay(back)) passed++;
+    }
+    return -passed;
   }
   while (cur !== deadline) {
     cur = toYMD(new Date(toDate(cur).getTime() + 86_400_000));

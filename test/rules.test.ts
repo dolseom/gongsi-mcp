@@ -11,6 +11,7 @@ import {
 } from '../src/rules/business-days.js';
 import { calcThreshold, effectiveEquity, 억 } from '../src/rules/thresholds.js';
 import {
+  businessDaysRemaining,
   evaluateCompliance,
   goodsServicesReducedDeadline,
   groupStatusQuarterlyDeadline,
@@ -302,6 +303,23 @@ describe('과태료 0원 경로 차단 — 감경 상한 해석 (Opus 검토 C-1
     // 기준 275만 − 137.5만 = 137.5만 → 137만 (battery4 실측과 일치)
     expect(r.amount).toBe(1_370_000);
     expect(r.formula).not.toContain('감경 상한');
+  });
+});
+
+describe('businessDaysRemaining — 방향과 무관하게 영업일 기준 (검토 백로그)', () => {
+  it('미래 기한은 영업일 카운트', () => {
+    // 8/12(수) → 8/14(금): 13(목)·14(금) = 2영업일
+    expect(businessDaysRemaining('20260812', '20260814')).toBe(2);
+  });
+
+  it('경과 기한도 영업일 카운트 — 달력일 음수가 아니다', () => {
+    // 기한 8/7(금), 오늘 8/10(월): 8(토)·9(일) 건너뛰고 10(월)만 = -1 (달력일이면 -3)
+    // ※ 8/14~17 을 쓰면 안 된다 — 8/15(토) 광복절의 대체공휴일이 8/17(월)이다
+    expect(businessDaysRemaining('20260810', '20260807')).toBe(-1);
+  });
+
+  it('당일이면 0', () => {
+    expect(businessDaysRemaining('20260814', '20260814')).toBe(0);
   });
 });
 
