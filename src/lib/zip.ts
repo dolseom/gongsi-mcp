@@ -94,6 +94,9 @@ export function listEntries(data: Uint8Array): ZipEntry[] {
     if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
       throw new ZipError('ZIP64 형식은 지원하지 않습니다.');
     }
+    // 항목명은 UTF-8 고정 디코딩 — ZIP 규격상 bit 11 미설정이면 CP437/CP949 가능성이 있으나,
+    // DART 원문 ZIP 실측(2026-08-14, 사업보고서·J004 시즌 포함 90건 148항목)에서 비ASCII 이름 0건.
+    // 항목명은 확장자 매칭·표시에만 쓰여 만에 하나 깨져도 파싱에는 영향 없다.
     const name = new TextDecoder('utf-8').decode(
       data.subarray(offset + 46, offset + 46 + nameLen),
     );

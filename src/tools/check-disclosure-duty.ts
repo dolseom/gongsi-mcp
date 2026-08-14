@@ -342,7 +342,9 @@ export function checkDisclosureDuty(
       }
       deadline = omnibusQuarterlyDeadline(input.quarterEnd);
       notes.push(
-        '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다.',
+        '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다. ' +
+          '단, 사모사채 인수 등 당사자간 계약으로 특정 거래조건을 부기한 금융거래는 특례에서 제외되어 ' +
+          '이사회 의결을 거쳐야 합니다 (§9① 단서 — 이 경우 large_internal_transaction 으로 판정하세요).',
       );
       break;
     }
