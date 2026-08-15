@@ -1,6 +1,6 @@
 {
   "name": "gongsi-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "공정거래위원회 기업집단 공시 특화 MCP 서버 — DART 전자공시 + 기업집단포털",
   "type": "module",
   "bin": {
