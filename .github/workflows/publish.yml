@@ -45,6 +45,10 @@ jobs:
             exit 1
           fi
 
+      # 배포 산출물 스모크 — 타르볼 설치본을 stdio 로 실기동해 프로토콜 왕복 확인
+      - run: npm run build
+      - run: node scripts/smoke-tarball.mjs
+
       # prepublishOnly 게이트(시크릿스캔→타입체크→테스트 344→빌드)는 npm publish 가 자동 실행한다.
       # CI 에는 .env 가 없으므로 시크릿스캔은 "대조값 없음 — 생략"으로 통과한다 (실게이트는 로컬 pre-commit).
       - if: github.event_name == 'workflow_dispatch' && inputs.dry_run
