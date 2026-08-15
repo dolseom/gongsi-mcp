@@ -10,7 +10,7 @@
  * 사전 조건: dist 가 빌드되어 있을 것 (npm run build).
  */
 import { execSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,12 +37,15 @@ process.on('exit', () => {
 });
 
 // 1) pack — 산출물 타르볼 생성 (경로 인자는 전부 ASCII 임시 경로만 셸에 넘긴다)
-const packJson = execSync(`npm pack --json --pack-destination "${tmp}"`, {
+// ⚠️ `npm pack --json` 의 stdout 형식은 npm 버전에 따라 다르다 (publish CI 의
+// npm@latest 에서 [0].filename 파싱이 실제로 깨졌다) — 파일명을 결정적으로 계산한다.
+execSync(`npm pack --pack-destination "${tmp}"`, {
   cwd: root,
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
 });
-const tarball = join(tmp, JSON.parse(packJson)[0].filename);
+const tarball = join(tmp, `${pkg.name}-${pkg.version}.tgz`);
+if (!existsSync(tarball)) fail(`pack 산출물이 없습니다: ${tarball}`);
 
 // 2) 임시 프로젝트에 설치
 writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'smoke', private: true }));
