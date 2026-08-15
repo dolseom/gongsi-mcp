@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gongsi": {
+      "command": "node",
+      "args": ["dist/src/cli.js"]
+    }
+  }
+}

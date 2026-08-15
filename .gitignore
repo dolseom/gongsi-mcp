@@ -49,3 +49,6 @@ RESEARCH/**/state.json
 RESEARCH/공정위매뉴얼_202604/*.pdf
 RESEARCH/공정위매뉴얼_202604/txt_*.txt
 .env.bak.*
+
+# 종단 평가 실행 결과 (실행마다 생성, 커밋 대상 아님)
+eval/e2e/results/
