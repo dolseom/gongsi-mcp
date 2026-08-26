@@ -11,8 +11,12 @@ import { Store, __setStore } from '../src/lib/store.js';
 import {
   auditPeriodicDisclosures,
   classifyReportName,
+  isCorrection,
+  assignmentWindow,
+  addMonthsToPeriodEnd,
   type PeriodicAuditDeps,
 } from '../src/tools/audit-periodic-disclosures.js';
+import { buildPeriodicCalendar } from '../src/rules/periodic-calendar.js';
 import type { Disclosure } from '../src/clients/dart.js';
 import type { BatchResult } from '../src/search/batch.js';
 
@@ -145,10 +149,15 @@ describe('기한 판정', () => {
     expect(d.summary.not_filed_candidate).toBe(1);
     expect(d.not_filed_candidates[0].corp_name).toBe('을회사');
     expect(r.coverage.detects_non_filing).toBe(true);
-    // 확정이 아니라는 것과 확인할 두 가지를 반드시 함께 준다
+    // 확정이 아니라는 것과, 이 도구가 판정하지 않는 것들을 반드시 함께 준다
     expect(
-      r.notes.some((n: string) => n.includes('미제출 후보') && n.includes('§2① 단서')),
+      r.notes.some((n: string) => n.includes('미제출 후보') && n.includes('scope_caveats')),
     ).toBe(true);
+    expect(r.scope_caveats.some((c: string) => c.includes('§2① 단서'))).toBe(true);
+    expect(r.scope_caveats.some((c: string) => c.includes('분기별 소속 상태는 판정하지 않습니다'))).toBe(
+      true,
+    );
+    expect(r.coverage.undetectable.obligation_eligibility).toBe(true);
   });
 
   it('★ 기한이 아직 오지 않았으면 미제출로 몰지 않는다 (거짓 경보 방지)', async () => {
@@ -183,9 +192,169 @@ describe('기한 판정', () => {
     });
     const r = await call(BASE, deps);
     expect(r.deadlines[0].representative_filings).toHaveLength(1);
+    // 고시 §3⑤ 근거로 "대체하지 않는다"를 명시해야 한다 — 모호한 중립 표현은 오히려
+    // 법적으로 불확실한 것처럼 읽힌다 (Codex 7차 중간 7)
     expect(
-      r.notes.some((n: string) => n.includes('대표회사') && n.includes('판단하지 않습니다')),
+      r.scope_caveats.some(
+        (c: string) => c.includes('대표회사') && c.includes('대체하지 않습니다') && c.includes('§3⑤'),
+      ),
     ).toBe(true);
+  });
+});
+
+describe('★ 통합 서식은 두 의무를 동시에 이행한다 (Codex 7차 치명 1)', () => {
+  // '연1회공시및1/4분기용' 서식 1건이 연1회 의무와 1분기 의무를 모두 이행한다.
+  // 한쪽에만 배정하면 나머지 한쪽이 통째로 미제출 후보가 된다 — 기본 duties 에서 터진다.
+  const BOTH = { companies: ['00000001'], year: 2026, today: '20261201' };
+
+  it('한 접수분이 연1회와 1분기 양쪽에 이행으로 잡힌다', async () => {
+    const deps = makeDeps({ '00000001': [row({})] }); // 2026-05-31 접수
+    const r = await call(BOTH, deps);
+    const annual = r.deadlines.find((d: any) => d.duty === 'group_status_annual');
+    const q1 = r.deadlines.find(
+      (d: any) => d.duty === 'group_status_quarterly' && d.period === '2026년 1분기',
+    );
+    expect(annual.summary.on_time).toBe(1);
+    expect(annual.summary.not_filed_candidate).toBe(0);
+    expect(q1.summary.on_time).toBe(1);
+    expect(q1.summary.not_filed_candidate).toBe(0);
+    expect(r.notes.some((n: string) => n.includes('동시에 이행'))).toBe(true);
+  });
+
+  it('2·3분기는 분기별공시 서식이라 통합 서식으로 이행되지 않는다', async () => {
+    const deps = makeDeps({ '00000001': [row({})] });
+    const r = await call(BOTH, deps);
+    const q2 = r.deadlines.find(
+      (d: any) => d.duty === 'group_status_quarterly' && d.period === '2026년 2분기',
+    );
+    expect(q2.summary.on_time).toBe(0);
+    expect(q2.summary.not_filed_candidate).toBe(1);
+  });
+});
+
+describe('★ 해를 넘긴 늦은 제출 (Codex 7차 치명 3)', () => {
+  it('연말 이후 접수도 수집 구간에 들어가 그 해 연1회분으로 잡힌다', async () => {
+    // 2025년 연1회분(기한 2025-06-02)을 2026-01-10 에 제출 → 지연 후보여야 한다.
+    // 수집 종료일을 연말로 자르면 이 건이 아예 안 보여 "미제출"로 뒤집힌다.
+    const deps = makeDeps({
+      '00000001': [row({ rcept_no: '20260110000001', rcept_dt: '20260110' })],
+    });
+    const r = await call(
+      { companies: ['00000001'], year: 2025, duties: ['group_status_annual'], today: '20260827' },
+      deps,
+    );
+    expect(r.scope.collection_period.to).toBe('20260827');
+    const annual = r.deadlines[0];
+    expect(annual.summary.not_filed_candidate).toBe(0);
+    expect(annual.summary.late_candidate).toBe(1);
+    expect(annual.late_candidates[0].rcept_dt).toBe('20260110');
+  });
+});
+
+describe('★ 기간 배정 모호성을 단정하지 않는다 (Codex 7차 치명 2)', () => {
+  const QUARTERLY = {
+    companies: ['00000001'],
+    year: 2026,
+    duties: ['group_status_quarterly' as const],
+    today: '20261201',
+  };
+
+  it('직전 기간이 미제출인데 다음 기간에 이른 접수가 있으면 양쪽에 모호 표시', async () => {
+    // 2026년 2분기분(기한 8/31)은 없고, 3분기 창((20260930, 20261231]) 앞쪽인
+    // 2026-10-05 에 분기별공시가 하나 있다. 이건 3분기분의 이른 제출일 수도,
+    // 2분기분의 늦은 제출일 수도 있다 — 접수일만으로는 가릴 수 없다.
+    const deps = makeDeps({
+      '00000001': [
+        row({
+          report_nm: '대규모기업집단현황공시[분기별공시(개별회사용)]',
+          rcept_no: '20261005000001',
+          rcept_dt: '20261005',
+        }),
+      ],
+    });
+    const r = await call(QUARTERLY, deps);
+    const q2 = r.deadlines.find((d: any) => d.period === '2026년 2분기');
+    const q3 = r.deadlines.find((d: any) => d.period === '2026년 3분기');
+    expect(q3.summary.on_time).toBe(1);
+    expect(q3.on_time[0].ambiguous_assignment).toBe(true);
+    expect(q2.summary.not_filed_candidate).toBe(1);
+    expect(q2.not_filed_candidates[0].possibly_filed_late.rcept_no).toBe('20261005000001');
+    expect(r.summary.ambiguous_assignments).toBe(2);
+    expect(r.notes.some((n: string) => n.includes('기간 배정이 모호한'))).toBe(true);
+  });
+
+  it('서식 종류가 다르면 모호 표시를 붙이지 않는다 (실측 오탐 재발 방지)', async () => {
+    // 웅진씽크빅 실측: 2026-05-29 '연1회공시및1/4분기용' 1건.
+    // 2025년 4분기는 '분기별공시' 서식을 기대하므로, 통합 서식 접수를
+    // "4분기분을 늦게 낸 것"으로 볼 수 없다 — 모호 표시가 붙으면 오탐이다.
+    const deps = makeDeps({ '00000001': [row({ rcept_dt: '20260529', rcept_no: '20260529000001' })] });
+    const r = await call({ companies: ['00000001'], year: 2026, today: '20260827' }, deps);
+    const q4 = r.deadlines.find((d: any) => d.period === '2025년 4분기');
+    const q1 = r.deadlines.find((d: any) => d.period === '2026년 1분기');
+    expect(q4.summary.not_filed_candidate).toBe(1);
+    expect(q4.not_filed_candidates[0].possibly_filed_late).toBeUndefined();
+    expect(q1.summary.on_time).toBe(1);
+    expect(q1.on_time[0].ambiguous_assignment).toBeUndefined();
+    expect(r.summary.ambiguous_assignments).toBe(0);
+  });
+
+  it('창을 크게 벗어난 접수는 억지로 배정하지 않고 unmatched 로 돌려준다', async () => {
+    // 2026-04-01 에 접수된 '분기별공시' — 2025년 4분기 창은 3/31 에 닫혔고
+    // 2026년 1분기는 통합 서식(annual_q1)이 이행한다. 어느 쪽도 아니다.
+    // 억지로 다음 분기에 밀어넣어 "정상 제출"로 만드는 것보다 모른다고 하는 편이 옳다.
+    const deps = makeDeps({
+      '00000001': [
+        row({
+          report_nm: '대규모기업집단현황공시[분기별공시(개별회사용)]',
+          rcept_no: '20260401000001',
+          rcept_dt: '20260401',
+        }),
+      ],
+    });
+    const r = await call(QUARTERLY, deps);
+    expect(r.unmatched_filings).toHaveLength(1);
+    expect(r.unmatched_filings[0].rcept_no).toBe('20260401000001');
+    expect(r.notes.some((n: string) => n.includes('배정하지 못한'))).toBe(true);
+  });
+});
+
+describe('배정 창 산술', () => {
+  it('분기 창은 대상기간 종료 다음 날부터 다음 분기말까지로 닫힌다', () => {
+    const cal = buildPeriodicCalendar(2026).filter((e) => e.duty === 'group_status_quarterly');
+    const q1 = cal.find((e) => e.period === '2026년 1분기')!;
+    expect(assignmentWindow(q1)).toEqual({ start: '20260331', end: '20260630' });
+    const q4prev = cal.find((e) => e.period === '2025년 4분기')!;
+    expect(assignmentWindow(q4prev)).toEqual({ start: '20251231', end: '20260331' });
+  });
+
+  it('연1회 창은 4/1 부터 이듬해 3/31 까지 — 연말을 넘겨 낸 것도 잡는다', () => {
+    const annual = buildPeriodicCalendar(2026).find((e) => e.duty === 'group_status_annual')!;
+    expect(assignmentWindow(annual)).toEqual({ start: '20260331', end: '20270331' });
+  });
+
+  it('반기 창은 6개월이다', () => {
+    const h1 = buildPeriodicCalendar(2026).find(
+      (e) => e.duty === 'subcontract_payment_terms' && e.period === '2026년 상반기',
+    )!;
+    expect(assignmentWindow(h1)).toEqual({ start: '20260630', end: '20261231' });
+  });
+
+  it('월말 산술이 연도 경계를 넘어도 정확하다', () => {
+    expect(addMonthsToPeriodEnd('20261231', 3)).toBe('20270331');
+    expect(addMonthsToPeriodEnd('20260930', 3)).toBe('20261231');
+    expect(addMonthsToPeriodEnd('20271231', 3)).toBe('20280331');
+    // 윤년 2월
+    expect(addMonthsToPeriodEnd('20271231', 2)).toBe('20280229');
+  });
+});
+
+describe('정정 판정', () => {
+  it('대괄호 접두사 변형을 잡는다', () => {
+    expect(isCorrection('[기재정정]대규모기업집단현황공시[분기별공시(개별회사용)]')).toBe(true);
+    expect(isCorrection('[첨부정정]대규모기업집단현황공시[분기별공시(개별회사용)]')).toBe(true);
+    expect(isCorrection('[자진정정]대규모기업집단현황공시[분기별공시(개별회사용)]')).toBe(true);
+    expect(isCorrection('[기재추가]대규모기업집단현황공시[분기별공시(개별회사용)]')).toBe(true);
+    expect(isCorrection('대규모기업집단현황공시[분기별공시(개별회사용)]')).toBe(false);
   });
 });
 

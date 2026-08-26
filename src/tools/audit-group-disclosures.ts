@@ -126,7 +126,20 @@ export interface AuditDeps {
 function realDeps(client: DartClient): AuditDeps {
   return {
     collectList: (corpCode, from, to) =>
-      collectAdaptive(client, { pblntfDetailTy: 'J001', corpCode }, from, to),
+      collectAdaptive(
+        client,
+        {
+          pblntfDetailTy: 'J001',
+          corpCode,
+          // ★ 강제 false. last_reprt_at=Y 는 정정으로 대체된 **원본**을 목록에서 지우는데,
+          // 이 감사의 판정 기준이 바로 그 원본의 접수일이다 (함정 -1번).
+          // 전역 설정(GONGSI_LAST_REPORT_ONLY)이 켜져 있어도 여기서는 따르지 않는다 —
+          // 설정 하나로 감사 결과가 조용히 무력해지는 것보다 무시하는 편이 옳다.
+          lastReportOnly: false,
+        },
+        from,
+        to,
+      ),
     loadDoc: (rceptNo) => loadDocument(rceptNo, client),
     isCached: (rceptNo) => isDocumentCached(rceptNo),
   };
@@ -544,10 +557,10 @@ export async function auditGroupDisclosures(
     // 기본값은 false 지만 환경변수로 뒤집을 수 있으므로, 뒤집힌 채로 조용히 도는 것을 막는다.
     if (getConfig().lastReportOnly) {
       notes.push(
-        '🚨 GONGSI_LAST_REPORT_ONLY=true 로 설정돼 있습니다 — DART 가 **최종보고서만** 돌려주므로 ' +
-          '정정으로 대체된 **원본 접수분이 목록에서 사라집니다**. 이 감사의 판정 기준이 바로 그 원본의 접수일이라 ' +
-          '지연 판정이 원천적으로 불가능해집니다. 이 설정에서 나온 "지연 후보 0건"은 근거가 없습니다 — ' +
-          '환경변수를 해제(기본값 false)하고 다시 감사하세요.',
+        'ℹ️ GONGSI_LAST_REPORT_ONLY=true 로 설정돼 있지만 **이 감사는 무시하고 원본 포함(last_reprt_at=N)으로 ' +
+          '조회했습니다**. 그 설정은 정정으로 대체된 원본을 목록에서 지우는데, 이 감사의 판정 기준이 바로 ' +
+          '그 원본의 접수일이라 따랐다면 지연 판정이 원천적으로 불가능해집니다. ' +
+          '(search_disclosures 등 다른 도구에는 설정이 그대로 적용됩니다.)',
       );
     }
   }
