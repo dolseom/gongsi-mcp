@@ -133,14 +133,21 @@ function realDeps(client: DartClient): AuditDeps {
 }
 
 /** 모집단 — 감사 대상 회사들 */
-interface Population {
+export interface Population {
   corpCodes: Map<string, string>; // corp_code → 표시 이름
   group: Record<string, unknown> | null;
   unjoined: string[]; // 집단 소속인데 corp_code 미조인이라 감사에서 빠진 회사
   codeValidationSkipped?: boolean; // 법인코드 인덱스가 비어 있어 corp_code 존재 검증을 못 한 경우
 }
 
-async function resolvePopulation(input: AuditGroupDisclosuresInput): Promise<Population> {
+/** resolvePopulation 이 실제로 쓰는 입력만 추린 것 — 정기공시 감사도 같은 모집단 규칙을 쓴다 */
+export interface PopulationInput {
+  group?: string;
+  companies?: string[];
+  year_month?: string;
+}
+
+export async function resolvePopulation(input: PopulationInput): Promise<Population> {
   const store = getStore();
 
   if (input.group) {

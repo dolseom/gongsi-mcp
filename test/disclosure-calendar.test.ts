@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { disclosureCalendar } from '../src/tools/disclosure-calendar.js';
 import { buildPeriodicCalendar } from '../src/rules/periodic-calendar.js';
-import { loadPeriodicDuties } from '../src/rules/periodic-duties.js';
+import {
+  loadPeriodicDuties,
+  periodicDutyFileSchema,
+} from '../src/rules/periodic-duties.js';
 
 const call = (input: Parameters<typeof disclosureCalendar>[0]) =>
   disclosureCalendar(input) as Record<string, any>;
@@ -23,6 +26,59 @@ describe('정기공시 정의 데이터', () => {
       // 조건부 의무인데 조건이 없으면 "무조건 해야 하는 것"으로 오독된다
       if (d.obligation === 'conditional') expect(d.appliesWhen).toBeTruthy();
     }
+  });
+
+  it('스키마가 망가진 법령 데이터를 통과시키지 않는다', () => {
+    const good = {
+      _meta: {
+        title: 't',
+        verified: true,
+        verifiedAt: '2026-08-27',
+        scope: ['s'],
+        verification: ['v'],
+      },
+      duties: [
+        {
+          key: 'k',
+          label: 'l',
+          dartType: 'J004',
+          frequency: 'annual',
+          obligation: 'unconditional',
+          items: [{ code: 'c', name: 'n', asOf: 'a' }],
+          legalBasis: [{ source: 's', summary: 'm' }],
+        },
+      ],
+    };
+    expect(periodicDutyFileSchema.safeParse(good).success).toBe(true);
+
+    // 근거 조문이 비면 "근거 없는 기한"이 된다 — 이 프로젝트에서 성립할 수 없다
+    const noBasis = structuredClone(good);
+    noBasis.duties[0]!.legalBasis = [];
+    expect(periodicDutyFileSchema.safeParse(noBasis).success).toBe(false);
+
+    // 조건부인데 조건이 없으면 "무조건 의무"로 오독된다
+    const condNoWhen = structuredClone(good) as any;
+    condNoWhen.duties[0].obligation = 'conditional';
+    expect(periodicDutyFileSchema.safeParse(condNoWhen).success).toBe(false);
+
+    // 기준일(asOf) 누락 — 담당자가 가장 자주 틀리는 정보가 조용히 사라지면 안 된다
+    const noAsOf = structuredClone(good) as any;
+    delete noAsOf.duties[0].items[0].asOf;
+    expect(periodicDutyFileSchema.safeParse(noAsOf).success).toBe(false);
+
+    // 검증되지 않은 법령 데이터는 실을 수 없다
+    const unverified = structuredClone(good) as any;
+    unverified._meta.verified = false;
+    expect(periodicDutyFileSchema.safeParse(unverified).success).toBe(false);
+  });
+
+  it('반환값을 변이해도 다음 호출이 오염되지 않는다', () => {
+    const first = loadPeriodicDuties();
+    first[0]!.items.length = 0;
+    first[0]!.label = '망가뜨림';
+    const second = loadPeriodicDuties();
+    expect(second[0]!.items.length).toBeGreaterThan(0);
+    expect(second[0]!.label).not.toBe('망가뜨림');
   });
 
   it('분기 공시 항목은 고시 §5①2호대로 4개다 (하목·너목·5호나목·7호)', () => {
@@ -84,6 +140,17 @@ describe('캘린더 날짜 산술', () => {
     expect(h2.deadline).toBe('20260219');
   });
 
+  it('2027 상반기 하도급 기한이 광복절 대체공휴일을 건너뛴다 (→ 2027-08-17)', () => {
+    // 20270630 + 45일 = 2027-08-14(토) → 8/15 광복절(일) → 8/16 대체공휴일(월) → 8/17(화)
+    const cal = buildPeriodicCalendar(2027);
+    const h1 = cal.find(
+      (e) => e.duty === 'subcontract_payment_terms' && e.period === '2027년 상반기',
+    )!;
+    expect(h1.statutory_date).toBe('20270814');
+    expect(h1.deadline).toBe('20270817');
+    expect(h1.adjusted_to_next_business_day).toBe(true);
+  });
+
   it('하도급대금 결제조건은 반기말 + 45일 (상반기 8/14)', () => {
     const cal = buildPeriodicCalendar(2026);
     const h1 = cal.find(
@@ -99,6 +166,18 @@ describe('캘린더 날짜 산술', () => {
     for (const e of cal) expect(e.deadline.slice(0, 4)).toBe('2026');
     const dates = cal.map((e) => e.deadline);
     expect([...dates].sort()).toEqual(dates);
+  });
+});
+
+describe('약관 금융거래 적용범위 (Codex 교차검토 치명 1)', () => {
+  it('분기 일괄공시는 §9③·§9⑤ 두 경로뿐이고 §9④ 대비를 근거에 함께 싣는다', () => {
+    const omni = loadPeriodicDuties().find((d) => d.key === 'omnibus_financial')!;
+    // 계열 금융회사(§9③)와 단기금융상품(§9⑤) 두 항목
+    expect(omni.items.map((i) => i.code)).toEqual(['고시 §9③', '고시 §9⑤']);
+    // 비금융회사의 그 밖의 §9② 거래는 3/7영업일이라는 것을 조건에 명시
+    expect(omni.appliesWhen).toContain('3영업일');
+    expect(omni.appliesWhen).toContain('단기금융상품');
+    expect(omni.legalBasis.some((r) => r.source.includes('제9조제4항'))).toBe(true);
   });
 });
 
@@ -128,7 +207,13 @@ describe('도구 응답', () => {
       'large_internal_transaction',
       'unlisted_material',
       'public_interest_corp',
+      // Codex 교차검토 치명 1: §9④ 경로(단기금융상품이 아닌 §9② 약관 금융거래)는
+      // 분기 일괄이 아니라 행위 후 3/7영업일이다 — 캘린더에 없다는 것을 명시해야 한다
+      'omnibus_financial_event_driven',
     ]);
+    // 주요주주 지분변동 분기공시는 캘린더에 **있으므로** 제외 문구가 그것까지 덮으면 안 된다
+    expect(r.notes[0]).toContain('주요주주 지분변동 분기공시를 **제외한**');
+    expect(r.notes[0]).toContain('공익법인');
     // 필터로 0건이 나와도 같은 고지가 유지돼야 한다
     const empty = call({ year: 2026, today: '20260101', from: '20260101', to: '20260102' });
     expect(empty.summary.total).toBe(0);
@@ -145,6 +230,22 @@ describe('도구 응답', () => {
     expect(hit.count).toBe(3);
     expect(hit.duties.some((d: string) => d.includes('연1회'))).toBe(true);
     expect(r.notes.some((n: string) => n.includes('겹치는 지점'))).toBe(true);
+  });
+
+  it('연1회·1분기 통합 제출 사실을 알린다 (두 번 내는 것이 아니다)', () => {
+    const r = call({ year: 2026, today: '20260101' });
+    const annual = r.entries.find((e: any) => e.duty === 'group_status_annual');
+    expect(annual.filed_together_with.duty).toBe('group_status_quarterly');
+    const q1 = r.entries.find(
+      (e: any) => e.duty === 'group_status_quarterly' && e.period === '2026년 1분기',
+    );
+    expect(q1.filed_together_with).toBeTruthy();
+    // 2·3분기는 별도 서식이므로 표시가 붙으면 안 된다
+    const q2 = r.entries.find(
+      (e: any) => e.duty === 'group_status_quarterly' && e.period === '2026년 2분기',
+    );
+    expect(q2.filed_together_with).toBeUndefined();
+    expect(r.notes.some((n: string) => n.includes('단일 서식으로 함께 제출'))).toBe(true);
   });
 
   it('조건부 의무는 별도로 세고 unconditional_only 로 뺄 수 있다', () => {

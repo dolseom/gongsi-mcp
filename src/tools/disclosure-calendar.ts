@@ -126,10 +126,13 @@ export function disclosureCalendar(input: DisclosureCalendarInput): unknown {
     // 이 도구는 날짜가 고정된 정기 공시만 담는다 — 실제 위반의 주력인 대규모내부거래
     // 개별거래는 사유 발생형이라 원리상 캘린더에 올릴 수 없다.
     '⚠️ 이 캘린더에는 **기한이 달력으로 고정된 정기 공시만** 들어 있습니다. ' +
-      '대규모내부거래 개별거래(이사회 의결 후 상장 3영업일·비상장 7영업일)와 ' +
-      '비상장회사 중요사항(사유 발생일부터 7영업일)은 사유가 언제 생길지 알 수 없어 캘린더에 올릴 수 없습니다 — ' +
+      '대규모내부거래 개별거래(이사회 의결 후 상장 3영업일·비상장 7영업일), ' +
+      '비상장회사 중요사항 중 주요주주 지분변동 분기공시를 **제외한** 나머지(사유 발생일부터 7영업일), ' +
+      '특수관계인인 공익법인의 이사회 의결·공시(7영업일), ' +
+      '고시 §9④ 약관 금융거래(단기금융상품이 아닌 §9② 거래 — 행위 후 3영업일·비상장 7영업일)는 ' +
+      '사유가 언제 생길지 알 수 없어 캘린더에 올릴 수 없습니다 — ' +
       '**캘린더가 비어 있다고 해서 공시할 것이 없다는 뜻이 아닙니다.** ' +
-      '그 건들은 발생 즉시 check_disclosure_duty 로 판정하세요.',
+      '그 건들은 발생 즉시 check_disclosure_duty 로 판정하세요 (not_in_calendar 참조).',
     'ℹ️ 이 캘린더는 **그 해에 기한이 도래하는** 것을 담습니다. 전년도 4분기분(기한 2월 말 등)이 포함되고, ' +
       '당해 4분기분(기한 익년 2월 말)은 다음 해 캘린더에 들어갑니다. 각 항목의 period 로 대상 기간을 확인하세요.',
     'ℹ️ 대상 회사 판정은 하지 않습니다 — 우리 회사가 공시대상회사인지, 하도급 원사업자인지 등은 ' +
@@ -146,6 +149,15 @@ export function disclosureCalendar(input: DisclosureCalendarInput): unknown {
   if (collisions.length) {
     notes.push(
       `ℹ️ 기한이 같은 날 겹치는 지점이 ${collisions.length}곳 있습니다 (collisions 참조) — 그 주에 업무가 몰립니다.`,
+    );
+  }
+  if (filtered.some((e) => e.filed_together_with)) {
+    // 법령상 별개 의무라 캘린더에는 두 줄로 나오지만 DART 제출은 1건이다.
+    // "두 번 내야 한다"로 읽으면 실무가 틀어진다 (DART 실측 2026-08-27).
+    notes.push(
+      'ℹ️ 기업집단현황공시의 **연1회분과 1분기분은 기한이 같은 5월 31일이라 DART 에서 ' +
+        "'연1회공시및1/4분기용' 단일 서식으로 함께 제출**합니다 — 캘린더에 두 줄로 보여도 제출은 1건입니다. " +
+        "2·3·4분기는 '분기별공시' 서식으로 따로 냅니다 (filed_together_with 참조).",
     );
   }
   const warned = filtered.filter((e) => e.warnings.length > 0);
@@ -204,14 +216,24 @@ export function disclosureCalendar(input: DisclosureCalendarInput): unknown {
       },
       {
         duty: 'unlisted_material',
-        label: '비상장회사 중요사항 (J005) — 주요주주 지분변동 제외',
-        reason: '사유 발생일에 종속 — 7영업일',
+        label: '비상장회사 중요사항 (J005) — 주요주주 지분변동 분기공시는 제외(그건 캘린더에 있다)',
+        reason: '사유 발생일에 종속 — 7영업일. 최대주주 변동도 이쪽이다',
         use: 'check_disclosure_duty',
       },
       {
         duty: 'public_interest_corp',
         label: '특수관계인인 공익법인의 이사회 의결·공시 (J008)',
         reason: '이사회 의결일에 종속 — 7영업일',
+        use: 'check_disclosure_duty',
+      },
+      {
+        // Codex 교차검토 치명 1: 약관 금융거래를 뭉뚱그리면 비금융회사에 틀린 기한을 준다.
+        // 분기 일괄은 §9③·§9⑤ 뿐이고, 나머지 §9② 거래는 §9④ 사유 발생형이다.
+        duty: 'omnibus_financial_event_driven',
+        label: '약관에 의한 금융거래 중 §9④ 경로 (계열 금융회사와의 §9② 거래로서 단기금융상품이 아닌 것)',
+        reason:
+          '행위 후 3영업일(상장) / 7영업일(비상장) — 분기 일괄이 아니다. ' +
+          '이사회 의결은 분기별 일괄이 가능하지만(§9②) 공시 기한은 거래 시점에 종속된다',
         use: 'check_disclosure_duty',
       },
     ],

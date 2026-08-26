@@ -50,6 +50,8 @@ export interface CalendarEntry {
   rule: string;
   applies_to?: string;
   applies_when?: string;
+  /** 다른 의무와 한 서식으로 함께 제출되는 경우 (해당 분기에만 붙는다) */
+  filed_together_with?: NonNullable<PeriodicDuty['filedTogetherWith']>;
   /** 그 날 실제로 무엇을 쓰는가 + 각 항목의 기준일 */
   items: PeriodicDuty['items'];
   legal_basis: LegalRef[];
@@ -83,6 +85,8 @@ function entryOf(
   raw: RawDeadline,
   period: string,
   periodEnd: YMD | null,
+  /** 통합 제출 표시를 붙일지 — 분기 의무는 해당 분기에만 붙는다 */
+  together = true,
 ): CalendarEntry {
   return {
     duty: duty.key,
@@ -98,6 +102,9 @@ function entryOf(
     rule: raw.result.rule,
     ...(duty.appliesTo ? { applies_to: duty.appliesTo } : {}),
     ...(duty.appliesWhen ? { applies_when: duty.appliesWhen } : {}),
+    ...(together && duty.filedTogetherWith
+      ? { filed_together_with: duty.filedTogetherWith }
+      : {}),
     items: duty.items,
     legal_basis: duty.legalBasis,
     warnings: raw.result.warnings,
@@ -128,7 +135,8 @@ function quarterlyTwoMonthEntry(
   const tm = targetMonth > 12 ? targetMonth - 12 : targetMonth;
   const lastDay = new Date(Date.UTC(ty, tm, 0)).getUTCDate();
   const statutory: YMD = `${ty}${String(tm).padStart(2, '0')}${String(lastDay).padStart(2, '0')}`;
-  return entryOf(duty, { statutory, result }, `${year}년 ${q}분기`, quarterEnd(year, q));
+  // 통합 제출은 1분기에만 해당한다 — 2·3·4분기는 '분기별공시' 서식으로 따로 낸다
+  return entryOf(duty, { statutory, result }, `${year}년 ${q}분기`, quarterEnd(year, q), q === 1);
 }
 
 /** 약관 금융거래 — 분기 종료 후 익월 10영업일 (법정일 자체가 영업일 계산이라 조정 개념이 다르다) */

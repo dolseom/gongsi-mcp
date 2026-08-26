@@ -26,6 +26,10 @@ import {
   auditGroupDisclosuresInput,
 } from './tools/audit-group-disclosures.js';
 import {
+  auditPeriodicDisclosures,
+  auditPeriodicDisclosuresInput,
+} from './tools/audit-periodic-disclosures.js';
+import {
   assessCorrectionRisk,
   assessCorrectionRiskInput,
 } from './tools/assess-correction-risk.js';
@@ -280,6 +284,30 @@ server.registerTool(
     inputSchema: auditGroupDisclosuresInput.shape,
   },
   wrap('audit_group_disclosures', auditGroupDisclosures),
+);
+
+server.registerTool(
+  'audit_periodic_disclosures',
+  {
+    title: '정기공시 이행 점검 (제출 여부·지연·미제출)',
+    description:
+      '기업집단현황공시(J004)와 하도급대금 결제조건(J009)의 **정기 공시를 실제로 냈는지, 기한을 지켰는지** ' +
+      '회사별로 점검합니다. audit_group_disclosures(J001) 와 두 가지가 결정적으로 다릅니다.\n\n' +
+      '① **원문을 한 건도 받지 않습니다** — 이 공시들은 기한이 달력으로 고정돼 있어 목록의 접수일만으로 ' +
+      '판정이 끝납니다. J001 감사의 60초 벽(원문 건당 1.5초)이 없습니다.\n' +
+      '② **미제출을 볼 수 있습니다** — 기업집단현황공시는 공시대상회사면 무조건 하는 의무라 ' +
+      '기한이 지났는데 접수분이 없으면 그 자체가 신호입니다. J001 감사가 원리상 못 하는 일입니다.\n\n' +
+      '- 기한별로 on_time / late_candidates / not_filed_candidates 를 회사 단위로 돌려줍니다\n' +
+      '- 아직 기한이 오지 않은 항목(due:false)은 미제출 판정을 하지 않습니다\n' +
+      '- 하도급대금(J009)은 원사업자·거래 있는 경우만의 의무라 **미제출을 신호로 쓰지 않습니다** ' +
+      '(non_filing_is_signal:false)\n' +
+      '- 집단 감사는 EGROUP_API_KEY 필요. 회사당 1회 조회라 한 번에 80개사까지입니다\n\n' +
+      '⚠️ 미제출 후보는 확정이 아닙니다 — 고시 §2① 단서(자산 100억원 미만 + 청산·휴업)로 공시대상회사가 ' +
+      '아닐 수 있고, 포털 소속회사 스냅샷은 매년 5월 1일 기준 연 1회입니다. ' +
+      '이 도구는 **냈는지·언제 냈는지**만 보고 내용의 정확성은 보지 않습니다 — 내용 점검은 check_j004_consistency 입니다.',
+    inputSchema: auditPeriodicDisclosuresInput.shape,
+  },
+  wrap('audit_periodic_disclosures', auditPeriodicDisclosures),
 );
 
 server.registerTool(
