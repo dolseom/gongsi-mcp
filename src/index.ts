@@ -34,6 +34,10 @@ import {
   checkJ004ConsistencyInput,
 } from './tools/check-j004-consistency.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
+import {
+  disclosureCalendar,
+  disclosureCalendarInput,
+} from './tools/disclosure-calendar.js';
 import { serverInfo, serverInfoInput } from './tools/server-info.js';
 
 loadDotEnv();
@@ -105,6 +109,28 @@ server.registerTool(
     inputSchema: calcBusinessDaysInput.shape,
   },
   wrap('calc_business_days', calcBusinessDays),
+);
+
+server.registerTool(
+  'disclosure_calendar',
+  {
+    title: '정기공시 연간 캘린더',
+    description:
+      '"올해(또는 지정 연도) 우리가 언제 무엇을 공시해야 하나"에 답합니다. 기한이 달력으로 고정된 ' +
+      '정기 공시의 마감일을 전부 계산해 D-day 와 함께 시간순으로 돌려줍니다. ' +
+      '로컬 룰·법령 데이터라 인증키 없이 동작합니다.\n\n' +
+      '- 담는 것: 기업집단현황 연1회(5/31)·분기(분기 종료 후 2개월), 약관 금융거래 분기(분기 종료 후 익월 10영업일), ' +
+      '상품·용역 20% 이상 감소(분기 종료 후 45일), 비상장 주요주주 지분변동 분기, 하도급대금 결제조건 반기(45일)\n' +
+      '- 마지막 날이 비영업일이면 다음 최초 영업일로 조정된 **실제 기한**을 줍니다 (대체공휴일 반영)\n' +
+      '- 각 항목에 그날 무엇을 쓰는지(items)와 **항목별 기준일·기준기간**이 붙습니다 — ' +
+      '분기 공시는 "공시기한일의 직전 분기" 기준이라 담당자가 가장 자주 틀리는 지점입니다\n' +
+      '- 같은 날 기한이 겹치는 지점(collisions)을 알려줍니다 — 예: 5월 31일은 연1회와 1분기가 같은 날입니다\n\n' +
+      '⚠️ **캘린더에 없다고 공시할 것이 없다는 뜻이 아닙니다.** 대규모내부거래 개별거래(의결 후 3/7영업일)와 ' +
+      '비상장회사 중요사항(사유 발생 후 7영업일)은 사유 발생형이라 달력에 올릴 수 없습니다 — ' +
+      'not_in_calendar 를 반드시 함께 전달하고, 그 건들은 check_disclosure_duty 로 판정하세요.',
+    inputSchema: disclosureCalendarInput.shape,
+  },
+  wrap('disclosure_calendar', disclosureCalendar),
 );
 
 server.registerTool(
@@ -244,7 +270,13 @@ server.registerTool(
       '- 약관 금융거래 특례 서식(분기 일괄, 의결일 없음)은 별도 분류로 나옵니다\n' +
       '- 정정 제출분은 판정에서 제외하고 원본만 봅니다 (지연 판정의 성립 조건)\n' +
       '- 범위가 크면 range_too_large 와 분할 구간을 안내합니다 — 원문 캐시는 영구라 재감사는 훨씬 빠릅니다\n' +
-      '- 집단 감사는 EGROUP_API_KEY 필요. coverage 의 미조인 회사는 감사에서 빠진 것이니 반드시 확인하세요',
+      '- 집단 감사는 EGROUP_API_KEY 필요. coverage 의 미조인 회사는 감사에서 빠진 것이니 반드시 확인하세요\n\n' +
+      '⚠️ **이 감사는 "미공시"를 탐지하지 못합니다.** DART 에 접수된 공시만 조회하므로, 아예 공시하지 않은 거래는 ' +
+      '기록 자체가 없어 이 도구로는 보이지 않습니다. 시행령 별표9 **기본금액** 기준으로 미공시는 ' +
+      '의결 있음 5,000만원 / 의결 없음 7,000만원, 기한초과는 500만원 + 1일 10만원이며 어느 쪽도 최종 부과액이 아닙니다. ' +
+      '판정 범위는 J001 중 **트랙 A(의결형)** 뿐이고 트랙 B(약관특례)·J004·J005·J008·J009 는 밖입니다. ' +
+      '**"지연 후보 0건"을 "공시의무 이행에 문제 없음"으로 답하지 마세요** — coverage.undetectable 과 ' +
+      'coverage.not_judged 를 그대로 사용자에게 전달하세요. 정기 공시의 마감일 관리는 disclosure_calendar 를 쓰세요.',
     inputSchema: auditGroupDisclosuresInput.shape,
   },
   wrap('audit_group_disclosures', auditGroupDisclosures),

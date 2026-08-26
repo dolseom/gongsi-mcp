@@ -10,7 +10,8 @@
     "dist/src",
     "data/holidays.json",
     "data/ftc-qna.json",
-    "data/penalty-ratios.json"
+    "data/penalty-ratios.json",
+    "data/periodic-disclosures.json"
   ],
   "engines": {
     "node": ">=22.5"

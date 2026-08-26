@@ -27,6 +27,7 @@ import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.
 import { loadCorpIndex, corpIndexIsStale } from '../resolver/corp-index.js';
 import { getGroupStructure } from './get-group-structure.js';
 import { getStore } from '../lib/store.js';
+import { getConfig } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
 import {
   AmbiguousCorpError,
@@ -435,6 +436,20 @@ export async function auditGroupDisclosures(
   lateCandidates.sort((a, b) => b.delay_days - a.delay_days);
 
   const notes: string[] = [
+    // ★ 감사 범위의 사각을 최상단에 고정한다.
+    // 이 도구는 DART 접수분만 조회하므로 **미공시는 원리상 탐지할 수 없다** —
+    // 그런데 출력은 "지연 후보 0건"이라 "공시의무 이행 완료"로 읽히기 쉽다.
+    // 미공시 기본금액(5,000만~7,000만)이 지연(500만+1일 10만)보다 훨씬 무거워 오독의 대가가 크다.
+    // 조건부가 아니라 **항상** 붙인다 (범위 진술은 결과와 무관하게 참이다).
+    '⚠️ 이 감사가 판정하는 것은 **DART 에 접수된 J001 중 이사회 의결형(트랙 A) 공시의 기한 지연**뿐입니다. ' +
+      '① 아예 공시하지 않은 거래(미공시)는 DART 에 기록 자체가 없어 이 도구가 직접 탐지하지 못합니다 ' +
+      '(뒤늦게 첫 공시를 하면 그건 지연으로 잡히지만, 이 도구가 미공시와 사후 공시를 자동으로 연결하지는 않습니다). ' +
+      '시행령 별표9 **기본금액** 기준으로 미공시는 의결 있음 5,000만원 / 의결 없음 7,000만원이고, ' +
+      '기한초과는 500만원 + 1일 10만원(가산 상한 5,000만원)입니다 — 어느 쪽도 최종 부과액이 아니라 산정 출발점입니다. ' +
+      '② 약관 금융거래 특례(트랙 B)는 의결일이 없는 분기 일괄공시라 이 감사의 기한 판정 대상이 아니며 ' +
+      'omnibus_track_b 로 분리해 돌려줍니다. ③ J004(기업집단현황)·J005(비상장사 중요사항)·' +
+      'J008(공익법인)·J009(하도급대금 결제조건)는 이 감사 범위 밖입니다. ' +
+      '**"지연 후보 0건"을 "공시의무 이행에 문제 없음"으로 읽지 마세요.**',
     '지연 "후보"입니다 — 확정이 아닙니다. 원문 의결일이 최초 의결일이 아닐 수 있고(재약정·변경), ' +
       '개별 사정(수탁기관 보정요청 등)이 있을 수 있습니다. 각 건을 read_disclosure 로 확인한 뒤 판단하세요.',
     '판정 기준: 원본 접수분(정정 제외)의 접수일 vs 원문 이사회 의결일 + 상장(유가·코스닥·코넥스) 3영업일 / 비상장 7영업일.',
@@ -480,6 +495,36 @@ export async function auditGroupDisclosures(
       notes.push(
         `ℹ️ board_date_missing ${legacyMeta}건은 구버전 캐시 메타라 미추출 원인(board_date_status)이 ` +
           '분류되지 않았습니다 — read_disclosure(force_refresh:true) 로 재생성하면 원인(정당한 "-"/오기/파서 한계)이 갈립니다.',
+      );
+    }
+  }
+  {
+    // Codex 7차 중간 3: 원문 로드 실패·의결일 미추출·트랙 B 는 결과 배열과 summary 에만 남아
+    // late_candidates=0 과 함께 읽히면 "지연 없음"으로 둔갑한다. 판정 미완료 총량을 최상위로 올린다.
+    const notJudged = trackB.length + boardDateMissing.length + unparsable.length;
+    if (notJudged > 0) {
+      const parts: string[] = [];
+      if (trackB.length) parts.push(`약관특례 트랙 B ${trackB.length}건(의결일 없는 분기 일괄공시 — 기한 판정 대상 아님)`);
+      if (boardDateMissing.length) parts.push(`의결일 미추출 ${boardDateMissing.length}건`);
+      if (unparsable.length) parts.push(`원문 로드·파싱 실패 ${unparsable.length}건`);
+      notes.push(
+        `⚠️ 수집된 ${originals.length}건 중 **${notJudged}건은 기한 판정이 완료되지 않았습니다** ` +
+          `(${parts.join(' / ')} — coverage.not_judged 참조). ` +
+          '이 건들은 "적법"으로 확인된 것이 아니라 **확인하지 못한 것**입니다 — ' +
+          'late_candidates 건수만 보고 판단하지 마세요.',
+      );
+    }
+  }
+  {
+    // Codex 7차 중간 4: last_reprt_at=Y 는 정정으로 대체된 **원본**을 목록에서 지운다.
+    // 원본 접수일이 없으면 지연 판정 자체가 성립하지 않는다 (함정 -1번).
+    // 기본값은 false 지만 환경변수로 뒤집을 수 있으므로, 뒤집힌 채로 조용히 도는 것을 막는다.
+    if (getConfig().lastReportOnly) {
+      notes.push(
+        '🚨 GONGSI_LAST_REPORT_ONLY=true 로 설정돼 있습니다 — DART 가 **최종보고서만** 돌려주므로 ' +
+          '정정으로 대체된 **원본 접수분이 목록에서 사라집니다**. 이 감사의 판정 기준이 바로 그 원본의 접수일이라 ' +
+          '지연 판정이 원천적으로 불가능해집니다. 이 설정에서 나온 "지연 후보 0건"은 근거가 없습니다 — ' +
+          '환경변수를 해제(기본값 false)하고 다시 감사하세요.',
       );
     }
   }
@@ -530,6 +575,33 @@ export async function auditGroupDisclosures(
     coverage: {
       companies_with_corp_code: population.corpCodes.size,
       companies_unjoined: population.unjoined,
+      // 중첩 note 는 놓치기 쉽다 — 범위의 사각을 구조화 필드로도 노출한다
+      // (isUpperBound 를 신설했던 것과 같은 이유. Codex 5차 지적).
+      /** 목록을 수집한 공시유형 */
+      collected_types: ['J001'],
+      /**
+       * 실제로 기한 **판정**까지 간 범위. 수집(J001 전체)과 다르다 —
+       * 약관특례 트랙 B 는 의결일이 없어 판정 대상이 아니다.
+       */
+      deadline_judged: 'J001 트랙 A (이사회 의결형)',
+      undetectable: {
+        /** 미공시(접수 자체가 없는 거래) — DART 접수분만 보므로 이 도구로는 직접 탐지 불가 */
+        non_disclosure: true,
+        /** 수집은 됐지만 기한 판정은 하지 않는 것 */
+        collected_but_not_judged: ['J001 트랙 B (약관 금융거래 특례)'],
+        /** 이 감사가 아예 보지 않는 공시유형. J002·J003·J006·J007 은 실제 제출 0건이라 제외했다 */
+        other_duty_types: ['J004', 'J005', 'J008', 'J009'],
+      },
+      /**
+       * 이 기간에 판정이 **완료되지 않은** 건수 합계.
+       * late_candidates 가 0 이어도 이 값이 크면 "지연 없음"이 아니라 "확인 못 함"이다.
+       */
+      not_judged: {
+        omnibus_track_b: trackB.length,
+        board_date_missing: boardDateMissing.length,
+        unparsable: unparsable.length,
+        total: trackB.length + boardDateMissing.length + unparsable.length,
+      },
     },
     notes,
     diagnostics: {

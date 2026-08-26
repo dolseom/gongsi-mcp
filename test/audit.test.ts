@@ -178,6 +178,67 @@ describe('판정 로직', () => {
   });
 });
 
+describe('감사 범위의 사각 고지 — 미공시·타 공시유형', () => {
+  // 이 감사는 DART 접수분만 본다. "지연 후보 0건"이 "공시의무 이행 완료"로 읽히면
+  // 미공시(기본금액 5,000만~7,000만)를 그대로 놓친다. 결과와 무관하게 항상 고지해야 한다.
+  const expectScopeDisclosure = (r: Record<string, any>) => {
+    // 범위 진술은 결과와 무관하게 참이므로 **최상단**에 있어야 한다 (Codex 7차 사소 2)
+    expect(r.notes[0]).toContain('미공시');
+    expect(r.notes[0]).toContain('직접 탐지하지 못합니다');
+    expect(r.coverage.collected_types).toEqual(['J001']);
+    expect(r.coverage.deadline_judged).toContain('트랙 A');
+    expect(r.coverage.undetectable.non_disclosure).toBe(true);
+    expect(r.coverage.undetectable.collected_but_not_judged).toEqual([
+      'J001 트랙 B (약관 금융거래 특례)',
+    ]);
+    expect(r.coverage.undetectable.other_duty_types).toEqual(['J004', 'J005', 'J008', 'J009']);
+  };
+
+  it('지연 후보가 0건일 때도 미공시 사각을 고지한다 (가장 위험한 경로)', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(0);
+    expectScopeDisclosure(r);
+  });
+
+  it('지연 후보가 있을 때도 같은 고지를 유지한다', async () => {
+    const deps = makeDeps([row({ corp_cls: 'Y' })], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(1);
+    expectScopeDisclosure(r);
+  });
+
+  it('수집 0건일 때도 같은 고지를 유지한다', async () => {
+    const deps = makeDeps([], {});
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expectScopeDisclosure(r);
+  });
+
+  it('판정 미완료 건이 있으면 지연 0건과 함께 "확인 못 한 것" 이라고 최상위에서 알린다', async () => {
+    // 원문 파싱 실패 1건 — late_candidates 는 0 이지만 그건 "적법 확인"이 아니다
+    const deps = makeDeps(
+      [row({})],
+      { '20260728000001': docMeta({ bodyParsable: false, boardDate: null }) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(0);
+    expect(r.coverage.not_judged.total).toBe(1);
+    expect(r.coverage.not_judged.unparsable).toBe(1);
+    expect(
+      r.notes.some(
+        (n: string) => n.includes('기한 판정이 완료되지 않았습니다') && n.includes('확인하지 못한 것'),
+      ),
+    ).toBe(true);
+  });
+
+  it('판정이 전부 끝났으면 미완료 경고를 붙이지 않는다 (경고 남발 방지)', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.coverage.not_judged.total).toBe(0);
+    expect(r.notes.some((n: string) => n.includes('기한 판정이 완료되지 않았습니다'))).toBe(false);
+  });
+});
+
 describe('corp_code 존재 검증 (P2-마 20)', () => {
   const seed = () => {
     store.upsertCorps([
