@@ -173,9 +173,24 @@ interface DeadlineReport {
     delay_days: number;
     viewer_url: string;
   }>;
-  not_filed_candidates: Array<{ corp_name: string; corp_code: string }>;
+  not_filed_candidates: Array<{
+    corp_name: string;
+    corp_code: string;
+    /** 대상 기간 종료 후에 계열편입된 회사 — 첫 공시 의무 시점이 애매하다 */
+    recently_joined?: string;
+  }>;
+  /**
+   * 이 기한에 **공시의무가 없었던** 회사 — 계열편입일이 기한보다 뒤다.
+   * 미제출 후보에서 빼고 여기로 옮긴다. 신규 지정 집단에서 이게 대량으로 나온다.
+   */
+  out_of_scope: Array<{ corp_name: string; corp_code: string; joined_group_at: string }>;
   /** 대표회사 통합 서식이 접수된 경우 — 개별회사 미접수의 설명이 될 수 있다 */
   representative_filings: Array<{ corp_name: string; corp_code: string; rcept_no: string }>;
+  /**
+   * 모집단 전체가 한 건도 안 낸 기한 — 집단이 그때 아직 지정되지 않았거나
+   * 조회 범위가 잘못됐다는 신호다. "집단 전체가 위반"보다 이쪽이 압도적으로 흔하다.
+   */
+  likely_out_of_scope?: boolean;
 }
 
 function daysBetween(from: string, to: string): number {
@@ -314,6 +329,7 @@ export async function auditPeriodicDisclosures(
     const onTime: DeadlineReport['on_time'] = [];
     const late: DeadlineReport['late_candidates'] = [];
     const notFiled: DeadlineReport['not_filed_candidates'] = [];
+    const outOfScope: DeadlineReport['out_of_scope'] = [];
     const repFilings: DeadlineReport['representative_filings'] = [];
 
     for (const [corpCode, corpName] of population.corpCodes) {
@@ -321,8 +337,22 @@ export async function auditPeriodicDisclosures(
       for (const f of mine.filter((x) => x.representative)) {
         repFilings.push({ corp_name: corpName, corp_code: corpCode, rcept_no: f.rcept_no });
       }
+      // 계열편입일이 기한보다 뒤면 그 기한에는 공시의무 자체가 없었다.
+      // 이걸 빼지 않으면 신규 지정 집단에서 과거 기한이 통째로 "미제출"로 뜬다.
+      const joinedAt = population.joinedGroupAt?.get(corpCode);
+      if (mine.length === 0 && joinedAt && joinedAt > e.deadline) {
+        outOfScope.push({ corp_name: corpName, corp_code: corpCode, joined_group_at: joinedAt });
+        continue;
+      }
       if (mine.length === 0) {
-        if (due && nonFilingIsSignal) notFiled.push({ corp_name: corpName, corp_code: corpCode });
+        if (due && nonFilingIsSignal) {
+          const joinedAfterPeriod = !!joinedAt && joinedAt > (e.period_end ?? '');
+          notFiled.push({
+            corp_name: corpName,
+            corp_code: corpCode,
+            ...(joinedAfterPeriod ? { recently_joined: joinedAt } : {}),
+          });
+        }
         continue;
       }
       // 같은 기한에 여러 건이면 가장 이른 접수를 그 회사의 이행으로 본다
@@ -365,7 +395,12 @@ export async function auditPeriodicDisclosures(
       on_time: onTime,
       late_candidates: late,
       not_filed_candidates: notFiled,
+      out_of_scope: outOfScope,
       representative_filings: repFilings,
+      // 여러 회사를 봤는데 접수가 0건이면 "집단 전체 위반"이 아니라 범위 오류로 읽는 게 옳다
+      ...(due && rows.length === 0 && population.corpCodes.size > 1
+        ? { likely_out_of_scope: true }
+        : {}),
     };
   });
 
@@ -384,10 +419,40 @@ export async function auditPeriodicDisclosures(
   if (totalNotFiled > 0) {
     notes.push(
       `⚠️ 미제출 후보 ${totalNotFiled}건 — 기업집단현황공시는 공시대상회사면 무조건 하는 의무라 ` +
-        '접수분이 없으면 신호입니다. 다만 확정 전에 두 가지를 확인하세요: ' +
+        '접수분이 없으면 신호입니다. 다만 확정 전에 세 가지를 확인하세요: ' +
         '① 고시 §2① 단서 — 직전 사업연도말 자산총액 100억원 미만이면서 청산 절차 진행 중이거나 ' +
         '1년 이상 휴업 중인 회사는 공시대상회사가 아닙니다. ' +
-        '② 그 회사가 그 시점에 실제로 집단 소속이었는지 (포털 스냅샷은 매년 5월 1일 기준 연 1회입니다).',
+        '② 그 회사가 **그 기한 시점에** 실제로 집단 소속이었는지 — 포털 소속회사 스냅샷은 ' +
+        '매년 5월 1일 기준 연 1회라, 그 뒤 편입·제외된 회사는 반영되지 않습니다. ' +
+        '③ recently_joined 가 붙은 회사는 대상 기간이 끝난 뒤 편입돼 첫 공시 의무 시점이 애매합니다.',
+    );
+  }
+  const outOfScopeTotal = reports.reduce((n, r) => n + r.out_of_scope.length, 0);
+  if (outOfScopeTotal > 0) {
+    notes.push(
+      `ℹ️ 계열편입일이 기한보다 뒤여서 **공시의무가 없었던** 회사-기한 조합 ${outOfScopeTotal}건을 ` +
+        '미제출 후보에서 제외했습니다 (out_of_scope). 신규 지정 집단·신규 편입 회사에서 나옵니다.',
+    );
+  }
+  if (reports.some((r) => r.likely_out_of_scope)) {
+    const which = reports.filter((r) => r.likely_out_of_scope).map((r) => r.period);
+    notes.push(
+      `🚨 모집단 ${population.corpCodes.size}개사 전부가 한 건도 내지 않은 기한이 있습니다 (${which.join(', ')}). ` +
+        '이건 "집단 전체가 위반"보다 **그 시점에 이 집단이 아직 공시대상기업집단으로 지정되지 않았거나 ' +
+        '조회 범위가 잘못됐다**는 신호일 가능성이 훨씬 높습니다 — 지정 시점을 먼저 확인하세요.',
+    );
+  }
+  if (!population.joinedGroupAt && input.group) {
+    notes.push(
+      'ℹ️ 계열편입일 정보를 얻지 못해 "편입 전이라 의무 없음" 판정을 하지 못했습니다 — ' +
+        '미제출 후보에 편입 전 기간이 섞여 있을 수 있습니다.',
+    );
+  }
+  if (input.companies) {
+    notes.push(
+      'ℹ️ companies 로 직접 지정한 경우에는 계열편입일을 알 수 없어 "편입 전이라 의무 없음" 판정을 ' +
+        '하지 않습니다. 신규 편입 회사가 섞여 있으면 미제출 후보가 과다할 수 있습니다 — ' +
+        'group 으로 호출하면 편입일을 반영합니다.',
     );
   }
   const repCount = reports.reduce((n, r) => n + r.representative_filings.length, 0);

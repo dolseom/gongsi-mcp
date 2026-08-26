@@ -138,6 +138,12 @@ export interface Population {
   group: Record<string, unknown> | null;
   unjoined: string[]; // 집단 소속인데 corp_code 미조인이라 감사에서 빠진 회사
   codeValidationSkipped?: boolean; // 법인코드 인덱스가 비어 있어 corp_code 존재 검증을 못 한 경우
+  /**
+   * corp_code → 계열편입일 (YYYYMMDD, 포털 grinil). group 경로에서만 채워진다.
+   * **편입 전 기한에는 공시의무가 없다** — 이걸 모르면 신규 편입·신규 지정 집단에서
+   * 과거 기한이 통째로 "미제출"로 뜬다 (실측: 웅진씽크빅은 2026년 5월 지정 이후 접수분만 있다).
+   */
+  joinedGroupAt?: Map<string, string>;
 }
 
 /** resolvePopulation 이 실제로 쓰는 입력만 추린 것 — 정기공시 감사도 같은 모집단 규칙을 쓴다 */
@@ -158,11 +164,16 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
     })) as Record<string, unknown>;
     const affiliates = gs['affiliates'] as Array<Record<string, unknown>>;
     const corpCodes = new Map<string, string>();
+    const joinedGroupAt = new Map<string, string>();
     const unjoined: string[] = [];
     for (const a of affiliates) {
       const code = a['corp_code'];
-      if (typeof code === 'string') corpCodes.set(code, String(a['name']));
-      else unjoined.push(String(a['name']));
+      if (typeof code === 'string') {
+        corpCodes.set(code, String(a['name']));
+        // 포털 grinil 은 표기가 일정하지 않아(하이픈 유무) 숫자만 남겨 정규화한다
+        const joined = String(a['joined_group_at'] ?? '').replace(/\D/g, '');
+        if (/^\d{8}$/.test(joined)) joinedGroupAt.set(code, joined);
+      } else unjoined.push(String(a['name']));
     }
     if (corpCodes.size === 0) {
       throw new ToolError(
@@ -172,7 +183,12 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
         { affiliates_total: affiliates.length },
       );
     }
-    return { corpCodes, group: gs['group'] as Record<string, unknown>, unjoined };
+    return {
+      corpCodes,
+      group: gs['group'] as Record<string, unknown>,
+      unjoined,
+      ...(joinedGroupAt.size ? { joinedGroupAt } : {}),
+    };
   }
 
   // companies 경로

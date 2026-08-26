@@ -189,6 +189,41 @@ describe('기한 판정', () => {
   });
 });
 
+describe('신규 편입·신규 지정 오탐 차단 (실측 기반)', () => {
+  // 실측: 웅진씽크빅은 2024-01-01~2026-08-27 사이 J004 가 단 1건(2026-05-29)이다.
+  // 웅진이 2026년 5월 신규 지정 집단이기 때문이다. 편입 전 기한을 미제출로 몰면
+  // 신규 지정 집단은 통째로 "집단 전체 위반"이 된다 — 이 도구를 못 쓰게 만드는 오탐이다.
+  it('companies 경로에서는 편입일을 모른다는 사실을 밝힌다', async () => {
+    // group 경로만 포털에서 계열편입일(grinil)을 받아온다. companies 로 직접 지정하면
+    // 편입 전 기간을 걸러낼 근거가 없으므로, 그 사실 자체를 응답에 밝혀야 한다.
+    const deps = makeDeps({ '00000001': [], '00000002': [] });
+    const r = await call(BASE, deps);
+    expect(
+      r.notes.some((n: string) => n.includes('계열편입일을 알 수 없어')),
+    ).toBe(true);
+  });
+
+  it('★ 모집단 전체가 0건이면 "집단 전체 위반"이 아니라 범위 오류 신호로 알린다', async () => {
+    const deps = makeDeps({ '00000001': [], '00000002': [] });
+    const r = await call(BASE, deps);
+    const d = r.deadlines[0];
+    expect(d.due).toBe(true);
+    expect(d.likely_out_of_scope).toBe(true);
+    expect(
+      r.notes.some(
+        (n: string) => n.includes('전부가 한 건도 내지 않은') && n.includes('지정되지 않았거나'),
+      ),
+    ).toBe(true);
+  });
+
+  it('일부만 미제출이면 범위 오류 신호를 붙이지 않는다', async () => {
+    const deps = makeDeps({ '00000001': [row({})], '00000002': [] });
+    const r = await call(BASE, deps);
+    expect(r.deadlines[0].likely_out_of_scope).toBeUndefined();
+    expect(r.deadlines[0].summary.not_filed_candidate).toBe(1);
+  });
+});
+
 describe('배정 규칙과 정직성', () => {
   it('분기 서식은 접수일 창으로 각 분기에 갈린다', async () => {
     const deps = makeDeps({
