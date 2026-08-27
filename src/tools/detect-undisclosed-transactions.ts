@@ -391,7 +391,16 @@ export async function detectUndisclosedTransactions(
     }
     // 정정 반영 **최신 접수분** — 내용을 읽는 도구라 최종본이 옳다 (J004 정정률 91% 실측).
     // 지연 판정 도구들이 원본을 고집하는 것과 반대 방향이고, 그 반대가 여기선 정답이다.
-    const latest = candidates.reduce((a, b) => (a.rcept_dt >= b.rcept_dt ? a : b));
+    // 같은 날 원본+정정이 함께 접수되면 접수일이 같다 — 접수번호(일련 증가)로 뒤를 고른다.
+    const latest = candidates.reduce((a, b) =>
+      a.rcept_dt !== b.rcept_dt
+        ? a.rcept_dt > b.rcept_dt
+          ? a
+          : b
+        : a.rcept_no > b.rcept_no
+          ? a
+          : b,
+    );
     sourceRceptNo = latest.rcept_no;
     sourceReportNm = latest.report_nm;
     sourceIsCorrection = isCorrection(latest.report_nm);
@@ -716,7 +725,9 @@ export async function detectUndisclosedTransactions(
   const scopeCaveats: string[] = [
     '★ 모든 결과는 **후보**입니다. undisclosed_candidate 를 "미공시 확정"으로 읽으면 안 되는 구조적 이유: ' +
       '① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ' +
-      `검색창(거래일 이전 ${LOOKBACK_DAYS}일)보다 앞설 수 있습니다 ② 상대방이 계열 금융회사면 ` +
+      `검색창(거래일 이전 ${LOOKBACK_DAYS}일)보다 앞설 수 있고, 반대로 검색창 상한` +
+      `(사업연도 말 +${LOOKAHEAD_DAYS}일과 오늘 중 이른 쪽) 이후에야 이뤄진 아주 늦은 사후 공시는 ` +
+      '잡히지 않아 후보로 남을 수 있습니다 ② 상대방이 계열 금융회사면 ' +
       '약관특례(고시 §9, 트랙 B) 분기 일괄공시에 실릴 수 있는데 그 서식은 보고서명이 달라 ' +
       '유형 필터에 걸리지 않을 수 있습니다 ③ 보고서명 유형 분류가 원문 표기와 어긋날 수 있습니다 — ' +
       'other_j001_in_window 가 0 이 아니면 그 공시들을 먼저 확인하세요.',

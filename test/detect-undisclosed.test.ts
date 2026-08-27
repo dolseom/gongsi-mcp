@@ -427,6 +427,28 @@ describe('group 경로 — 대표회사 연1회 서식 자동 탐색', () => {
     expect(r['undisclosed_candidates'][0].corp_code).toBe('00222222');
   });
 
+  it('같은 날 원본+정정 동시 접수면 접수번호가 큰 쪽(정정)을 고른다', async () => {
+    const sameDay = [
+      disc({
+        corp_code: '00111111',
+        report_nm: '대규모기업집단현황공시[연1회공시및1/4분기용(대표회사)]',
+        rcept_no: '20260531000001',
+        rcept_dt: '20260531',
+      }),
+      disc({
+        corp_code: '00111111',
+        report_nm: '[기재정정]대규모기업집단현황공시[연1회공시및1/4분기용(대표회사)]',
+        rcept_no: '20260531000900',
+        rcept_dt: '20260531',
+      }),
+    ];
+    const r = (await detectUndisclosedTransactions(
+      { group: '미래에셋', year: 2026, today: '20260827' },
+      makeDeps({ pop, j004: sameDay, j001: [] }),
+    )) as Record<string, any>;
+    expect(r['scope'].source_rcept_no).toBe('20260531000900');
+  });
+
   it('연1회 서식이 없으면 document_not_found + 직접 지정 안내', async () => {
     await expect(
       detectUndisclosedTransactions(
