@@ -120,6 +120,10 @@ export function readLabeledTables(sectionMarkdown: string): LabeledTable[] {
     buf = [];
     header = [];
     sawSeparator = false;
+    // ★ 단위는 표마다 캡션에서 새로 읽는다 — 리셋하지 않으면 캡션 없는(또는 인식 못 한 표기의)
+    // 표가 직전 표의 단위를 계승해, "단위를 모르면 건너뛴다" 불변식이 조용히 뚫린다
+    // (100~1,000배 오차가 below_threshold 거짓 안심으로 직결. 교차검토 M-1).
+    unit = null;
   };
 
   for (const raw of lines) {
