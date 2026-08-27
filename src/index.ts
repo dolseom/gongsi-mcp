@@ -37,6 +37,10 @@ import {
   checkJ004Consistency,
   checkJ004ConsistencyInput,
 } from './tools/check-j004-consistency.js';
+import {
+  detectUndisclosedTransactions,
+  detectUndisclosedTransactionsInput,
+} from './tools/detect-undisclosed-transactions.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
 import {
   disclosureCalendar,
@@ -347,6 +351,31 @@ server.registerTool(
     inputSchema: checkJ004ConsistencyInput.shape,
   },
   wrap('check_j004_consistency', checkJ004Consistency),
+);
+
+server.registerTool(
+  'detect_undisclosed_transactions',
+  {
+    title: '미공시 내부거래 교차탐지 (J004↔J001)',
+    description:
+      '기업집단현황공시(J004) 대표회사 연1회 서식의 **실제 거래내역**을 대규모내부거래(J001) 공시와 ' +
+      '대조해 "거래는 했는데 공시가 없는" **미공시 후보**를 찾습니다. J001 감사(audit_group_disclosures)가 ' +
+      '원리상 못 하는 일 — DART 접수분에 없는 거래를 보는 — 의 유일한 경로입니다.\n\n' +
+      '- 입력: rcept_no(J004 직접 지정) 또는 group(+year — 대표회사 연1회 서식을 자동 탐색)\n' +
+      '- 자금 차입은 차입일 단위로 대조합니다 (높은 신뢰도). 기준금액은 같은 문서의 재무현황 자본으로 ' +
+      '계산하되 **근사치**이며, 거래금액 100억원 이상만 자본과 무관하게 확실합니다\n' +
+      '- 상품·용역은 연간 합계뿐이라 연간 ≥ 4×기준금액인 경우만(어느 분기 하나는 반드시 기준 이상) ' +
+      '신호로 씁니다\n' +
+      '- 회사명→corp_code 조인 실패·검색 예산 초과 건은 not_judged 로 분리됩니다 — "후보 아님"이 아니라 ' +
+      '확인하지 못한 것입니다\n\n' +
+      '⚠️ **모든 결과는 후보입니다 — 단정 금지.** 한도성 이사회 의결(연초 의결 → 연중 인출), ' +
+      '계열 금융회사 약관특례(트랙 B 분기 일괄공시), 보고서명 유형 분류 오차로 실제로는 공시된 거래일 수 ' +
+      '있습니다. j001_filing_exists 도 "그 유형 공시가 존재한다"일 뿐 이 거래를 커버하는지는 대조하지 ' +
+      '않았습니다. 응답의 **scope_caveats 를 반드시 사용자에게 함께 전달하세요.** ' +
+      '미공시 과태료 기본금액(5,000만~7,000만원)은 지연보다 훨씬 무거워 오판의 대가가 큽니다.',
+    inputSchema: detectUndisclosedTransactionsInput.shape,
+  },
+  wrap('detect_undisclosed_transactions', detectUndisclosedTransactions),
 );
 
 server.registerTool(
