@@ -88,6 +88,61 @@ describe('자본 수치 추출 (기준금액 계산용)', () => {
   });
 });
 
+describe('열 배치 변형 방어 (M-2)', () => {
+  it('구분 열이 없는 변형에서 거래상대방을 차입회사로 오인하지 않는다', () => {
+    // 실측 서식은 첫 열이 '금융/비금융 구분'이라 회사명이 cCompany+1 에 오지만,
+    // 이 변형은 차입회사 바로 옆이 거래상대방이다 — 종전 로직은 대주를 차입회사로 읽었다
+    // (대주의 공시가 실제 차입회사의 미공시를 은폐하는 거짓 안심 경로).
+    const variant = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- |',
+      '| 갑(주) | 을(주) | 16,000 | 2025-02-19 |',
+    ].join('\n');
+    const rows = extractFundBorrowings(variant);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.company).toBe('갑(주)');
+    expect(rows[0]!.counterparty).toBe('을(주)');
+  });
+
+  it('회사 = 거래상대방으로 읽힌 행은 쓰지 않고 진단으로 센다', () => {
+    const suspicious = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 을(주) | 을(주) | 16,000 | 2025-02-19 |',
+    ].join('\n');
+    expect(extractFundBorrowings(suspicious)).toHaveLength(0);
+    expect(diagnose(suspicious).rows_company_equals_counterparty).toBe(1);
+  });
+});
+
+describe('금액 파싱 실패 행의 진단 승격 (M-3)', () => {
+  it("각주 붙은 금액('16,000 (주1)')은 추측하지 않되 소멸시키지 않고 센다", () => {
+    const footnoted = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 갑(주) | 을(주) | 16,000 (주1) | 2025-02-19 |',
+      '| 비금융회사 | 갑(주) | 을(주) | 12,000 | 2025-06-30 |',
+    ].join('\n');
+    const rows = extractFundBorrowings(footnoted);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.amount).toBe(12_000 * 1_000_000);
+    // 다른 행이 추출됐어도 "못 읽은 행이 있다"는 사실이 진단에 남는다
+    expect(diagnose(footnoted).rows_amount_unparsable).toBe(1);
+  });
+});
+
 describe('자금 차입 추출', () => {
   const rows = extractFundBorrowings(md);
 
@@ -120,6 +175,21 @@ describe('주요 상품·용역거래 추출', () => {
 
   it("'소 계'(공백 포함)와 '비금융회사 소계' 도 집계 행으로 걸러낸다", () => {
     expect(rows.some((r) => r.annualAmount === 7_189 * 1_000_000)).toBe(false);
+  });
+
+  it("'소계(주1)' 같은 각주 접미 변형도 집계 행이다 (S-8)", () => {
+    const variant = [
+      '## (6) 계열회사간 주요 상품ㆍ용역거래 내역',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 소속회사명 |  | 거래상대방 | 품목 | 매출액 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 갑(주) | 을(주) | 경비용역 | 1,000 |',
+      '| 비금융회사 | 갑(주) | 을(주) | 소계(주1) | 1,000 |',
+    ].join('\n');
+    const out = extractMajorGoodsServices(variant);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.item).toBe('경비용역');
   });
 });
 

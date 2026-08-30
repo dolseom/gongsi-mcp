@@ -15,15 +15,18 @@
  *     ⚠️ J004 자본은 "당해 사업연도말" 스냅샷이라 고시 §2③의 정확한 기준(주총 승인 최근
  *     사업연도말 자본총계 + 의결일 직전일 자본금)과 **시점이 다르다** — 근사치로만 쓴다.
  *     거래금액이 100억(령 §33①1호 상한) 이상이면 자본과 무관하게 확실하다.
- *  ④ 기준 초과 거래의 차입회사를 corp_code 로 조인 → 그 회사의 J001 목록을 거래일 주변
- *     넓은 창으로 수집 → 해당 유형 공시가 하나도 없으면 **미공시 후보**
+ *  ④ 기준 초과 거래의 차입회사를 corp_code 로 조인 → 그 회사의 J001 목록을
+ *     [거래일·사업연도초 −400일 ~ 오늘] 창으로 수집 → 해당 유형 공시가 하나도 없으면 **미공시 후보**,
+ *     있으면 **건별 차입일 근접도**(−90~+30일)로 filing_near_date / filing_in_window_only 를 가른다
+ *     — 창 전체에 공시 1건만 있어도 그 회사의 모든 차입이 "공시됨"으로 둔갑하는 것(부분 공시
+ *     은폐 = 최악 방향의 거짓 안심)을 막기 위해서다 (교차검토 C-1).
  *
  * ★ 이 도구의 출력은 전부 "후보"다. 확정하면 안 되는 이유가 구조적으로 여럿 있다:
  *  - 이사회 의결은 **한도**로 미리 해 둘 수 있다 — 연초 한도 의결 공시 1건이 연중 여러 차입을
  *    커버한다. 검색창을 거래일 이전 400일까지 열지만 그 밖일 수 있다.
  *  - 상대방이 계열 금융회사면 약관특례(고시 §9, 트랙 B)로 분기 일괄공시에 실릴 수 있다.
- *  - 상품·용역 기준은 분기 합계액(§4③)인데 J004 는 연간 합계뿐이다 — 연간 ≥ 4×기준금액일 때만
- *    (비둘기집: 어느 분기 하나는 반드시 기준금액 이상) 신호로 쓴다.
+ *  - 상품·용역 기준은 분기 합계액(§4③)인데 J004 는 연간 합계뿐이다 — (판매회사, 상대방) 연간
+ *    합산이 ≥ 4×기준금액일 때만(비둘기집: 어느 분기 하나는 반드시 기준금액 이상) 신호로 쓴다.
  */
 
 import { z } from 'zod';
@@ -89,8 +92,12 @@ export type DetectUndisclosedTransactionsInput = z.infer<
 const MAX_COMPANIES_TO_SEARCH = 20;
 /** 거래일 이전으로 여는 검색창 (달력일) — 한도성 이사회 의결이 거래보다 훨씬 앞설 수 있다 */
 const LOOKBACK_DAYS = 400;
-/** 거래일 이후로 여는 검색창 (달력일) — 지연 공시까지 잡는다 */
-const LOOKAHEAD_DAYS = 90;
+/**
+ * 건별 근접 대조 창 (달력일) — 공시(의결)는 통상 거래보다 앞서므로 앞을 넓게, 지연 공시를
+ * 감안해 뒤를 좁게 연다. 실측: 160억 차입(2/19)의 공시는 2/14 접수 (−5일).
+ */
+const NEAR_BEFORE_DAYS = 90;
+const NEAR_AFTER_DAYS = 30;
 /** J004 계열 서식코드 (실측: 80621 분기 개별 / 80622 연1회 대표 / 80623 연1회 개별) */
 const J004_ACODES = new Set(['80620', '80621', '80622', '80623', '80624', '80625']);
 
@@ -141,6 +148,12 @@ function addDaysYmd(ymd: string, days: number): string {
   ).padStart(2, '0')}`;
 }
 
+/** a − b 를 달력일 수로 (a 가 뒤면 양수) */
+function daysBetween(a: string, b: string): number {
+  const t = (s: string) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
+  return Math.round((t(a) - t(b)) / 86_400_000);
+}
+
 function fmtWon(n: number): string {
   if (n >= 억) {
     const v = n / 억;
@@ -165,6 +178,15 @@ export function isGoodsServicesReport(reportNm: string): boolean {
   return n.includes('상품') && n.includes('용역');
 }
 
+/**
+ * '[공시취소]' 접수분인가 — 취소 접수는 공시를 없앤 기록이지 공시가 존재한다는 근거가
+ * 아니다 (교차검토 S-5). 취소된 원본 접수분은 목록에 별도 행으로 남으므로, 취소 행만
+ * 근거에서 빼면 "원본은 있고 취소만 있는" 경우를 잘못 후보로 만들지 않는다.
+ */
+function isCancellationReport(reportNm: string): boolean {
+  return normalizeReportNm(reportNm).includes('공시취소');
+}
+
 /** 회사별 기준금액 (J004 재무현황 기반 근사치) */
 export interface ApproxThreshold {
   value: number;
@@ -176,11 +198,16 @@ export interface ApproxThreshold {
 /**
  * 재무현황 자본으로 회사별 기준금액을 계산한다.
  * 자본총계·자본금이 둘 다 없는 회사는 넣지 않는다 (추정 금지).
+ * 정규화 동명이 **서로 다른 기준금액**으로 두 번 나오면 어느 쪽이 맞는지 알 수 없다 —
+ * 둘 다 버리고 conflicts 로 보고한다 (첫 행 유지는 다른 회사의 자본을 쓰는 사고가 된다.
+ * 교차검토 S-3).
  */
-export function buildThresholdMap(
-  capitals: ReturnType<typeof extractCapitals>,
-): Map<string, ApproxThreshold> {
+export function buildThresholdMap(capitals: ReturnType<typeof extractCapitals>): {
+  map: Map<string, ApproxThreshold>;
+  conflicts: string[];
+} {
   const map = new Map<string, ApproxThreshold>();
+  const conflicted = new Set<string>();
   for (const c of capitals) {
     if (c.totalEquity === null && c.paidInCapital === null) continue;
     const r = calcThreshold({
@@ -189,13 +216,19 @@ export function buildThresholdMap(
     });
     if (!r) continue;
     const key = normalizeCompanyName(c.company);
-    // 같은 이름이 두 번 나오면 (표가 금융/비금융으로 갈릴 때) 첫 행을 유지한다 —
-    // 정규화 충돌로 다른 회사의 자본을 덮어쓰는 쪽이 더 위험하다
-    if (!map.has(key)) {
+    if (conflicted.has(key)) continue;
+    const prev = map.get(key);
+    if (!prev) {
       map.set(key, { value: r.threshold, formula: r.formula, source_row: c.company });
+      continue;
+    }
+    // 같은 이름·같은 값이면 중복 행일 뿐이다 (표가 금융/비금융으로 갈릴 때) — 유지
+    if (prev.value !== r.threshold) {
+      map.delete(key);
+      conflicted.add(key);
     }
   }
-  return map;
+  return { map, conflicts: [...conflicted] };
 }
 
 type Certainty = 'certain_by_cap' | 'approx_from_j004';
@@ -230,7 +263,18 @@ function toFilingRef(d: Disclosure): FilingRef {
   };
 }
 
-type TxStatus = 'undisclosed_candidate' | 'j001_filing_exists' | 'below_threshold' | 'not_judged';
+type TxStatus =
+  | 'undisclosed_candidate'
+  /** 차입일 근방(−90~+30일)에 같은 유형 공시가 있다 — 내용 대조는 아니다 */
+  | 'j001_filing_near_date'
+  /** 창 안 어딘가에만 있다 — 한도 의결 커버일 수도, 부분 공시 누락일 수도 있다 */
+  | 'j001_filing_in_window_only'
+  /** 날짜 개념이 없는 신호(상품·용역)의 존재 확인 */
+  | 'j001_filing_exists'
+  | 'below_threshold'
+  /** 계열편입일 이전 거래 — 편입 전에는 공시의무가 없다 (group 경로 한정) */
+  | 'no_duty_before_joining'
+  | 'not_judged';
 
 interface JudgedBorrowing {
   company: string;
@@ -250,37 +294,71 @@ interface JudgedBorrowing {
   certainty?: Certainty;
   status: TxStatus;
   reason?: string;
+  joined_group_at?: string;
   j001_search?: { from: string; to: string; type_filter: string };
   matching_filings?: FilingRef[];
+  /** matching_filings 가 10건에서 잘렸을 때의 전체 건수 */
+  matching_filings_total?: number;
+  /** 가장 가까운 같은 유형 공시와의 일수 차 (공시 접수일 − 차입일. 음수 = 공시가 앞) */
+  nearest_filing_gap_days?: number;
+  search_partial?: boolean;
   other_j001_in_window?: number;
   other_j001_sample?: FilingRef[];
 }
 
+interface GoodsItem {
+  item: string;
+  annual_amount: number;
+  annual_amount_display: string;
+  label: string;
+}
+
+/**
+ * (판매회사, 거래상대방) 연간 합산 단위의 상품·용역 신호.
+ * §4③2호의 판정 단위는 상대방별 분기 합계이지 품목별이 아니다 — 품목 행 단위로 판정하면
+ * 같은 상대방에게 품목 A 30억 + B 15억(합계 45억, 4×기준 40억)인 케이스가 각각 미달로
+ * 빠져 탐지 가능한 신호가 유실된다 (교차검토 M-4).
+ */
 interface GoodsSignal {
   company: string;
   corp_code?: string;
   counterparty: string;
-  item: string;
-  annual_amount: number;
-  annual_amount_display: string;
+  annual_amount_total: number;
+  annual_amount_total_display: string;
+  items: GoodsItem[];
   threshold?: { value: number; value_display: string; formula: string; source_row: string };
   certainty?: Certainty;
-  /** 연간 ≥ 4×기준금액 ⇒ 어느 분기 하나는 반드시 기준금액 이상 (비둘기집 논증) */
+  /** 연간 합산 ≥ 4×기준금액 ⇒ 어느 분기 하나는 반드시 기준금액 이상 (비둘기집 논증) */
   quarterly_logic:
     | 'annual_geq_4x_threshold'
     | 'annual_below_4x_threshold'
     | 'threshold_unknown';
-  /** 품목이 상품·용역 거래의 대가가 아닐 가능성 — 걸리면 미공시 후보로 올리지 않는다 */
-  item_caveat?: string;
   status?: TxStatus;
   reason?: string;
   j001_search?: { from: string; to: string; type_filter: string };
   matching_filings?: FilingRef[];
+  matching_filings_total?: number;
+  search_partial?: boolean;
   other_j001_in_window?: number;
 }
 
+/** 품목 성격상 미공시 후보 경로에서 제외한 행 — 합산에도 넣지 않는다 (배당이 합계를 부풀린다) */
+interface GoodsCaveatRow {
+  company: string;
+  counterparty: string;
+  item: string;
+  annual_amount: number;
+  annual_amount_display: string;
+  item_caveat: string;
+  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  certainty?: Certainty;
+  quarterly_logic: GoodsSignal['quarterly_logic'];
+  /** 회사가 다른 신호로 이미 검색된 경우에 한해, 참고용 J001 존재 정보를 동봉 (교차검토 S-9) */
+  related_j001?: { goods_type_filings_in_window: number; from: string; to: string };
+}
+
 /**
- * 상품·용역 거래의 대가가 아닐 가능성이 높은 품목.
+ * 상품·용역 거래의 대가가 아닐 가능성이 높은 품목 (교차검토 S-6 확장).
  * 실측(미래에셋 실물): J004 상품·용역 표에 "배당금수익" 이 실려 있다 — 배당은 주주 지위에 따른
  * 이익 분배이지 법 §26①의 거래유형(자금·유가증권·자산·상품용역) 어디에도 해당하지 않으므로,
  * 이를 미공시 후보로 올리면 오경보다. 단정하지 않고 별도 바구니로 분리한다.
@@ -291,6 +369,19 @@ export function itemLikelyNotGoodsService(item: string): string | null {
     return (
       '품목이 "배당" 성격입니다 — 배당금은 주주 지위에 따른 이익 분배로, 대규모내부거래의 ' +
       '상품·용역 거래에 해당하지 않을 가능성이 높습니다. 공시 대상 여부를 별도로 판단하세요'
+    );
+  }
+  if (n.includes('이자')) {
+    return (
+      '품목이 "이자" 성격입니다 — 이자는 자금거래의 과실(대가)로, 상품·용역 거래가 아닐 ' +
+      '가능성이 높습니다. 원본 자금 차입·대여의 공시 여부를 자금거래 쪽에서 별도로 확인하세요'
+    );
+  }
+  if (n.includes('임대') || n.includes('임차')) {
+    return (
+      '품목이 임대차 성격일 수 있습니다 — 부동산 등 임대차는 상품·용역이 아니라 별도 ' +
+      '거래유형(자산 거래)으로 공시될 수 있어, 이 도구의 상품·용역 보고서명 필터로는 그 공시를 ' +
+      '찾지 못합니다. 공시가 실제로 있는지는 J001 부동산·자산 유형 공시에서 별도로 확인하세요'
     );
   }
   return null;
@@ -414,6 +505,16 @@ export async function detectUndisclosedTransactions(
   /** 거래가 속한 직전 사업연도 (12월 결산 가정 — 변칙 회계연도는 어긋날 수 있다) */
   const fiscalYear = filingYear - 1;
 
+  // today 가 원천 문서 접수일보다 앞서면 창이 통째로 어긋난다 — 오타를 잡는다 (교차검토 S-1)
+  const sourceFiledYmd = sourceRceptNo.slice(0, 8);
+  if (today < sourceFiledYmd) {
+    throw new ToolError(
+      'invalid_argument',
+      `today(${today})가 원천 J004 접수일(${sourceFiledYmd})보다 앞섭니다 — ` +
+        'today 오타이거나 rcept_no 가 잘못 지정됐습니다.',
+    );
+  }
+
   const { markdown, meta } = await deps.loadDoc(sourceRceptNo);
   if (!markdown) {
     throw new ToolError(
@@ -448,9 +549,46 @@ export async function detectUndisclosedTransactions(
         '금액을 추측하지 않으므로 그 표의 거래는 점검되지 않았습니다.',
     );
   }
+  if (parseDiag.rows_amount_unparsable > 0) {
+    notes.push(
+      `⚠️ 거래상대방은 있는데 금액을 읽지 못한 행이 ${parseDiag.rows_amount_unparsable}건 있습니다 ` +
+        "(각주 '16,000 (주1)'·무액 '-' 표기 등 — 실물에서 '-' 기재 실측됨) — 금액을 추측하지 " +
+        '않으므로 그 거래는 **점검되지 않았습니다**. 원문(source_viewer_url)에서 해당 행을 직접 확인하세요.',
+    );
+  }
+  if (parseDiag.rows_company_equals_counterparty > 0) {
+    notes.push(
+      `⚠️ 회사와 거래상대방이 같은 이름으로 읽힌 행이 ${parseDiag.rows_company_equals_counterparty}건 ` +
+        '있습니다 — 표 열 배치가 실측 서식과 달라 열을 오인했을 수 있어 그 행은 쓰지 않았습니다. ' +
+        '원문 확인이 필요합니다.',
+    );
+  }
 
   // ── ③ 회사별 기준금액 (근사) ──
-  const thresholds = buildThresholdMap(capitals);
+  const { map: thresholds, conflicts: thresholdConflicts } = buildThresholdMap(capitals);
+  if (thresholdConflicts.length > 0) {
+    notes.push(
+      `⚠️ 재무현황 표에 정규화 동명인데 자본이 다른 이름이 ${thresholdConflicts.length}건 있어 ` +
+        `기준금액 계산에서 제외했습니다 (${thresholdConflicts.join(', ')}) — 해당 회사의 100억 미만 ` +
+        '거래는 threshold_unknown 으로 남습니다.',
+    );
+  }
+
+  // group 경로 조인 맵 — 같은 정규화 이름이 서로 다른 corp_code 로 두 번 나오면 조인하지 않는다
+  const popByName = new Map<string, string>();
+  const popNameConflicts = new Set<string>();
+  if (population) {
+    for (const [code, name] of population.corpCodes) {
+      const key = normalizeCompanyName(name);
+      const prev = popByName.get(key);
+      if (prev !== undefined && prev !== code) {
+        popByName.delete(key);
+        popNameConflicts.add(key);
+        continue;
+      }
+      if (!popNameConflicts.has(key)) popByName.set(key, code);
+    }
+  }
 
   // ── ④ 거래 판정 1차 — 기준 초과 여부 ──
   const judgedBorrowings: JudgedBorrowing[] = borrowings.map((b: FundBorrowing) => {
@@ -490,15 +628,101 @@ export async function detectUndisclosedTransactions(
     return base; // over — 상태는 J001 대조 후 확정
   });
 
-  const judgedGoods: GoodsSignal[] = goods.map((g: GoodsServiceRow) => {
-    const th = thresholds.get(normalizeCompanyName(g.company));
+  // ④-1. 계열편입일 이전 거래 분리 (group 경로 한정) — 편입 전에는 공시의무 자체가 없다.
+  // audit_periodic 이 같은 오탐(신규 편입사의 과거 기한이 통째로 "미제출")을 겪고 도입한
+  // joinedGroupAt(포털 grinil)을 여기서도 쓴다 (교차검토 M-6).
+  if (population?.joinedGroupAt) {
+    for (const b of judgedBorrowings) {
+      if (b.status !== 'not_judged' || b.reason) continue; // 기준 초과 건만
+      const code = popByName.get(normalizeCompanyName(b.company));
+      const joinedAt = code ? population.joinedGroupAt.get(code) : undefined;
+      if (b.date && joinedAt && b.date < joinedAt) {
+        b.status = 'no_duty_before_joining';
+        b.corp_code = code!;
+        b.joined_group_at = joinedAt;
+        b.reason =
+          `차입일(${b.date})이 계열편입일(${joinedAt}, 포털 grinil)보다 앞섭니다 — 편입 전 거래에는 ` +
+          '대규모내부거래 공시의무가 없습니다. 단 편입일 데이터의 정확성·재편입 여부는 확인하지 않았습니다';
+      }
+    }
+  } else if (input.group) {
+    notes.push(
+      'ℹ️ 포털에서 계열편입일(grinil)을 얻지 못해 "편입 전 거래 = 의무 없음" 분리를 하지 않았습니다 — ' +
+        '신규 편입 회사의 편입 전 거래가 후보로 나올 수 있습니다.',
+    );
+  }
+
+  // 상품·용역 — 품목 성격상 제외할 행을 먼저 갈라내고, 나머지를 (회사, 상대방) 단위로 합산한다.
+  const caveatRows: GoodsCaveatRow[] = [];
+  const aggregates = new Map<
+    string,
+    { company: string; counterparty: string; total: number; items: GoodsItem[] }
+  >();
+  for (const g of goods as GoodsServiceRow[]) {
     const itemCaveat = itemLikelyNotGoodsService(g.item);
-    const base: GoodsSignal = {
+    if (itemCaveat) {
+      const th = thresholds.get(normalizeCompanyName(g.company));
+      const jl: GoodsSignal['quarterly_logic'] =
+        g.annualAmount >= 4 * CAP_100
+          ? 'annual_geq_4x_threshold'
+          : th
+            ? g.annualAmount >= 4 * th.value
+              ? 'annual_geq_4x_threshold'
+              : 'annual_below_4x_threshold'
+            : 'threshold_unknown';
+      caveatRows.push({
+        company: g.company,
+        counterparty: g.counterparty,
+        item: g.item,
+        annual_amount: g.annualAmount,
+        annual_amount_display: fmtWon(g.annualAmount),
+        item_caveat: itemCaveat,
+        ...(th
+          ? {
+              threshold: {
+                value: th.value,
+                value_display: fmtWon(th.value),
+                formula: th.formula,
+                source_row: th.source_row,
+              },
+            }
+          : {}),
+        ...(jl === 'annual_geq_4x_threshold'
+          ? {
+              certainty: (g.annualAmount >= 4 * CAP_100
+                ? 'certain_by_cap'
+                : 'approx_from_j004') as Certainty,
+            }
+          : {}),
+        quarterly_logic: jl,
+      });
+      continue;
+    }
+    const key = `${normalizeCompanyName(g.company)} ${normalizeCompanyName(g.counterparty)}`;
+    const agg = aggregates.get(key) ?? {
       company: g.company,
       counterparty: g.counterparty,
+      total: 0,
+      items: [],
+    };
+    agg.total += g.annualAmount;
+    agg.items.push({
       item: g.item,
       annual_amount: g.annualAmount,
       annual_amount_display: fmtWon(g.annualAmount),
+      label: g.label,
+    });
+    aggregates.set(key, agg);
+  }
+
+  const judgedGoods: GoodsSignal[] = [...aggregates.values()].map((a) => {
+    const th = thresholds.get(normalizeCompanyName(a.company));
+    const base: GoodsSignal = {
+      company: a.company,
+      counterparty: a.counterparty,
+      annual_amount_total: a.total,
+      annual_amount_total_display: fmtWon(a.total),
+      items: a.items,
       ...(th
         ? {
             threshold: {
@@ -510,15 +734,14 @@ export async function detectUndisclosedTransactions(
           }
         : {}),
       quarterly_logic: 'threshold_unknown',
-      ...(itemCaveat ? { item_caveat: itemCaveat } : {}),
     };
-    // 비둘기집: 연간 합계 ≥ 4×기준금액이면 네 분기 전부가 기준금액 미만일 수 없다.
+    // 비둘기집: 연간 합산 ≥ 4×기준금액이면 네 분기 전부가 기준금액 미만일 수 없다.
     // 그 미만이면 분기 집중 여부를 알 수 없어 **원리상 판정 불가**다 (놓치는 것이 아니라 못 보는 것).
-    if (g.annualAmount >= 4 * CAP_100) {
+    if (a.total >= 4 * CAP_100) {
       return { ...base, quarterly_logic: 'annual_geq_4x_threshold', certainty: 'certain_by_cap' };
     }
     if (!th) return base;
-    if (g.annualAmount >= 4 * th.value) {
+    if (a.total >= 4 * th.value) {
       return {
         ...base,
         quarterly_logic: 'annual_geq_4x_threshold',
@@ -540,14 +763,11 @@ export async function detectUndisclosedTransactions(
     if (b.date) e.dates.push(b.date);
     needsSearch.set(k, e);
   }
-  // 품목이 거래 성격이 아닐 가능성(item_caveat)이 걸린 행은 미공시 후보 경로에 올리지 않는다
-  const signalGoods = judgedGoods.filter(
-    (g) => g.quarterly_logic === 'annual_geq_4x_threshold' && !g.item_caveat,
-  );
+  const signalGoods = judgedGoods.filter((g) => g.quarterly_logic === 'annual_geq_4x_threshold');
   for (const g of signalGoods) {
     const k = normalizeCompanyName(g.company);
     const e = needsSearch.get(k) ?? { maxAmount: 0, dates: [] };
-    e.maxAmount = Math.max(e.maxAmount, g.annual_amount);
+    e.maxAmount = Math.max(e.maxAmount, g.annual_amount_total);
     needsSearch.set(k, e);
   }
 
@@ -558,14 +778,14 @@ export async function detectUndisclosedTransactions(
 
   // 조인: ① 집단 소속회사(포털 이름) 정규화 매칭 ② DART 법인 인덱스 상호 완전일치
   const joinFailures: Array<{ company: string; reason: string }> = [];
-  const popByName = new Map<string, string>();
-  if (population) {
-    for (const [code, name] of population.corpCodes) {
-      popByName.set(normalizeCompanyName(name), code);
-    }
-  }
   function joinCorpCode(rawName: string): { code?: string; reason?: string } {
     const key = normalizeCompanyName(rawName);
+    if (popNameConflicts.has(key)) {
+      // 포털 목록 안에서조차 동명이라 어느 쪽인지 알 수 없다 — DART 완전일치로만 재시도
+      const exactOnly = deps.findCorps(rawName.trim());
+      if (exactOnly.length === 1) return { code: exactOnly[0]!.corpCode };
+      return { reason: '집단 소속회사 목록에 정규화 동명 2건 이상 — 자동 선택하지 않습니다' };
+    }
     const fromPop = popByName.get(key);
     if (fromPop) return { code: fromPop };
     const exact = deps.findCorps(rawName.trim());
@@ -589,8 +809,10 @@ export async function detectUndisclosedTransactions(
   }
 
   // ── ⑥ 회사당 1회 J001 수집 ──
+  // 창 상한은 **오늘**이다. 종전의 "사업연도말 +90일" 상한은 J004 작성 중 누락을 발견해
+  // 5~6월에 지연 공시(자진시정)한 건을 못 봐 "시정했는데 후보"를 만들었다 (교차검토 M-5).
+  // corp_code 지정 검색은 장기 구간이 허용되므로(함정 10) 콜 수는 동일하다.
   const fyStart = `${fiscalYear}0101`;
-  const fyEnd = `${fiscalYear}1231`;
   const searches = new Map<string, CompanySearch>(); // 정규화 이름 → 검색 결과
   for (const [key, info] of withinBudget) {
     // 대표 원문 이름 하나를 찾는다 (조인 시도용)
@@ -604,10 +826,21 @@ export async function detectUndisclosedTransactions(
       continue;
     }
     const earliest = [fyStart, ...info.dates].reduce((a, b) => (a <= b ? a : b));
-    const latest = [fyEnd, ...info.dates].reduce((a, b) => (a >= b ? a : b));
     const from = addDaysYmd(earliest, -LOOKBACK_DAYS);
-    const toRaw = addDaysYmd(latest, LOOKAHEAD_DAYS);
-    const to = toRaw < today ? toRaw : today;
+    const to = today;
+    if (from > to) {
+      // S-1 방어선 — today 검증을 통과했다면 도달할 수 없지만, 창 역전을 조용히 빈 결과로
+      // 흘리면 후보 오경보가 된다
+      searches.set(key, {
+        corp_code: joined.code,
+        from,
+        to,
+        rows: [],
+        partial: false,
+        error: `검색창 역전 (from ${from} > to ${to})`,
+      });
+      continue;
+    }
     try {
       const r = await deps.collectList(joined.code, 'J001', from, to);
       listCalls++;
@@ -633,23 +866,25 @@ export async function detectUndisclosedTransactions(
   const joinFailedKeys = new Set(joinFailures.map((f) => normalizeCompanyName(f.company)));
 
   // ── ⑦ 상태 확정 ──
-  function settle(
+  // 같은 회사를 거래 여러 건이 공유하므로 접수번호로 중복 없이 센다
+  const cancelledMatchingSeen = new Set<string>();
+  interface CompanyCheck {
+    outcome: 'exists' | 'none' | 'not_judged';
+    reason?: string;
+    corp_code?: string;
+    j001_search?: { from: string; to: string; type_filter: string };
+    matching?: Disclosure[];
+    others?: Disclosure[];
+    search_partial?: boolean;
+  }
+  function checkCompany(
     key: string,
     typeFilter: (nm: string) => boolean,
     typeLabel: string,
-  ): Pick<
-    JudgedBorrowing,
-    | 'status'
-    | 'reason'
-    | 'corp_code'
-    | 'j001_search'
-    | 'matching_filings'
-    | 'other_j001_in_window'
-    | 'other_j001_sample'
-  > {
+  ): CompanyCheck {
     if (overBudgetKeys.has(key)) {
       return {
-        status: 'not_judged',
+        outcome: 'not_judged',
         reason:
           `company_budget_exceeded — J001 검색 대상이 ${ranked.length}개사여서 금액 상위 ` +
           `${MAX_COMPANIES_TO_SEARCH}개사만 대조했습니다. 이 회사는 rcept_no 없이 개별 확인이 필요합니다`,
@@ -657,7 +892,7 @@ export async function detectUndisclosedTransactions(
     }
     if (joinFailedKeys.has(key)) {
       return {
-        status: 'not_judged',
+        outcome: 'not_judged',
         reason:
           'join_failed — 회사명을 DART corp_code 로 잇지 못해 J001 을 조회할 수 없었습니다 ' +
           '(join_failures 참조). resolve_entity 로 corp_code 를 확인하세요',
@@ -665,72 +900,162 @@ export async function detectUndisclosedTransactions(
     }
     const s = searches.get(key);
     if (!s) {
-      return { status: 'not_judged', reason: 'internal — 검색 대상에 오르지 않았습니다' };
+      return { outcome: 'not_judged', reason: 'internal — 검색 대상에 오르지 않았습니다' };
     }
     if (s.error) {
       return {
-        status: 'not_judged',
+        outcome: 'not_judged',
         corp_code: s.corp_code,
         reason: `list_error — J001 목록 조회 실패: ${s.error}`,
       };
     }
-    const matching = s.rows.filter((r) => typeFilter(r.report_nm));
-    const others = s.rows.filter((r) => !typeFilter(r.report_nm));
+    const matching = s.rows.filter(
+      (r) => typeFilter(r.report_nm) && !isCancellationReport(r.report_nm),
+    );
+    for (const r of s.rows) {
+      if (typeFilter(r.report_nm) && isCancellationReport(r.report_nm)) {
+        cancelledMatchingSeen.add(r.rcept_no);
+      }
+    }
+    const others = s.rows.filter((r) => !typeFilter(r.report_nm) || isCancellationReport(r.report_nm));
     const common = {
       corp_code: s.corp_code,
       j001_search: { from: s.from, to: s.to, type_filter: typeLabel },
-      other_j001_in_window: others.length,
+      ...(s.partial ? { search_partial: true } : {}),
     };
     if (matching.length > 0) {
+      return { ...common, outcome: 'exists', matching, others };
+    }
+    // 수집이 불완전한데 "공시 없음"이면 수집 누락일 수 있다 — 후보로 단정하지 않는다 (교차검토 M-7)
+    if (s.partial) {
       return {
         ...common,
-        status: 'j001_filing_exists',
-        matching_filings: matching.slice(0, 10).map(toFilingRef),
+        outcome: 'not_judged',
+        reason:
+          'list_incomplete — 이 회사의 J001 수집이 불완전(절단·부분결과)해 "공시 없음"을 ' +
+          '판정할 수 없습니다. 수집 범위를 좁혀 다시 확인하세요',
+        others,
       };
     }
-    return {
-      ...common,
-      status: 'undisclosed_candidate',
-      ...(others.length > 0 ? { other_j001_sample: others.slice(0, 5).map(toFilingRef) } : {}),
-    };
+    return { ...common, outcome: 'none', others };
+  }
+
+  /** 존재/부재 공통 필드를 대상 객체에 옮겨 담는다 */
+  function applyCommon(
+    target: JudgedBorrowing | GoodsSignal,
+    chk: CompanyCheck,
+  ): void {
+    if (chk.corp_code) target.corp_code = chk.corp_code;
+    if (chk.j001_search) target.j001_search = chk.j001_search;
+    if (chk.search_partial) target.search_partial = true;
+    if (chk.others) target.other_j001_in_window = chk.others.length;
   }
 
   for (const b of judgedBorrowings) {
     if (b.status !== 'not_judged' || b.reason) continue; // over 만 남아 있다
-    Object.assign(b, settle(normalizeCompanyName(b.company), isBorrowingReport, '자금차입'));
+    const chk = checkCompany(normalizeCompanyName(b.company), isBorrowingReport, '자금차입');
+    applyCommon(b, chk);
+    if (chk.outcome === 'not_judged') {
+      b.status = 'not_judged';
+      b.reason = chk.reason!;
+      continue;
+    }
+    if (chk.outcome === 'none') {
+      b.status = 'undisclosed_candidate';
+      if (chk.others && chk.others.length > 0) {
+        b.other_j001_sample = chk.others.slice(0, 5).map(toFilingRef);
+      }
+      continue;
+    }
+    // exists — 건별 차입일 근접도로 가른다 (교차검토 C-1)
+    const matching = chk.matching!;
+    b.matching_filings = matching.slice(0, 10).map(toFilingRef);
+    if (matching.length > 10) b.matching_filings_total = matching.length;
+    if (!b.date) {
+      b.status = 'j001_filing_in_window_only';
+      b.reason =
+        'transaction_date_unknown — 차입일을 읽지 못해 건별 근접 대조를 할 수 없었습니다. ' +
+        '창 안에 같은 유형 공시가 존재한다는 것까지만 확인됐습니다';
+      continue;
+    }
+    const gaps = matching.map((f) => daysBetween(f.rcept_dt, b.date!));
+    const nearest = gaps.reduce((a, g) => (Math.abs(g) < Math.abs(a) ? g : a));
+    b.nearest_filing_gap_days = nearest;
+    const near = gaps.some((g) => g >= -NEAR_BEFORE_DAYS && g <= NEAR_AFTER_DAYS);
+    if (near) {
+      b.status = 'j001_filing_near_date';
+    } else {
+      b.status = 'j001_filing_in_window_only';
+      b.reason =
+        `filing_far_from_date — 창 안에 같은 유형 공시는 있으나 차입일 근방(−${NEAR_BEFORE_DAYS}~` +
+        `+${NEAR_AFTER_DAYS}일)에는 없습니다 (최근접 ${nearest}일). 연초 한도 의결이 커버하는 정상 ` +
+        '케이스일 수도, **이 건만 공시가 누락된 부분 공시**일 수도 있습니다 — matching_filings 를 ' +
+        '열어 이 거래가 실제로 포함되는지 확인하세요';
+    }
   }
+
   for (const g of signalGoods) {
-    Object.assign(
-      g,
-      settle(normalizeCompanyName(g.company), isGoodsServicesReport, '상품·용역'),
-    );
+    const chk = checkCompany(normalizeCompanyName(g.company), isGoodsServicesReport, '상품·용역');
+    applyCommon(g, chk);
+    if (chk.outcome === 'not_judged') {
+      g.status = 'not_judged';
+      g.reason = chk.reason!;
+      continue;
+    }
+    if (chk.outcome === 'none') {
+      g.status = 'undisclosed_candidate';
+      continue;
+    }
+    const matching = chk.matching!;
+    g.status = 'j001_filing_exists';
+    g.matching_filings = matching.slice(0, 10).map(toFilingRef);
+    if (matching.length > 10) g.matching_filings_total = matching.length;
+  }
+
+  // 품목 성격상 제외한 행 — 회사가 이미 검색됐으면 참고 정보만 동봉한다 (추가 콜 없음, S-9)
+  for (const row of caveatRows) {
+    const s = searches.get(normalizeCompanyName(row.company));
+    if (!s || s.error) continue;
+    row.related_j001 = {
+      goods_type_filings_in_window: s.rows.filter(
+        (r) => isGoodsServicesReport(r.report_nm) && !isCancellationReport(r.report_nm),
+      ).length,
+      from: s.from,
+      to: s.to,
+    };
   }
 
   // ── ⑧ 집계·정직성 장치 ──
   const undisclosed = judgedBorrowings.filter((b) => b.status === 'undisclosed_candidate');
-  const filingExists = judgedBorrowings.filter((b) => b.status === 'j001_filing_exists');
+  const nearDate = judgedBorrowings.filter((b) => b.status === 'j001_filing_near_date');
+  const windowOnly = judgedBorrowings.filter((b) => b.status === 'j001_filing_in_window_only');
   const below = judgedBorrowings.filter((b) => b.status === 'below_threshold');
+  const noDuty = judgedBorrowings.filter((b) => b.status === 'no_duty_before_joining');
   const notJudged = judgedBorrowings.filter((b) => b.status === 'not_judged');
   const goodsCandidates = judgedGoods.filter((g) => g.status === 'undisclosed_candidate');
   const goodsFilingExists = judgedGoods.filter((g) => g.status === 'j001_filing_exists');
   // 조인 실패·예산 초과로 J001 대조를 못 한 신호 — 출력에서 빠지면 "후보 아님"으로 읽힌다
   const goodsNotJudged = judgedGoods.filter((g) => g.status === 'not_judged');
   const goodsUnjudgeable = judgedGoods.filter(
-    (g) => g.quarterly_logic !== 'annual_geq_4x_threshold' || g.item_caveat,
+    (g) => g.quarterly_logic !== 'annual_geq_4x_threshold',
   );
-  const goodsItemCaveats = goodsUnjudgeable.filter(
-    (g) => g.item_caveat && g.quarterly_logic === 'annual_geq_4x_threshold',
+  const goodsItemCaveats4x = caveatRows.filter(
+    (r) => r.quarterly_logic === 'annual_geq_4x_threshold',
   );
 
   const scopeCaveats: string[] = [
     '★ 모든 결과는 **후보**입니다. undisclosed_candidate 를 "미공시 확정"으로 읽으면 안 되는 구조적 이유: ' +
-      '① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ' +
-      `검색창(거래일 이전 ${LOOKBACK_DAYS}일)보다 앞설 수 있고, 반대로 검색창 상한` +
-      `(사업연도 말 +${LOOKAHEAD_DAYS}일과 오늘 중 이른 쪽) 이후에야 이뤄진 아주 늦은 사후 공시는 ` +
-      '잡히지 않아 후보로 남을 수 있습니다 ② 상대방이 계열 금융회사면 ' +
+      `① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ` +
+      `검색창(거래일 이전 ${LOOKBACK_DAYS}일 ~ 오늘)보다 앞설 수 있습니다 ② 상대방이 계열 금융회사면 ` +
       '약관특례(고시 §9, 트랙 B) 분기 일괄공시에 실릴 수 있는데 그 서식은 보고서명이 달라 ' +
       '유형 필터에 걸리지 않을 수 있습니다 ③ 보고서명 유형 분류가 원문 표기와 어긋날 수 있습니다 — ' +
       'other_j001_in_window 가 0 이 아니면 그 공시들을 먼저 확인하세요.',
+    `j001_filing_near_date 는 차입일 근방(−${NEAR_BEFORE_DAYS}~+${NEAR_AFTER_DAYS}일)에 같은 유형 ` +
+      '공시가 있다는 뜻이고, j001_filing_in_window_only 는 검색창 안 어딘가에만 있다는 뜻입니다 — ' +
+      '후자는 한도 의결이 커버하는 정상 케이스일 수도, **일부 차입만 공시한 부분 누락**일 수도 있습니다 ' +
+      '(nearest_filing_gap_days 참조). 어느 쪽이든 **그 공시가 이 거래를 실제로 커버함을 대조한 것이 ' +
+      '아닙니다** — matching_filings 를 read_disclosure 로 열어 거래상대방·금액·의결일을 확인해야 ' +
+      '"공시됨"이 확정됩니다.',
     '기준금액은 **J004 재무현황(당해 사업연도말 자본) 기반 근사치**입니다. 고시 §2③의 정확한 기준은 ' +
       '자본총계=주주총회 승인된 최근 사업연도말 재무제표, 자본금=이사회 의결일 직전일 — 거래 시점에 ' +
       '유효한 자본총계는 통상 **그 전년도말** 것이라 이 근사는 양방향으로 어긋날 수 있습니다. ' +
@@ -740,18 +1065,23 @@ export async function detectUndisclosedTransactions(
     '이 도구가 보는 거래유형은 **자금 차입**(차입일 단위)과 **주요 상품·용역**(연간 합계)뿐입니다. ' +
       '유가증권 거래·상품용역 매입/매출 총괄 **매트릭스 표는 파싱하지 않으며**, 담보·채무보증·임대차· ' +
       '출자 등 다른 유형과 "주요" 기준에 못 미쳐 표에 실리지 않은 상품·용역 거래는 보지 않습니다.',
-    '차입 거래는 **차입회사의 "자금차입" 공시**만 확인합니다 — 자금을 대준 계열회사의 "자금대여" ' +
-      '공시의무는 별개이고 이 도구는 확인하지 않습니다.',
-    '상품·용역의 기준은 분기 합계액(고시 §4③)인데 J004 는 연간 합계뿐입니다 — 연간 ≥ 4×기준금액인 ' +
-      '경우만(어느 분기 하나는 반드시 기준 이상이라는 산술) 신호로 쓰고, 그 미만은 분기 집중 여부를 ' +
-      '알 수 없어 **원리상 판정하지 않습니다** (goods_services_not_judgeable).',
+    '거래의 한쪽 관점만 확인합니다 — 차입 거래는 **차입회사의 "자금차입" 공시**만 보고 자금을 대준 ' +
+      '계열회사의 "자금대여" 공시의무는 확인하지 않으며, 상품·용역도 **판매회사(매출) 쪽**만 보고 ' +
+      '매입(구매)회사 쪽 공시의무는 확인하지 않습니다.',
+    '상품·용역의 기준은 분기 합계액(고시 §4③)인데 J004 는 연간 합계뿐입니다 — **(판매회사, ' +
+      '거래상대방) 연간 합산**이 ≥ 4×기준금액인 경우만(어느 분기 하나는 반드시 기준 이상이라는 산술) ' +
+      '신호로 쓰고, 그 미만은 분기 집중 여부를 알 수 없어 **원리상 판정하지 않습니다** ' +
+      '(goods_services_not_judgeable). 합산 단위를 상대방별로 본 것은 §4③2호의 실무 해석이며 ' +
+      '(품목 행은 items 로 동봉), §4③이 "이루어질" 거래(사전 의결 시점 합계)를 말하는 것과 ' +
+      '사후 실적(J004 기재)의 간극도 있을 수 있습니다.',
     'J004 원문 자체가 부정확하거나 늦게 제출됐을 수 있습니다 (J004 정정률 91% 실측) — 정정 반영 ' +
       '최신본을 읽지만 원천 기재 오류·누락은 판별하지 못합니다. J001 대사의 원천이 J004 하나뿐이라 ' +
       'J004 에 안 실린 거래는 애초에 이 도구의 시야 밖입니다.',
-    'j001_filing_exists 는 **그 유형의 J001 공시가 존재한다**는 뜻이지 그 공시가 이 거래를 실제로 ' +
-      '커버함을 대조한 것이 아닙니다 — matching_filings 를 read_disclosure 로 열어 거래상대방·금액· ' +
-      '의결일을 확인해야 "공시됨"이 확정됩니다.',
-    '각 회사가 실제로 공시의무자인지(소속·청산·휴업 등)는 판정하지 않습니다.',
+    '각 회사가 실제로 공시의무자인지(소속·청산·휴업 등)와 **집단의 지정 연혁**은 판정하지 않습니다 — ' +
+      '집단이 그 거래 연도에 공시대상으로 지정돼 있지 않았다면(신규 지정) 전년도 거래 전체가 의무 ' +
+      '없음일 수 있습니다. group 경로는 계열편입일(포털 grinil) 이전 차입만 no_duty_before_joining 으로 ' +
+      '분리하며, rcept_no 경로는 편입일 대조 자체를 하지 않습니다. 상품·용역은 연간 합계라 편입 시점 ' +
+      '대조가 불가능합니다.',
   ];
 
   const totalCandidates = undisclosed.length + goodsCandidates.length;
@@ -768,6 +1098,41 @@ export async function detectUndisclosedTransactions(
         '이 문서에 실린 거래의 범위 안에서 후보를 찾지 못했다는 뜻입니다 (scope_caveats 참조).',
     );
   }
+  if (windowOnly.length > 0) {
+    notes.push(
+      `⚠️ 창 안에 같은 유형 공시는 있으나 차입일 근방(−${NEAR_BEFORE_DAYS}~+${NEAR_AFTER_DAYS}일)에는 ` +
+        `없는 차입이 ${windowOnly.length}건 있습니다 (j001_filing_in_window_only) — 연초 한도 의결이 ` +
+        '커버하는 정상 케이스일 수도, **일부 차입만 공시한 부분 누락**일 수도 있습니다. ' +
+        'nearest_filing_gap_days 와 matching_filings 내용 대조로 확인하세요.',
+    );
+    // 같은 회사에서 근접 공시가 있는 차입과 없는 차입이 갈리면 부분 공시 신호가 더 강하다
+    const nearCompanies = new Set(nearDate.map((b) => normalizeCompanyName(b.company)));
+    const mixed = [
+      ...new Set(
+        windowOnly
+          .filter((b) => nearCompanies.has(normalizeCompanyName(b.company)))
+          .map((b) => b.company),
+      ),
+    ];
+    if (mixed.length > 0) {
+      notes.push(
+        `⚠️ ${mixed.join(', ')} 은(는) **일부 차입에만 근접 공시가 있습니다** — 건별로 공시했다면 ` +
+          '나머지 차입의 공시가 누락됐을 가능성이 상대적으로 높은 패턴입니다. 우선 확인 대상입니다.',
+      );
+    }
+  }
+  if (noDuty.length > 0) {
+    notes.push(
+      `ℹ️ 차입 ${noDuty.length}건은 계열편입일(포털 grinil) 이전 거래라 no_duty_before_joining 으로 ` +
+        '분리했습니다 — 편입 전에는 공시의무가 없습니다. 단 편입일 데이터 정확성·재편입 여부는 확인하지 않았습니다.',
+    );
+  }
+  if (cancelledMatchingSeen.size > 0) {
+    notes.push(
+      `ℹ️ '[공시취소]' 접수분 ${cancelledMatchingSeen.size}건은 공시 존재의 근거로 쓰지 않았습니다 — ` +
+        '취소는 공시를 없앤 기록입니다 (other_j001_in_window 로 집계).',
+    );
+  }
   if (joinFailures.length > 0) {
     notes.push(
       `⚠️ 기준 초과 거래가 있는 ${joinFailures.length}개사는 회사명→corp_code 조인 실패로 J001 대조를 ` +
@@ -782,23 +1147,22 @@ export async function detectUndisclosedTransactions(
   }
   if (goodsUnjudgeable.length > 0) {
     notes.push(
-      `ℹ️ 상품·용역 ${goodsUnjudgeable.length}건은 미공시 후보 판정에 올리지 않았습니다 ` +
-        '(goods_services_not_judgeable) — 연간 합계가 4×기준금액 미만이면 분기 기준 초과 여부를 ' +
-        '원리상 판정할 수 없고(분기별 합계는 각 사 내부 데이터로만 확인됩니다), ' +
-        'item_caveat 이 붙은 행은 품목이 거래 성격이 아닐 수 있습니다.',
+      `ℹ️ 상품·용역 ${goodsUnjudgeable.length}건(상대방별 합산 기준)은 미공시 후보 판정에 올리지 ` +
+        '않았습니다 (goods_services_not_judgeable) — 연간 합산이 4×기준금액 미만이면 분기 기준 초과 ' +
+        '여부를 원리상 판정할 수 없습니다 (분기별 합계는 각 사 내부 데이터로만 확인됩니다).',
     );
   }
-  if (goodsItemCaveats.length > 0) {
+  if (goodsItemCaveats4x.length > 0) {
     notes.push(
-      `ℹ️ 연간 금액이 4×기준금액 이상인데도 후보로 올리지 않은 행이 ${goodsItemCaveats.length}건 있습니다 — ` +
-        '품목이 배당 등 **거래의 대가가 아닐 가능성**이 높아서입니다 (item_caveat 참조). ' +
-        '실제로 상품·용역 거래라면 후보에 준해 확인이 필요합니다.',
+      `ℹ️ 연간 금액이 4×기준금액 이상인데도 후보로 올리지 않은 행이 ${goodsItemCaveats4x.length}건 ` +
+        '있습니다 (goods_services_item_caveats) — 품목이 배당·이자·임대차 등 **상품·용역 거래의 대가가 ' +
+        '아닐 가능성**이 높아서입니다 (item_caveat 참조). 실제로 상품·용역 거래라면 후보에 준해 확인이 필요합니다.',
     );
   }
   if (goodsNotJudged.length > 0) {
     notes.push(
-      `⚠️ 상품·용역 신호 ${goodsNotJudged.length}건은 조인 실패·예산 초과로 J001 대조를 하지 못했습니다 ` +
-        '(goods_services_signals 중 status:"not_judged") — "후보 아님"이 아니라 확인하지 못한 것입니다.',
+      `⚠️ 상품·용역 신호 ${goodsNotJudged.length}건은 조인 실패·예산 초과·수집 불완전으로 J001 대조를 ` +
+        '하지 못했습니다 (goods_services_signals 중 status:"not_judged") — "후보 아님"이 아니라 확인하지 못한 것입니다.',
     );
   }
   if (partialLists) {
@@ -807,10 +1171,24 @@ export async function detectUndisclosedTransactions(
         '있으니 diagnostics 를 확인하세요.',
     );
   }
-  if (borrowings.length === 0 && parseDiag.sections_found.includes('자금거래')) {
+  const zeroRowChecks: Array<[string, number, string]> = [
+    ['재무현황', capitals.length, '자본 행'],
+    ['자금거래', borrowings.length, '차입 건'],
+    ['주요 상품·용역', goods.length, '거래 행'],
+  ];
+  for (const [section, count, unit] of zeroRowChecks) {
+    if (count === 0 && parseDiag.sections_found.includes(section)) {
+      notes.push(
+        `ℹ️ ${section} 절은 있으나 추출된 ${unit}이 0건입니다 — 실제로 없거나("해당사항 없음"), ` +
+          '표 구조가 실측 서식과 달라 파서가 못 읽은 것일 수 있습니다.',
+      );
+    }
+  }
+  if (!input.group) {
     notes.push(
-      'ℹ️ 자금거래 절은 있으나 추출된 차입 건이 0건입니다 — 실제로 차입이 없거나("해당사항 없음"), ' +
-        '표 구조가 실측 서식과 달라 파서가 못 읽은 것일 수 있습니다.',
+      `ℹ️ rcept_no 경로의 fiscal_year(${fiscalYear})는 접수월 기반 추정입니다 — 4월 이후에 제출된 ` +
+        '전년도 의무분(해 넘긴 지연 제출)이면 실제 거래 연도와 어긋날 수 있습니다. ' +
+        '문서 표지의 대상 연도를 확인하세요.',
     );
   }
   if (sourceIsCorrection) {
@@ -841,27 +1219,36 @@ export async function detectUndisclosedTransactions(
       borrowings_extracted: borrowings.length,
       goods_services_extracted: goods.length,
       undisclosed_candidates: undisclosed.length,
-      j001_filing_exists: filingExists.length,
+      j001_filing_near_date: nearDate.length,
+      j001_filing_in_window_only: windowOnly.length,
       below_threshold: below.length,
+      no_duty_before_joining: noDuty.length,
       not_judged: notJudged.length,
       goods_services_candidates: goodsCandidates.length,
       goods_services_filing_exists: goodsFilingExists.length,
       goods_services_not_judged: goodsNotJudged.length,
       goods_services_not_judgeable: goodsUnjudgeable.length,
+      goods_services_item_caveats: caveatRows.length,
     },
     /** 자금 차입 — 차입일 단위 대조라 신뢰도가 가장 높다 */
     undisclosed_candidates: undisclosed,
-    j001_filing_exists: filingExists,
+    j001_filing_near_date: nearDate,
+    j001_filing_in_window_only: windowOnly,
     below_threshold: below,
+    ...(noDuty.length ? { no_duty_before_joining: noDuty } : {}),
     ...(notJudged.length ? { not_judged: notJudged } : {}),
-    /** 상품·용역 — 연간 합계 기반 제한적 신호 (quarterly_logic 참조) */
+    /** 상품·용역 — (판매회사, 상대방) 연간 합산 기반 제한적 신호 (quarterly_logic 참조) */
     goods_services_signals: [...goodsCandidates, ...goodsFilingExists, ...goodsNotJudged],
     ...(goodsUnjudgeable.length
       ? { goods_services_not_judgeable: goodsUnjudgeable }
       : {}),
+    ...(caveatRows.length ? { goods_services_item_caveats: caveatRows } : {}),
     ...(joinFailures.length ? { join_failures: joinFailures } : {}),
     coverage: {
-      transaction_types_checked: ['자금 차입 (차입일 단위)', '주요 상품·용역 (연간 합계, 4×기준금액 이상만)'],
+      transaction_types_checked: [
+        '자금 차입 (차입일 단위, 건별 근접 대조)',
+        '주요 상품·용역 (상대방별 연간 합산, 4×기준금액 이상만)',
+      ],
       undetectable: {
         /** 매입회사×매도회사 매트릭스 표 (다중 페이지) — 파서 미구현 */
         matrix_tables: ['유가증권 거래 총괄', '상품·용역 매입/매출 총괄'],
@@ -880,8 +1267,8 @@ export async function detectUndisclosedTransactions(
       companies_searched: searches.size,
       companies_over_budget: overBudgetKeys.size,
       partial_results: partialLists,
-      lookback_days: LOOKBACK_DAYS,
-      lookahead_days: LOOKAHEAD_DAYS,
+      j001_window: { lookback_days: LOOKBACK_DAYS, to: 'today' },
+      near_window: { before_days: NEAR_BEFORE_DAYS, after_days: NEAR_AFTER_DAYS },
     },
   };
 }

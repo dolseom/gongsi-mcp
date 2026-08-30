@@ -15,7 +15,7 @@
  *  - 단위는 캡션(`단위 : 백만원`)에 있다. **가정하지 않는다** — 1,000배 오차가 판정을 뒤집는다.
  */
 
-import { parseDisclosureNumber, normalizeCell } from './md-table.js';
+import { parseDisclosureNumber, normalizeCell, normalizeCompanyName } from './md-table.js';
 
 /** 단위 표기 → 원 환산 배수 */
 const UNIT_FACTORS: Array<[RegExp, number]> = [
@@ -94,15 +94,25 @@ export function readLabeledTables(sectionMarkdown: string): LabeledTable[] {
   let header: string[][] = [];
   let sawSeparator = false;
 
+  // 데이터 행 판별용 — 값으로 쓰는 게 아니라 "이 행이 헤더 잔여가 아니다"를 판별할 뿐이다.
+  // 날짜('2025-02-19')와 각주 붙은 금액('16,000 (주1)')은 parseDisclosureNumber 가 null 을
+  // 돌려주지만 명백한 데이터다 — 이들만 있는 선두 행을 헤더로 승격시키면 그 거래가
+  // 어떤 진단에도 안 잡히고 소멸한다 (M-3 의 또 다른 경로).
+  const looksLikeData = (c: string): boolean => {
+    if (parseDisclosureNumber(c) !== null) return true;
+    if (parseLooseDate(c.trim()) !== null) return true;
+    const stripped = c.replace(/\((주)?\s*\d*\)\s*$/, '').trim();
+    return stripped !== c.trim() && parseDisclosureNumber(stripped) !== null;
+  };
+
   const flush = () => {
     if (buf.length === 0 && header.length === 0) return;
     // 다층 헤더의 둘째 줄부터는 마크다운 구분선 **뒤에** 온다 — 그대로 두면 데이터 행으로
     // 섞여 열 이름을 못 찾는다. 숫자가 하나도 없는 선두 행은 헤더 잔여로 보고 끌어올린다.
-    // (데이터 행에는 반드시 금액·비율 같은 숫자가 있다 — 실측 표 전부에서 성립.)
+    // (데이터 행에는 반드시 금액·비율·날짜 같은 숫자가 있다 — 실측 표 전부에서 성립.)
     for (let guard = 0; guard < 3 && buf.length > 1; guard++) {
       const first = buf[0]!;
-      const hasNumber = first.some((c) => parseDisclosureNumber(c) !== null);
-      if (hasNumber) break;
+      if (first.some(looksLikeData)) break;
       header.push(first);
       buf.shift();
     }
@@ -175,9 +185,42 @@ function findCol(t: LabeledTable, ...keywords: string[]): number {
   return -1;
 }
 
-/** 소계·합계 행인가 — 집계 행을 개별 거래로 세면 금액이 두 배가 된다 */
+/**
+ * 소계·합계 행인가 — 집계 행을 개별 거래로 세면 금액이 두 배가 된다.
+ * '소계(주1)' 같은 각주 접미 변형도 집계 행이다 — 놓치면 소계가 개별 거래로 승격돼
+ * 오경보가 된다 (교차검토 S-8).
+ */
 function isAggregateRow(cells: string[]): boolean {
-  return cells.some((c) => /^(소\s*계|합\s*계|계|총\s*계|.*합계|.*소계)$/.test(normalizeCell(c)));
+  return cells.some((c) => {
+    const n = normalizeCell(c);
+    return /^(계|총계)$/.test(n) || /^.*(합계|소계)(\([^)]*\))?$/.test(n);
+  });
+}
+
+/**
+ * 추출 중 걸러진 행의 집계 — "조용히 사라진 행"을 진단으로 승격하기 위한 통로.
+ * 넘기지 않으면 집계 없이 동작만 같다.
+ */
+export interface ExtractStats {
+  /** 거래상대방은 있는데 금액을 못 읽어(각주 '16,000 (주1)' 등) 버려진 행 수 (교차검토 M-3) */
+  rowsAmountUnparsable: number;
+  /** 회사와 거래상대방이 같은 이름으로 읽힌 행 수 — 열 배치 오인 신호 (교차검토 M-2) */
+  rowsCompanyEqualsCounterparty: number;
+}
+
+export function newExtractStats(): ExtractStats {
+  return { rowsAmountUnparsable: 0, rowsCompanyEqualsCounterparty: 0 };
+}
+
+/**
+ * 회사명 셀 선택. 실측 서식은 첫 열이 '금융/비금융 구분'이라 회사명이 그 다음 열(cCompany+1)에
+ * 오지만, 병합 헤더 전개 변형으로 cCompany+1 이 다른 데이터 열(거래상대방·금액 등)과 겹치면
+ * 그 가정을 버리고 cCompany 를 그대로 쓴다 — 대주(거래상대방)를 차입회사로 오인하면
+ * 대주의 공시가 실제 차입회사의 미공시를 은폐한다 (교차검토 M-2).
+ */
+function companyCell(row: string[], cCompany: number, otherCols: number[]): string {
+  if (otherCols.includes(cCompany + 1)) return (row[cCompany] ?? '').trim();
+  return (row[cCompany + 1] ?? row[cCompany] ?? '').trim();
 }
 
 /** 계열사별 자본 수치 (원 단위) */
@@ -204,8 +247,8 @@ export function extractCapitals(markdown: string): CapitalRow[] {
     if (t.unitFactor === null) continue;
     for (const row of t.rows) {
       if (isAggregateRow(row)) continue;
-      // 첫 열은 금융/비금융 구분, 회사명은 그 다음 열이다 (rowspan 전개됨)
-      const name = (row[cCompany + 1] ?? row[cCompany] ?? '').trim();
+      // 첫 열은 금융/비금융 구분, 회사명은 그 다음 열이다 (rowspan 전개됨) — 단 열 겹침 가드
+      const name = companyCell(row, cCompany, [cCapital, cEquity]);
       if (!name || name === '-') continue;
       const equity = parseDisclosureNumber(row[cEquity] ?? '');
       const capital = cCapital === -1 ? null : parseDisclosureNumber(row[cCapital] ?? '');
@@ -256,7 +299,10 @@ export function parseLooseDate(raw: string): string | null {
  * 실측 헤더: `차입회사 (소속회사) | | 거래상대방 | 차입금액 | 차입일 | 만기일 | 약정이자율(%) | …`
  * 리스부채 표는 '리스부채금액' 이라 '차입금액' 열이 없어 자연히 걸러진다.
  */
-export function extractFundBorrowings(markdown: string): FundBorrowing[] {
+export function extractFundBorrowings(
+  markdown: string,
+  stats?: ExtractStats,
+): FundBorrowing[] {
   const sec = sliceSection(markdown, '계열회사간 자금거래 현황');
   if (!sec) return [];
   const out: FundBorrowing[] = [];
@@ -271,10 +317,21 @@ export function extractFundBorrowings(markdown: string): FundBorrowing[] {
       const party = (row[cParty] ?? '').trim();
       if (!party || party === '-') continue;
       if (isAggregateRow(row)) continue;
-      const amount = parseDisclosureNumber(row[cAmount] ?? '');
-      if (amount === null || amount <= 0) continue;
-      const name = (row[cCompany + 1] ?? row[cCompany] ?? '').trim();
+      const name = companyCell(row, cCompany, [cParty, cAmount, cDate]);
       if (!name || name === '-') continue;
+      // 회사 = 거래상대방이면 열 배치를 오인한 것일 가능성이 높다 — 쓰지 않고 센다 (M-2)
+      if (normalizeCompanyName(name) === normalizeCompanyName(party)) {
+        if (stats) stats.rowsCompanyEqualsCounterparty++;
+        continue;
+      }
+      const amount = parseDisclosureNumber(row[cAmount] ?? '');
+      if (amount === null) {
+        // 각주('16,000 (주1)') 등으로 금액을 못 읽은 행 — 금액을 추측하지 않되,
+        // 조용히 사라지면 그 거래가 "없는 것"이 된다. 집계로 승격한다 (M-3).
+        if (stats) stats.rowsAmountUnparsable++;
+        continue;
+      }
+      if (amount <= 0) continue;
       const rawDate = cDate === -1 ? '' : (row[cDate] ?? '').trim();
       out.push({
         company: name,
@@ -304,7 +361,10 @@ export interface GoodsServiceRow {
  * ⚠️ **거래일이 없고 연간 합계다.** 대규모내부거래 기준은 §4③2호에 따라 **분기 합계액**이므로,
  * 이 값으로는 분기별 초과 여부를 직접 판정할 수 없다 — 낮은 신뢰도 신호로만 쓴다.
  */
-export function extractMajorGoodsServices(markdown: string): GoodsServiceRow[] {
+export function extractMajorGoodsServices(
+  markdown: string,
+  stats?: ExtractStats,
+): GoodsServiceRow[] {
   const sec = sliceSection(markdown, '주요 상품ㆍ용역거래 내역');
   if (!sec) return [];
   const out: GoodsServiceRow[] = [];
@@ -319,10 +379,18 @@ export function extractMajorGoodsServices(markdown: string): GoodsServiceRow[] {
       const party = (row[cParty] ?? '').trim();
       if (!party || party === '-') continue;
       if (isAggregateRow(row)) continue;
-      const amount = parseDisclosureNumber(row[cAmount] ?? '');
-      if (amount === null || amount <= 0) continue;
-      const name = (row[cCompany + 1] ?? row[cCompany] ?? '').trim();
+      const name = companyCell(row, cCompany, [cParty, cAmount, cItem]);
       if (!name || name === '-') continue;
+      if (normalizeCompanyName(name) === normalizeCompanyName(party)) {
+        if (stats) stats.rowsCompanyEqualsCounterparty++;
+        continue;
+      }
+      const amount = parseDisclosureNumber(row[cAmount] ?? '');
+      if (amount === null) {
+        if (stats) stats.rowsAmountUnparsable++;
+        continue;
+      }
+      if (amount <= 0) continue;
       out.push({
         company: name,
         counterparty: party,
@@ -342,6 +410,10 @@ export interface ParseDiagnostics {
   goods_services: number;
   /** 단위 캡션을 못 읽어 통째로 건너뛴 표 수 — 금액을 추측하지 않는다 */
   tables_without_unit: number;
+  /** 거래상대방은 있는데 금액을 못 읽어 판정에서 빠진 행 수 (각주 등 — 교차검토 M-3) */
+  rows_amount_unparsable: number;
+  /** 회사 = 거래상대방으로 읽혀 버린 행 수 — 열 배치 오인 신호 (교차검토 M-2) */
+  rows_company_equals_counterparty: number;
   sections_found: string[];
   sections_missing: string[];
 }
@@ -366,11 +438,14 @@ export function diagnose(markdown: string): ParseDiagnostics {
       if (t.unitFactor === null && t.rows.length > 0) noUnit++;
     }
   }
+  const stats = newExtractStats();
   return {
     capital_rows: extractCapitals(markdown).length,
-    fund_borrowings: extractFundBorrowings(markdown).length,
-    goods_services: extractMajorGoodsServices(markdown).length,
+    fund_borrowings: extractFundBorrowings(markdown, stats).length,
+    goods_services: extractMajorGoodsServices(markdown, stats).length,
     tables_without_unit: noUnit,
+    rows_amount_unparsable: stats.rowsAmountUnparsable,
+    rows_company_equals_counterparty: stats.rowsCompanyEqualsCounterparty,
     sections_found: found,
     sections_missing: missing,
   };
