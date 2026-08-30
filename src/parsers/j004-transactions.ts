@@ -193,7 +193,8 @@ function findCol(t: LabeledTable, ...keywords: string[]): number {
 function isAggregateRow(cells: string[]): boolean {
   return cells.some((c) => {
     const n = normalizeCell(c);
-    return /^(계|총계)$/.test(n) || /^.*(합계|소계)(\([^)]*\))?$/.test(n);
+    // 각주 접미는 괄호·대괄호·대시 어느 표기든 올 수 있다 (Codex 4차 S1)
+    return /^(계|총계)([([\-–].*)?$/.test(n) || /^.*(합계|소계)([([\-–].*)?$/.test(n);
   });
 }
 

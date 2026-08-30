@@ -124,12 +124,18 @@ describe('보고서명 유형 필터', () => {
   });
 });
 
-describe('품목 성격 분리 (S-6)', () => {
+describe('품목 성격 분리 (S-6·M6)', () => {
   it('배당·이자·임대차 성격 품목은 caveat 를 받는다', () => {
     expect(itemLikelyNotGoodsService('배당금수익')).toContain('배당');
     expect(itemLikelyNotGoodsService('이자수익')).toContain('이자');
     expect(itemLikelyNotGoodsService('부동산 임대료')).toContain('임대차');
     expect(itemLikelyNotGoodsService('사옥 임차')).toContain('임대차');
+  });
+
+  it('키워드가 어미일 때만 분리한다 — 진짜 용역을 부분문자열로 빼지 않는다 (Codex 4차 M6)', () => {
+    expect(itemLikelyNotGoodsService('배당전산시스템 구축용역')).toBeNull();
+    expect(itemLikelyNotGoodsService('이자율 산출 자문용역')).toBeNull();
+    expect(itemLikelyNotGoodsService('임대관리 시스템 유지보수용역')).toBeNull();
   });
 
   it('일반 상품·용역 품목은 통과한다', () => {
@@ -332,6 +338,97 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
     expect(r['j001_filing_near_date'][0].search_partial).toBe(true);
   });
 
+  it('★ C2: 개별 기준 미달이어도 같은 상대방 연간 합산이 기준 이상이면 "기준 미달"로 단정하지 않는다', async () => {
+    // 자본총계 200억 → 기준금액 10억. 4억×3회 분할 차입(합산 12억)은 §4③의
+    // "동일 거래상대방과의 동일 거래대상" 기준으로는 공시대상일 수 있다 —
+    // 종전엔 3건 전부 below_threshold(거짓 안심)였다.
+    const md = [
+      '## (2) 회사 재무현황',
+      '| (단위 : 백만원, %) |',
+      '| --- |',
+      '| 계열회사명 |  | 자본금 | 자본총계 |',
+      '| --- | --- | --- | --- |',
+      '| 비금융회사 | 분할차입사(주) | 5,000 | 20,000 |',
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 분할차입사(주) | 계열사(주) | 400 | 2025-02-01 |',
+      '| 비금융회사 | 분할차입사(주) | 계열사(주) | 400 | 2025-05-01 |',
+      '| 비금융회사 | 분할차입사(주) | 계열사(주) | 400 | 2025-08-01 |',
+      '| 비금융회사 | 분할차입사(주) | 다른계열사(주) | 500 | 2025-03-01 |',
+    ].join('\n');
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, j001: [] }),
+    )) as Record<string, any>;
+
+    // 같은 상대방 3건: 합산 12억 ≥ 10억 → not_judged(aggregation_unknown)
+    expect(r['summary'].not_judged).toBe(3);
+    const nj = r['not_judged'][0];
+    expect(nj.reason).toContain('aggregation_unknown');
+    expect(nj.same_counterparty_annual_total).toBe(12 * 억);
+    // 다른 상대방 5억 1건: 합산도 5억 < 10억 → below_threshold 유지
+    expect(r['summary'].below_threshold).toBe(1);
+    expect(r['below_threshold'][0].counterparty).toBe('다른계열사(주)');
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('동일 거래대상')),
+    ).toBe(true);
+  });
+
+  it('M2: 같은 유형 [공시취소]가 매칭 공시 수 이상이면 "공시 존재"로 판정하지 않는다', async () => {
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [
+          disc({
+            corp_code: '00222222',
+            report_nm: '대규모내부거래관련이사회의결및공시(자금차입)',
+            rcept_no: '20250210000123',
+            rcept_dt: '20250210',
+          }),
+          disc({
+            corp_code: '00222222',
+            report_nm: '[공시취소]대규모내부거래관련이사회의결및공시(자금차입)',
+            rcept_no: '20250225000009',
+            rcept_dt: '20250225',
+          }),
+        ],
+      }),
+    )) as Record<string, any>;
+
+    // 원공시 1 + 취소 1 → 남은 매칭 공시가 취소된 원공시일 수 있다
+    expect(r['summary'].j001_filing_near_date).toBe(0);
+    expect(r['summary'].j001_filing_in_window_only).toBe(0);
+    expect(r['summary'].not_judged).toBe(2);
+    expect(r['not_judged'][0].reason).toContain('filing_cancelled_status_unknown');
+    // 대조할 매칭 공시는 함께 준다
+    expect(r['not_judged'][0].matching_filings[0].rcept_no).toBe('20250210000123');
+  });
+
+  it('S2: 차입일이 오늘 이후면 후보가 아니라 not_judged 다 (원문 기재 오류 가능)', async () => {
+    const md = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 미래차입사(주) | 계열사(주) | 16,000 | 2027-01-01 |',
+    ].join('\n');
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(r['summary'].undisclosed_candidates).toBe(0);
+    expect(r['summary'].not_judged).toBe(1);
+    expect(r['not_judged'][0].reason).toContain('future_transaction_date');
+  });
+
   it('다른 유형 J001 만 있으면 미공시 후보 + 그 공시들을 함께 보여준다', async () => {
     const r = (await detectUndisclosedTransactions(
       { rcept_no: '20260601001646', today: '20260827' },
@@ -362,20 +459,28 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
 
     // 58.9억 + 12.99억 = 71.89억 ≥ 4×10억 → 상대방별 합산 신호 1건 (품목 2행 동봉).
     // 행 단위였으면 12.99억이 annual_below_4x 로 빠졌다.
-    expect(r['summary'].goods_services_candidates).toBe(1);
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(1);
     const sig = r['goods_services_signals'][0];
     expect(sig.quarterly_logic).toBe('annual_geq_4x_threshold');
     expect(sig.certainty).toBe('approx_from_j004');
-    expect(sig.status).toBe('undisclosed_candidate');
+    // ★ Codex 4차 C1: 상대방 요건(총수일가 20%↑ 출자, 법 §26①4호·령 §33②)을 확인할 수
+    // 없으므로 "미공시 후보"가 아니라 **조건부 후보**다 — 후보 단정은 오경보 방향.
+    expect(sig.status).toBe('candidate_if_counterparty_qualified');
+    expect(sig.counterparty_qualification).toBe('not_verified');
+    expect(sig.reason).toContain('20%');
     expect(sig.annual_amount_total).toBe(7_189 * 1_000_000);
     expect(sig.items).toHaveLength(2);
     expect(sig.items.map((i: any) => i.item)).toEqual(['골프장운영', '부동산관리']);
     // 합산으로 전부 신호에 들어갔으므로 판정 불가 버킷은 비어 있다
     expect(r['summary'].goods_services_not_judgeable).toBe(0);
-    // 합산 단위 해석을 caveat 으로 밝힌다
+    // 합산 단위 해석과 상대방 요건 한정을 caveat 으로 밝힌다
     expect(
       (r['scope_caveats'] as string[]).some((c) => c.includes('연간 합산')),
     ).toBe(true);
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('동일인이 법인인 집단')),
+    ).toBe(true);
+    expect((r['notes'] as string[]).some((n) => n.includes('조건부 후보'))).toBe(true);
   });
 
   it('상품·용역: 합산이 4×기준금액 미만이면 원리상 판정 불가로 분리한다', async () => {
@@ -401,7 +506,7 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
     )) as Record<string, any>;
 
     // 합산 25억 < 4×10억 → 판정 불가 (J001 조회도 하지 않는다)
-    expect(r['summary'].goods_services_candidates).toBe(0);
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(0);
     expect(r['summary'].goods_services_not_judgeable).toBe(1);
     const nj = r['goods_services_not_judgeable'][0];
     expect(nj.quarterly_logic).toBe('annual_below_4x_threshold');
@@ -425,7 +530,7 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
       }),
     )) as Record<string, any>;
 
-    expect(r['summary'].goods_services_candidates).toBe(0);
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(0);
     expect(r['summary'].goods_services_filing_exists).toBe(1);
     // 차입 쪽은 자금차입 공시가 없으므로 여전히 후보다 — 유형 필터가 섞이지 않는다
     expect(r['summary'].undisclosed_candidates).toBe(2);
@@ -474,7 +579,7 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
     )) as Record<string, any>;
 
     // 배당 500억은 후보·합산 어느 쪽에도 없다 — 배당이 합산을 부풀려 만드는 오경보 차단
-    expect(r['summary'].goods_services_candidates).toBe(0);
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(0);
     expect(r['summary'].goods_services_item_caveats).toBe(1);
     expect(r['goods_services_item_caveats'][0].item_caveat).toContain('배당');
     // 경비용역 10억만 합산 → 4×10억 미만 → 판정 불가
@@ -637,6 +742,54 @@ describe('group 경로 — 대표회사 연1회 서식 자동 탐색', () => {
     expect(
       (r['scope_caveats'] as string[]).some((c) => c.includes('지정 연혁')),
     ).toBe(true);
+  });
+
+  it('M7: DART 폴백 조인이 집단 목록 어디에도 없는 회사를 가리키면 판정하지 않는다', async () => {
+    // 포털 소속 목록(조인·미조인 모두)에 와이케이디가 없고, DART 에 동명 회사(00999999)만
+    // 있는 상황 — 비계열 동명 회사일 수 있으므로 그 회사의 J001 로 판정하면 안 된다.
+    const popNoYkd: Population = {
+      corpCodes: new Map([['00111111', '미래에셋캐피탈(주)']]),
+      group: { representative_company: '미래에셋캐피탈㈜' },
+      unjoined: [],
+    };
+    const calls: CallLog[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { group: '미래에셋', year: 2026, today: '20260827' },
+      makeDeps({
+        pop: popNoYkd,
+        j004,
+        j001: [],
+        calls,
+        corps: { 와이케이디벨롭먼트: [{ corpCode: '00999999', corpName: '와이케이디벨롭먼트' }] },
+      }),
+    )) as Record<string, any>;
+
+    expect(r['summary'].undisclosed_candidates).toBe(0);
+    expect(r['summary'].not_judged).toBe(2);
+    expect(r['join_failures'][0].reason).toContain('dart_join_unverified');
+    expect(calls.filter((c) => c.ty === 'J001')).toHaveLength(0);
+  });
+
+  it('M7: 포털 미조인 목록에 있는 이름이면 DART 유일 일치 조인을 허용한다 (실물: 미래에셋금융서비스)', async () => {
+    // jurir 미조인이라 corp_code 는 없지만 포털이 소속을 보증하는 이름 — 막으면 실전
+    // 신호(보험판매 2054.5억류)가 조인 캐시 상태에 따라 사라진다.
+    const popUnjoined: Population = {
+      corpCodes: new Map([['00111111', '미래에셋캐피탈(주)']]),
+      group: { representative_company: '미래에셋캐피탈㈜' },
+      unjoined: ['와이케이디벨롭먼트(주)'],
+    };
+    const r = (await detectUndisclosedTransactions(
+      { group: '미래에셋', year: 2026, today: '20260827' },
+      makeDeps({
+        pop: popUnjoined,
+        j004,
+        j001: [],
+        corps: { 와이케이디벨롭먼트: [{ corpCode: '00222222', corpName: '와이케이디벨롭먼트' }] },
+      }),
+    )) as Record<string, any>;
+
+    expect(r['summary'].undisclosed_candidates).toBe(2);
+    expect(r['undisclosed_candidates'][0].corp_code).toBe('00222222');
   });
 
   it('같은 날 원본+정정 동시 접수면 접수번호가 큰 쪽(정정)을 고른다', async () => {

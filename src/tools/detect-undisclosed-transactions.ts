@@ -265,6 +265,13 @@ function toFilingRef(d: Disclosure): FilingRef {
 
 type TxStatus =
   | 'undisclosed_candidate'
+  /**
+   * 상품·용역 전용 — J001 이 없어 후보이나, 공시의무의 전제(상대방이 동일인·친족 20%↑ 출자
+   * 계열회사 또는 그 자회사 — 법 §26①4호·령 §33②·고시 §4①4호)를 확인할 데이터가 없다.
+   * 요건 미충족 상대방과의 거래는 애초에 공시대상이 아니므로 "미공시 후보"로 단정하면
+   * 오경보다 (Codex 4차 C1). 동일인이 법인인 집단은 이 유형의 의무 자체가 없다.
+   */
+  | 'candidate_if_counterparty_qualified'
   /** 차입일 근방(−90~+30일)에 같은 유형 공시가 있다 — 내용 대조는 아니다 */
   | 'j001_filing_near_date'
   /** 창 안 어딘가에만 있다 — 한도 의결 커버일 수도, 부분 공시 누락일 수도 있다 */
@@ -301,6 +308,14 @@ interface JudgedBorrowing {
   matching_filings_total?: number;
   /** 가장 가까운 같은 유형 공시와의 일수 차 (공시 접수일 − 차입일. 음수 = 공시가 앞) */
   nearest_filing_gap_days?: number;
+  /**
+   * 같은 상대방과의 연간 차입 합산 (원). 개별 건이 기준 미달이어도 §4③(동일 거래상대방·
+   * 동일 거래대상 기준 판단)에 따라 합산 기준으로 공시대상일 수 있다 (Codex 4차 C2).
+   */
+  same_counterparty_annual_total?: number;
+  same_counterparty_annual_total_display?: string;
+  /** 창 안의 같은 유형 '[공시취소]' 접수분 수 — 매칭 공시가 취소된 원공시일 수 있다 */
+  cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
   other_j001_sample?: FilingRef[];
@@ -335,9 +350,16 @@ interface GoodsSignal {
     | 'threshold_unknown';
   status?: TxStatus;
   reason?: string;
+  /**
+   * 상품·용역 공시의무는 상대방이 동일인(자연인)·친족 합계 20%↑ 출자 계열회사(또는 그
+   * 상법 §342의2 자회사)일 때만 성립한다(법 §26①4호·령 §33②·고시 §4①4호·§2④) —
+   * 이 도구는 지분 데이터가 없어 그 요건을 확인하지 못한다.
+   */
+  counterparty_qualification?: 'not_verified';
   j001_search?: { from: string; to: string; type_filter: string };
   matching_filings?: FilingRef[];
   matching_filings_total?: number;
+  cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
 }
@@ -364,23 +386,25 @@ interface GoodsCaveatRow {
  * 이를 미공시 후보로 올리면 오경보다. 단정하지 않고 별도 바구니로 분리한다.
  */
 export function itemLikelyNotGoodsService(item: string): string | null {
+  // 키워드가 품목의 **어미(성격 서술부)**일 때만 분리한다 — '배당전산시스템 구축용역' 같은
+  // 진짜 용역을 부분문자열 일치로 빼면 합산이 줄어 후보 판정이 통째로 빠진다 (Codex 4차 M6).
   const n = item.replace(/[\s ]+/g, '');
-  if (n.includes('배당')) {
+  if (/배당(금)?(수익|수입)?$/.test(n)) {
     return (
       '품목이 "배당" 성격입니다 — 배당금은 주주 지위에 따른 이익 분배로, 대규모내부거래의 ' +
       '상품·용역 거래에 해당하지 않을 가능성이 높습니다. 공시 대상 여부를 별도로 판단하세요'
     );
   }
-  if (n.includes('이자')) {
+  if (/이자(수익|수입|비용)?$/.test(n)) {
     return (
       '품목이 "이자" 성격입니다 — 이자는 자금거래의 과실(대가)로, 상품·용역 거래가 아닐 ' +
       '가능성이 높습니다. 원본 자금 차입·대여의 공시 여부를 자금거래 쪽에서 별도로 확인하세요'
     );
   }
-  if (n.includes('임대') || n.includes('임차')) {
+  if (/(임대|임차)(료)?$/.test(n)) {
     return (
-      '품목이 임대차 성격일 수 있습니다 — 부동산 등 임대차는 상품·용역이 아니라 별도 ' +
-      '거래유형(자산 거래)으로 공시될 수 있어, 이 도구의 상품·용역 보고서명 필터로는 그 공시를 ' +
+      '품목이 임대차 성격일 수 있습니다 — 부동산 임대차는 상품·용역이 아니라 자산 거래 유형' +
+      '(고시 §4①3호)으로 공시되므로, 이 도구의 상품·용역 보고서명 필터로는 그 공시를 ' +
       '찾지 못합니다. 공시가 실제로 있는지는 J001 부동산·자산 유형 공시에서 별도로 확인하세요'
     );
   }
@@ -615,6 +639,17 @@ export async function detectUndisclosedTransactions(
       ...(j.certainty ? { certainty: j.certainty } : {}),
       status: 'not_judged',
     };
+    // 차입일이 오늘 이후면 원문 기재 오류이거나 예정 거래다 — J001 부재가 당연하므로
+    // 후보로 만들면 오경보다 (Codex 4차 S2)
+    if (b.date && b.date > today) {
+      return {
+        ...base,
+        status: 'not_judged',
+        reason:
+          `future_transaction_date — 차입일(${b.date})이 오늘(${today}) 이후입니다. ` +
+          '원문 기재 오류이거나 예정 거래일 수 있어 판정하지 않습니다',
+      };
+    }
     if (j.over === false) return { ...base, status: 'below_threshold' };
     if (j.over === null) {
       return {
@@ -627,6 +662,38 @@ export async function detectUndisclosedTransactions(
     }
     return base; // over — 상태는 J001 대조 후 확정
   });
+
+  // ④-0. 같은 상대방과의 연간 합산 재점검 — §4③은 자금거래의 대규모내부거래 해당 여부를
+  // "동일 거래상대방과의 동일 거래대상에 대한 거래행위" 기준으로 판단한다. 개별 인출이
+  // 기준 미달이어도 같은 약정(동일 거래대상)의 분할 인출 합산이 기준 이상이면 공시대상일 수
+  // 있는데, J004 로는 동일 거래대상 여부를 알 수 없다 — below_threshold 로 안심시키지 않고
+  // not_judged 로 내린다 (Codex 4차 C2. 분할 차입 4억×4회가 전부 "기준 미달"로 빠지는
+  // 거짓 안심 경로).
+  {
+    const pairTotals = new Map<string, number>();
+    for (const b of judgedBorrowings) {
+      const k = `${normalizeCompanyName(b.company)} ${normalizeCompanyName(b.counterparty)}`;
+      pairTotals.set(k, (pairTotals.get(k) ?? 0) + b.amount);
+    }
+    for (const b of judgedBorrowings) {
+      if (b.status !== 'below_threshold') continue;
+      const total = pairTotals.get(
+        `${normalizeCompanyName(b.company)} ${normalizeCompanyName(b.counterparty)}`,
+      )!;
+      const overByCap = total >= CAP_100;
+      const overByThreshold = b.threshold !== undefined && total >= b.threshold.value;
+      if (!overByCap && !overByThreshold) continue;
+      b.status = 'not_judged';
+      b.same_counterparty_annual_total = total;
+      b.same_counterparty_annual_total_display = fmtWon(total);
+      b.reason =
+        `aggregation_unknown — 이 건(${b.amount_display})은 기준 미달이지만 같은 상대방과의 ` +
+        `연간 차입 합산이 ${fmtWon(total)}로 기준 이상입니다. 고시 §4③은 자금거래를 ` +
+        '동일 거래상대방과의 **동일 거래대상** 기준으로 판단하므로, 같은 약정의 분할 인출이면 ' +
+        '합산 기준으로 공시대상일 수 있습니다 — J004 로는 동일 거래대상 여부를 알 수 없어 ' +
+        '"기준 미달"로 단정하지 않습니다. 약정 단위를 원문으로 확인하세요';
+    }
+  }
 
   // ④-1. 계열편입일 이전 거래 분리 (group 경로 한정) — 편입 전에는 공시의무 자체가 없다.
   // audit_periodic 이 같은 오탐(신규 편입사의 과거 기한이 통째로 "미제출")을 겪고 도입한
@@ -698,7 +765,7 @@ export async function detectUndisclosedTransactions(
       });
       continue;
     }
-    const key = `${normalizeCompanyName(g.company)} ${normalizeCompanyName(g.counterparty)}`;
+    const key = `${normalizeCompanyName(g.company)} ${normalizeCompanyName(g.counterparty)}`;
     const agg = aggregates.get(key) ?? {
       company: g.company,
       counterparty: g.counterparty,
@@ -776,20 +843,41 @@ export async function detectUndisclosedTransactions(
   const withinBudget = ranked.slice(0, MAX_COMPANIES_TO_SEARCH);
   const overBudgetKeys = new Set(ranked.slice(MAX_COMPANIES_TO_SEARCH).map(([k]) => k));
 
-  // 조인: ① 집단 소속회사(포털 이름) 정규화 매칭 ② DART 법인 인덱스 상호 완전일치
+  // 조인: ① 집단 소속회사(포털 이름) 정규화 매칭 ② DART 법인 인덱스 상호 완전일치.
+  // ★ group 경로에서 ② 폴백으로 찾은 corp_code 가 집단 조인 목록에 없으면 **비계열 동명
+  // 회사일 수 있다** — 그 회사의 J001 로 filing_exists 를 만들면 오조인이 거짓 안심으로
+  // 직결되므로 조인 실패로 처리한다 (Codex 4차 M7). rcept_no 경로는 소속 목록 자체가 없어
+  // 이 검증이 불가능하다 — join_source 와 caveat 로 밝힌다.
   const joinFailures: Array<{ company: string; reason: string }> = [];
+  // 포털이 소속을 보증하는 이름들 — jurir 미조인이라 corp_code 는 없지만 계열사임은 확실하다
+  const popUnjoinedKeys = new Set(
+    (population?.unjoined ?? []).map((n) => normalizeCompanyName(n)),
+  );
+  function verifyMembership(code: string, rawName: string): { code?: string; reason?: string } {
+    if (population === null) return { code };
+    if (population.corpCodes.has(code)) return { code };
+    // 미조인 계열사: 포털 소속 목록에 같은 이름이 있고 DART 완전일치가 유일하면 그 회사다
+    // (동명 법인이 실존하면 findCorps 가 2건 이상을 돌려줘 여기 오기 전에 거부된다)
+    if (popUnjoinedKeys.has(normalizeCompanyName(rawName))) return { code };
+    return {
+      reason:
+        'dart_join_unverified — DART 에 상호가 일치하는 회사는 있으나 집단 소속회사 목록 ' +
+        '어디에도 없습니다. 비계열 동명 회사일 수 있어 그 회사의 공시로 판정하지 않습니다 ' +
+        '(실제 계열사라면 resolve_entity(fetchJurirNo=true) 로 조인 캐시를 채우세요)',
+    };
+  }
   function joinCorpCode(rawName: string): { code?: string; reason?: string } {
     const key = normalizeCompanyName(rawName);
     if (popNameConflicts.has(key)) {
       // 포털 목록 안에서조차 동명이라 어느 쪽인지 알 수 없다 — DART 완전일치로만 재시도
       const exactOnly = deps.findCorps(rawName.trim());
-      if (exactOnly.length === 1) return { code: exactOnly[0]!.corpCode };
+      if (exactOnly.length === 1) return verifyMembership(exactOnly[0]!.corpCode, rawName);
       return { reason: '집단 소속회사 목록에 정규화 동명 2건 이상 — 자동 선택하지 않습니다' };
     }
     const fromPop = popByName.get(key);
     if (fromPop) return { code: fromPop };
     const exact = deps.findCorps(rawName.trim());
-    if (exact.length === 1) return { code: exact[0]!.corpCode };
+    if (exact.length === 1) return verifyMembership(exact[0]!.corpCode, rawName);
     if (exact.length > 1) return { reason: `동명 법인 ${exact.length}건 — 자동 선택하지 않습니다` };
     // 법인격 표기((주)·㈜ 등)를 뗀 이름으로 재시도
     const stripped = rawName
@@ -797,7 +885,7 @@ export async function detectUndisclosedTransactions(
       .trim();
     if (stripped && stripped !== rawName.trim()) {
       const retry = deps.findCorps(stripped);
-      if (retry.length === 1) return { code: retry[0]!.corpCode };
+      if (retry.length === 1) return verifyMembership(retry[0]!.corpCode, rawName);
       if (retry.length > 1) return { reason: `동명 법인 ${retry.length}건 — 자동 선택하지 않습니다` };
     }
     return {
@@ -876,6 +964,7 @@ export async function detectUndisclosedTransactions(
     matching?: Disclosure[];
     others?: Disclosure[];
     search_partial?: boolean;
+    cancelled_of_type?: number;
   }
   function checkCompany(
     key: string,
@@ -912,18 +1001,32 @@ export async function detectUndisclosedTransactions(
     const matching = s.rows.filter(
       (r) => typeFilter(r.report_nm) && !isCancellationReport(r.report_nm),
     );
-    for (const r of s.rows) {
-      if (typeFilter(r.report_nm) && isCancellationReport(r.report_nm)) {
-        cancelledMatchingSeen.add(r.rcept_no);
-      }
-    }
+    const cancelsOfType = s.rows.filter(
+      (r) => typeFilter(r.report_nm) && isCancellationReport(r.report_nm),
+    );
+    for (const r of cancelsOfType) cancelledMatchingSeen.add(r.rcept_no);
     const others = s.rows.filter((r) => !typeFilter(r.report_nm) || isCancellationReport(r.report_nm));
     const common = {
       corp_code: s.corp_code,
       j001_search: { from: s.from, to: s.to, type_filter: typeLabel },
       ...(s.partial ? { search_partial: true } : {}),
+      ...(cancelsOfType.length ? { cancelled_of_type: cancelsOfType.length } : {}),
     };
     if (matching.length > 0) {
+      // 취소 접수분이 매칭 공시 수 이상이면 남은 매칭 공시 전부가 취소된 원공시일 수 있다 —
+      // 목록만으로는 취소↔원공시를 연결할 수 없으므로 "공시 존재"로 단정하지 않는다 (Codex 4차 M2)
+      if (cancelsOfType.length >= matching.length) {
+        return {
+          ...common,
+          outcome: 'not_judged',
+          reason:
+            `filing_cancelled_status_unknown — 같은 유형 '[공시취소]' 접수분(${cancelsOfType.length}건)이 ` +
+            `매칭 공시(${matching.length}건) 수 이상입니다. 매칭 공시가 취소된 원공시일 수 있어 ` +
+            '"공시 존재"로 판정하지 않습니다 — matching_filings 와 취소 접수분을 열어 대조하세요',
+          matching,
+          others,
+        };
+      }
       return { ...common, outcome: 'exists', matching, others };
     }
     // 수집이 불완전한데 "공시 없음"이면 수집 누락일 수 있다 — 후보로 단정하지 않는다 (교차검토 M-7)
@@ -948,6 +1051,7 @@ export async function detectUndisclosedTransactions(
     if (chk.corp_code) target.corp_code = chk.corp_code;
     if (chk.j001_search) target.j001_search = chk.j001_search;
     if (chk.search_partial) target.search_partial = true;
+    if (chk.cancelled_of_type) target.cancellations_of_type_in_window = chk.cancelled_of_type;
     if (chk.others) target.other_j001_in_window = chk.others.length;
   }
 
@@ -958,6 +1062,10 @@ export async function detectUndisclosedTransactions(
     if (chk.outcome === 'not_judged') {
       b.status = 'not_judged';
       b.reason = chk.reason!;
+      // 취소로 판정을 보류한 경우엔 대조할 매칭 공시를 함께 준다
+      if (chk.matching && chk.matching.length > 0) {
+        b.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
+      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -995,15 +1103,27 @@ export async function detectUndisclosedTransactions(
   }
 
   for (const g of signalGoods) {
+    // 상품·용역 공시의무는 상대방 요건(동일인·친족 20%↑ 출자 계열사 등)이 전제인데
+    // 이 도구는 지분 데이터가 없어 확인하지 못한다 — 모든 신호에 미확인을 명시 (Codex 4차 C1)
+    g.counterparty_qualification = 'not_verified';
     const chk = checkCompany(normalizeCompanyName(g.company), isGoodsServicesReport, '상품·용역');
     applyCommon(g, chk);
     if (chk.outcome === 'not_judged') {
       g.status = 'not_judged';
       g.reason = chk.reason!;
+      if (chk.matching && chk.matching.length > 0) {
+        g.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
+      }
       continue;
     }
     if (chk.outcome === 'none') {
-      g.status = 'undisclosed_candidate';
+      // "미공시 후보"가 아니라 **요건 충족 시 후보** — 요건 미충족 상대방과의 거래는 애초에
+      // 공시대상이 아니므로(법 §26①4호 한정) 후보 단정은 오경보다
+      g.status = 'candidate_if_counterparty_qualified';
+      g.reason =
+        'j001_absent_but_qualification_unknown — 이 유형의 J001 공시는 창 안에 없으나, ' +
+        '상대방이 동일인(자연인)·친족 합계 20% 이상 출자 계열회사(또는 그 자회사)인지 확인하지 ' +
+        '못했습니다. 요건을 충족하는 상대방일 때만 미공시 후보입니다 — 지분 구조를 먼저 확인하세요';
       continue;
     }
     const matching = chk.matching!;
@@ -1032,7 +1152,9 @@ export async function detectUndisclosedTransactions(
   const below = judgedBorrowings.filter((b) => b.status === 'below_threshold');
   const noDuty = judgedBorrowings.filter((b) => b.status === 'no_duty_before_joining');
   const notJudged = judgedBorrowings.filter((b) => b.status === 'not_judged');
-  const goodsCandidates = judgedGoods.filter((g) => g.status === 'undisclosed_candidate');
+  const goodsCandidates = judgedGoods.filter(
+    (g) => g.status === 'candidate_if_counterparty_qualified',
+  );
   const goodsFilingExists = judgedGoods.filter((g) => g.status === 'j001_filing_exists');
   // 조인 실패·예산 초과로 J001 대조를 못 한 신호 — 출력에서 빠지면 "후보 아님"으로 읽힌다
   const goodsNotJudged = judgedGoods.filter((g) => g.status === 'not_judged');
@@ -1068,12 +1190,22 @@ export async function detectUndisclosedTransactions(
     '거래의 한쪽 관점만 확인합니다 — 차입 거래는 **차입회사의 "자금차입" 공시**만 보고 자금을 대준 ' +
       '계열회사의 "자금대여" 공시의무는 확인하지 않으며, 상품·용역도 **판매회사(매출) 쪽**만 보고 ' +
       '매입(구매)회사 쪽 공시의무는 확인하지 않습니다.',
-    '상품·용역의 기준은 분기 합계액(고시 §4③)인데 J004 는 연간 합계뿐입니다 — **(판매회사, ' +
-      '거래상대방) 연간 합산**이 ≥ 4×기준금액인 경우만(어느 분기 하나는 반드시 기준 이상이라는 산술) ' +
-      '신호로 쓰고, 그 미만은 분기 집중 여부를 알 수 없어 **원리상 판정하지 않습니다** ' +
-      '(goods_services_not_judgeable). 합산 단위를 상대방별로 본 것은 §4③2호의 실무 해석이며 ' +
-      '(품목 행은 items 로 동봉), §4③이 "이루어질" 거래(사전 의결 시점 합계)를 말하는 것과 ' +
-      '사후 실적(J004 기재)의 간극도 있을 수 있습니다.',
+    '★ 상품·용역의 공시의무는 **상대방 요건이 전제**입니다 — 법 §26①4호·령 §33②·고시 §4①4호는 ' +
+      '상대방을 "자연인인 동일인이 단독으로 또는 친족과 합하여 20% 이상 출자한 계열회사 또는 그 ' +
+      '상법 §342의2 자회사"로 한정합니다. 이 도구는 지분 데이터가 없어 요건을 확인하지 못하므로 ' +
+      '상품·용역 신호는 전부 candidate_if_counterparty_qualified(조건부 후보)입니다 — 요건 미충족 ' +
+      '상대방과의 거래는 애초에 공시대상이 아니고, **동일인이 법인인 집단은 이 유형의 공시의무 ' +
+      '자체가 없습니다**. 자금·유가증권·자산 거래는 이 한정이 없습니다(특수관계인 전반).',
+    '상품·용역의 기준은 분기 합계액(고시 §4③2호, 동일 거래상대방 기준)인데 J004 는 연간 합계뿐입니다 ' +
+      '— **(판매회사, 거래상대방) 연간 합산**이 ≥ 4×기준금액인 경우만(어느 분기 하나는 반드시 기준 ' +
+      '이상이라는 산술) 신호로 쓰고, 그 미만은 분기 집중 여부를 알 수 없어 **원리상 판정하지 ' +
+      '않습니다** (goods_services_not_judgeable, 품목 행은 items 로 동봉). 또한 기준은 "이루어질" ' +
+      '거래(사전 의결 시점 예상액)인데 J004 는 사후 실적이라 간극이 있을 수 있습니다 — 다만 사후에 ' +
+      '해당이 예상되는 경우의 사전 의결·공시 경로(§9의2③)도 있으므로 후보 검토 가치는 있습니다.',
+    '자금 차입의 대규모내부거래 해당 여부는 고시 §4③에 따라 "동일 거래상대방과의 동일 거래대상" ' +
+      '기준으로 판단합니다 — J004 로는 동일 거래대상(같은 약정) 여부를 알 수 없어, 개별 건이 기준 ' +
+      '미달이어도 같은 상대방 연간 합산이 기준 이상이면 below_threshold 로 단정하지 않고 not_judged' +
+      '(aggregation_unknown)로 남깁니다.',
     'J004 원문 자체가 부정확하거나 늦게 제출됐을 수 있습니다 (J004 정정률 91% 실측) — 정정 반영 ' +
       '최신본을 읽지만 원천 기재 오류·누락은 판별하지 못합니다. J001 대사의 원천이 J004 하나뿐이라 ' +
       'J004 에 안 실린 거래는 애초에 이 도구의 시야 밖입니다.',
@@ -1081,18 +1213,32 @@ export async function detectUndisclosedTransactions(
       '집단이 그 거래 연도에 공시대상으로 지정돼 있지 않았다면(신규 지정) 전년도 거래 전체가 의무 ' +
       '없음일 수 있습니다. group 경로는 계열편입일(포털 grinil) 이전 차입만 no_duty_before_joining 으로 ' +
       '분리하며, rcept_no 경로는 편입일 대조 자체를 하지 않습니다. 상품·용역은 연간 합계라 편입 시점 ' +
-      '대조가 불가능합니다.',
+      '대조가 불가능합니다. 또한 **편입 전 체결 거래라도 편입 후 주요내용을 변경하면 의결·공시의무가 ' +
+      '있습니다**(고시 §4④) — 이 도구는 변경 여부를 보지 못하므로 no_duty_before_joining 도 그 ' +
+      '한도에서만 유효합니다.',
+    'rcept_no 경로의 회사명 조인은 포털 소속회사 목록 없이 DART 상호 완전일치만 씁니다 — 동명 ' +
+      '비계열 회사로 오조인되면 그 회사의 공시가 근거로 잘못 붙을 수 있습니다. group 경로는 폴백 ' +
+      '조인 결과가 집단 목록에 없으면 판정하지 않습니다(dart_join_unverified).',
   ];
 
-  const totalCandidates = undisclosed.length + goodsCandidates.length;
-  if (totalCandidates > 0) {
+  if (undisclosed.length > 0) {
     notes.push(
-      `⚠️ 미공시 후보 ${totalCandidates}건 (자금차입 ${undisclosed.length} + 상품·용역 ${goodsCandidates.length}). ` +
-        '**반드시 scope_caveats 와 함께 전달하세요** — 미공시의 과태료 기본금액(의결 있음 5,000만 / 없음 ' +
-        '7,000만원)은 지연(500만+1일 10만)보다 훨씬 무거워, 단정이 틀렸을 때의 대가도 그만큼 큽니다. ' +
-        '각 건은 해당 회사 담당자 확인 → 필요 시 check_disclosure_duty(정확한 자본 입력) 재판정 순서로 검증하세요.',
+      `⚠️ 자금차입 미공시 후보 ${undisclosed.length}건. **반드시 scope_caveats 와 함께 전달하세요** — ` +
+        '미공시의 과태료 기본금액(의결 있음 5,000만 / 없음 7,000만원)은 지연(500만+1일 10만)보다 훨씬 ' +
+        '무거워, 단정이 틀렸을 때의 대가도 그만큼 큽니다. 각 건은 해당 회사 담당자 확인 → 필요 시 ' +
+        'check_disclosure_duty(정확한 자본 입력) 재판정 순서로 검증하세요.',
     );
-  } else {
+  }
+  if (goodsCandidates.length > 0) {
+    notes.push(
+      `⚠️ 상품·용역 **조건부 후보** ${goodsCandidates.length}건 (candidate_if_counterparty_qualified) — ` +
+        'J001 은 없으나, 이 유형의 공시의무는 상대방이 동일인(자연인)·친족 합계 20% 이상 출자 ' +
+        '계열회사(또는 그 자회사)일 때만 성립합니다(법 §26①4호·령 §33②). 이 도구는 지분을 확인하지 ' +
+        '못하므로 **"미공시 후보"로 단정하지 마세요** — 상대방의 총수일가 지분 구조를 먼저 확인하고, ' +
+        '동일인이 법인인 집단이면 이 유형의 의무 자체가 없습니다.',
+    );
+  }
+  if (undisclosed.length === 0 && goodsCandidates.length === 0) {
     notes.push(
       'ℹ️ 미공시 후보 0건은 "미공시 없음"의 확인이 아닙니다 — 이 도구가 보는 유형(자금차입·주요 상품·용역)과 ' +
         '이 문서에 실린 거래의 범위 안에서 후보를 찾지 못했다는 뜻입니다 (scope_caveats 참조).',
@@ -1199,7 +1345,8 @@ export async function detectUndisclosedTransactions(
     rcept_no: sourceRceptNo,
     borrowings: borrowings.length,
     goods: goods.length,
-    candidates: totalCandidates,
+    candidates: undisclosed.length,
+    goodsConditionalCandidates: goodsCandidates.length,
     listCalls,
   });
 
@@ -1224,7 +1371,8 @@ export async function detectUndisclosedTransactions(
       below_threshold: below.length,
       no_duty_before_joining: noDuty.length,
       not_judged: notJudged.length,
-      goods_services_candidates: goodsCandidates.length,
+      /** J001 부재 + 상대방 요건(총수일가 20%↑ 출자) 미확인 — "후보 확정"이 아니다 */
+      goods_services_candidates_if_qualified: goodsCandidates.length,
       goods_services_filing_exists: goodsFilingExists.length,
       goods_services_not_judged: goodsNotJudged.length,
       goods_services_not_judgeable: goodsUnjudgeable.length,
@@ -1252,7 +1400,14 @@ export async function detectUndisclosedTransactions(
       undetectable: {
         /** 매입회사×매도회사 매트릭스 표 (다중 페이지) — 파서 미구현 */
         matrix_tables: ['유가증권 거래 총괄', '상품·용역 매입/매출 총괄'],
-        other_transaction_types: ['담보 제공·수취', '채무보증', '부동산 임대차', '출자·유상증자', '자금 대여(상대방 관점)'],
+        other_transaction_types: [
+          '유가증권 거래 (사모사채·CP·회사채 인수 등 — **유가증권 형태의 자금 조달은 "자금차입" 이름이 아니라서 이 도구가 보지 못한다**)',
+          '담보 제공·수취',
+          '채무보증',
+          '부동산 임대차',
+          '출자·유상증자',
+          '자금 대여(상대방 관점)',
+        ],
         /** "주요" 기준 미달로 J004 표에 실리지 않은 상품·용역 거래 */
         non_major_goods_services: true,
         /** J004 에 기재 자체가 누락된 거래 — 이 도구의 원천이 J004 하나뿐이다 */
