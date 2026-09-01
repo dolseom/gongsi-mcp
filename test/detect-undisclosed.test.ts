@@ -18,6 +18,7 @@ import {
   judgeOverThreshold,
   isBorrowingReport,
   isGoodsServicesReport,
+  isSecuritiesReport,
   itemLikelyNotGoodsService,
   type DetectDeps,
 } from '../src/tools/detect-undisclosed-transactions.js';
@@ -835,5 +836,115 @@ describe('group 경로 — 대표회사 연1회 서식 자동 탐색', () => {
         makeDeps({ pop: badPop, j004, j001: [] }),
       ),
     ).rejects.toThrow('rcept_no');
+  });
+});
+
+/**
+ * 유가증권 총괄 매트릭스 — 픽스처의 와이케이디벨롭먼트(기준금액 10억)를 매입회사로 두어
+ * 판정 경계를 명확히 만든다. 회사명에 **줄바꿈에서 온 공백**을 그대로 넣었다 (실물 그대로).
+ */
+const SECURITIES_SECTION = `
+## (3) 계열회사간 유가증권거래 현황
+
+| (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |
+| --- |
+
+| 매입회사 ＼ 매도회사 |  | 계열회사 |  |  |
+| --- | --- | --- | --- | --- |
+| (소속회사) |  | 미래에셋 증권(주) | 미래에셋 캐피탈(주) | 소계 |
+| 비금융회사 | 와이케이 디벨롭먼트(주) | 1,500 | 400 | 1,900 |
+| 합 계 |  | 1,500 | 400 | 1,900 |
+`;
+
+describe('유가증권 총괄 매트릭스 (Codex 4차 M1)', () => {
+  const MD = FIXTURE_MD + SECURITIES_SECTION;
+
+  /**
+   * ★ 실측 보고서명으로 고정한다 (미래에셋 계열 J001, 2026).
+   * 특히 약관특례(트랙 B)의 '계열금융회사의약관에의한금융거래-[유가증권-채권]' 를 놓치면
+   * 정상 공시한 금융회사들이 통째로 미공시 후보가 된다 — 실행해 보니 실제로 걸리는 공시의
+   * 절반 이상이 이 서식이었다.
+   */
+  it('유가증권 유형 필터 — 개별 서식과 약관특례 서식을 모두 잡는다', () => {
+    expect(isSecuritiesReport('특수관계인과의수익증권거래')).toBe(true);
+    expect(isSecuritiesReport('특수관계인에대한출자')).toBe(true);
+    expect(isSecuritiesReport('[기재정정]특수관계인에대한출자')).toBe(true);
+    expect(isSecuritiesReport('계열금융회사의약관에의한금융거래-[유가증권-채권]')).toBe(true);
+    expect(isSecuritiesReport('계열금융회사의약관에의한금융거래-[유가증권-주식]')).toBe(true);
+    expect(isSecuritiesReport('특수관계인에대한유상증자참여')).toBe(true);
+    // 다른 유형까지 삼키면 "공시 존재"로 잘못 안심시킨다
+    expect(isSecuritiesReport('대규모내부거래관련이사회의결및공시(자금차입)')).toBe(false);
+    expect(isSecuritiesReport('대규모내부거래관련이사회의결및공시(상품ㆍ용역거래)')).toBe(false);
+    expect(isSecuritiesReport('특수관계인에대한담보제공')).toBe(false);
+  });
+
+  it('기준 이상 + 유형 공시 부재 → candidate_aggregate_only (미공시 후보로 단정하지 않는다)', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: MD, j001: [], corps: YKD_CORPS }),
+    )) as Record<string, any>;
+    const sigs = res.securities_signals as Array<Record<string, unknown>>;
+    const over = sigs.find((s) => s.counterparty === '미래에셋 증권(주)')!;
+    expect(over.status).toBe('candidate_aggregate_only');
+    expect(over.annual_amount).toBe(15 * 억);
+    // §4③(동일 거래상대방과의 동일 거래대상) 때문에 연간 총액만으로는 단정할 수 없다
+    expect(String(over.reason)).toContain('동일 거래대상');
+    expect(res.summary.securities_candidates_aggregate_only).toBe(1);
+  });
+
+  it('연간 총액이 기준 미만이면 개별 거래도 미만이다 — below_threshold', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: MD, j001: [], corps: YKD_CORPS }),
+    )) as Record<string, any>;
+    const below = res.securities_below_threshold as Array<Record<string, unknown>>;
+    expect(below).toHaveLength(1);
+    expect(below[0]!.counterparty).toBe('미래에셋 캐피탈(주)');
+    expect(below[0]!.annual_amount).toBe(4 * 억);
+    expect(res.summary.securities_below_threshold).toBe(1);
+  });
+
+  it('유형 공시가 있으면 filing_exists — 약관특례 서식으로도 잡힌다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        markdown: MD,
+        j001: [
+          disc({
+            report_nm: '계열금융회사의약관에의한금융거래-[유가증권-수익증권]',
+            rcept_dt: '20250714',
+            rcept_no: '20250714000001',
+          }),
+        ],
+        corps: YKD_CORPS,
+      }),
+    )) as Record<string, any>;
+    const sigs = res.securities_signals as Array<Record<string, unknown>>;
+    const over = sigs.find((s) => s.counterparty === '미래에셋 증권(주)')!;
+    expect(over.status).toBe('j001_filing_exists');
+    expect(res.summary.securities_candidates_aggregate_only).toBe(0);
+  });
+
+  /**
+   * 매트릭스 표의 회사명에는 열 폭 때문에 공백이 섞인다('와이케이 디벨롭먼트(주)').
+   * 공백을 흡수하지 못하면 모든 유가증권 신호가 join_failed 로 빠진다 (실물에서 11건 전원).
+   */
+  it('회사명에 섞인 줄바꿈 공백이 조인을 막지 않는다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: MD, j001: [], corps: YKD_CORPS }),
+    )) as Record<string, any>;
+    expect(res.join_failures ?? []).toHaveLength(0);
+    const sigs = res.securities_signals as Array<Record<string, unknown>>;
+    expect(sigs.every((s) => s.corp_code === '00222222')).toBe(true);
+  });
+
+  it('유가증권 절이 없는 문서는 신호 없이 조용히 지나간다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ j001: [], corps: YKD_CORPS }),
+    )) as Record<string, any>;
+    expect(res.summary.securities_pairs_extracted).toBe(0);
+    expect(res.securities_signals).toBeUndefined();
   });
 });

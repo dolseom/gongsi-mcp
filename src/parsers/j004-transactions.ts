@@ -27,7 +27,7 @@ const UNIT_FACTORS: Array<[RegExp, number]> = [
 ];
 
 /** 표 한 덩어리 — 앞선 '가./나./다.' 표지와 단위를 함께 들고 있다 */
-interface LabeledTable {
+export interface LabeledTable {
   /** 직전에 나온 '가. 일반 차입' 같은 표지 (없으면 '') */
   label: string;
   /** 캡션에서 읽은 단위 배수. 못 읽었으면 null — 금액을 쓰면 안 된다 */
@@ -190,7 +190,7 @@ function findCol(t: LabeledTable, ...keywords: string[]): number {
  * '소계(주1)' 같은 각주 접미 변형도 집계 행이다 — 놓치면 소계가 개별 거래로 승격돼
  * 오경보가 된다 (교차검토 S-8).
  */
-function isAggregateRow(cells: string[]): boolean {
+export function isAggregateRow(cells: string[]): boolean {
   return cells.some((c) => {
     const n = normalizeCell(c);
     // 각주 접미는 괄호·대괄호·대시 어느 표기든 올 수 있다 (Codex 4차 S1)
