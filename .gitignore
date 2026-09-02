@@ -36,7 +36,11 @@ Thumbs.db
 
 # 로컬 작업 기록
 CLAUDE.local.md
-CLAUDE.local.md.bak-*
+CLAUDE.local.md.bak*
+CLAUDE.local.history.md
+
+# 로컬 백업 보관소 (CLAUDE.local.md 타임스탬프 백업 등 — 커밋 대상 아님)
+.local-backups/
 
 # 외부 참고 소스 (타 프로젝트 코드 — 라이선스 불명, 커밋 금지)
 (참고)소스/

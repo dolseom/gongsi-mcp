@@ -812,7 +812,12 @@ DART 기업개황 API가 `jurir_no`(13자리 법인등록번호)를 반환함을
 
 ---
 
-### 5.13 `draft_disclosure` — 공시 초안·기재요령 ★신규 (킬러 후보)
+### 5.13 `draft_disclosure` — 공시 초안·기재요령 ~~★신규 (킬러 후보)~~ → **❌ 폐기**
+
+> **❌ 폐기 (2026-09-02)** — 만들지 않기로 결정. 사유 둘.
+> ① **이미 되고 있다.** `find_precedents`(타사 최근 공시를 회사당 1건씩 원문과 함께) + `read_disclosure`(표 구조 보존 마크다운)를 붙이면 **LLM 이 그 자리에서 초안을 쓴다.** 전용 도구는 같은 일을 서식 taxonomy 유지비를 물고 다시 하는 것이다.
+> ② **'자동 제출은 만들지 않는다' 원칙과 경계가 모호하다.** 초안 생성과 제출 사이의 선은 개념적으로는 명확하지만 제품 표면에서는 흐려진다 — 완성도 높은 초안일수록 담당자가 검토를 건너뛸 유인이 커지고, 그건 이 제품이 가장 피하려는 실패(확인하지 않은 것을 확인한 것처럼 다루기)의 다른 얼굴이다.
+> 아래 본문은 기록으로 남긴다.
 
 > **J004 정정률 91%가 이 도구의 존재 이유다.** 담당자는 공시를 못 내는 게 아니라, 한 번에 제대로 쓰지 못해 정정한다.
 
@@ -836,7 +841,10 @@ DART 기업개황 API가 `jurir_no`(13자리 법인등록번호)를 반환함을
 
 ---
 
-### 5.14 `benchmark_peers` — 피어 벤치마킹 ★신규 (IR)
+### 5.14 `benchmark_peers` — 피어 벤치마킹 ~~★신규 (IR)~~ → **❌ 폐기**
+
+> **❌ 폐기 (2026-09-02)** — 만들지 않기로 결정. **IR 피어 비교는 투자 관점 DART MCP 들이 이미 잘하는 영역**이고(재무비교·지배구조·보수·배당), 이 서버의 비목표인 "투자자용 열람"에 가깝다. 타겟도 공시담당자·공정거래팀이 아니라 IR 담당자로 갈라진다. 제품 철학(공통된 간지러움만 긁는다)에 따라 우리 고유 영역 — 공정위 공시 판정·감사·미공시 탐지 — 에 집중한다. 피어 비교가 필요한 사용자에게는 README 가 투자 관점 MCP 를 함께 쓰라고 안내한다.
+> 아래 본문은 기록으로 남긴다.
 
 > IR 담당자가 반나절씩 쓰는 비교표 작성을 자동화한다.
 
@@ -899,16 +907,16 @@ DART 기업개황 API가 `jurir_no`(13자리 법인등록번호)를 반환함을
 | 10 | `get_corporate_event` | 기본 | DS005(36)+DS006(6) | IR | - |
 | 11 | `read_disclosure` | 기반 | DS001 + 파서 | 공통 | P4 |
 | 12 | `get_disclosure_calendar` | ★확장 | 룰엔진 + 포털 | 공시담당 | P7 |
-| 13 | `draft_disclosure` | ★확장 | 서식 taxonomy + 원문 | 공시담당 | P8 |
-| 14 | `benchmark_peers` | ★확장 | DS002+DS003+DS004 | IR | P9 |
+| 13 | ~~`draft_disclosure`~~ | **❌ 폐기(2026-09-02)** | 서식 taxonomy + 원문 | 공시담당 | P8 → find_precedents+read_disclosure 로 대체 |
+| 14 | ~~`benchmark_peers`~~ | **❌ 폐기(2026-09-02)** | DS002+DS003+DS004 | IR | P9 → 비목표(투자 관점)로 판단 |
 
 **추가 페인포인트** (§1.2 확장)
 
 | # | 상황 | 대응 도구 |
 |---|---|---|
 | P7 | "올해 우리가 뭘 언제까지 해야 하지?" (특히 신규 지정 집단) | `get_disclosure_calendar` |
-| P8 | "어떻게 써야 정정이 안 나지?" (J004 정정률 91%) | `draft_disclosure` |
-| P9 | "피어 비교표를 만들어야 하는데 반나절 걸림" | `benchmark_peers` |
+| P8 | "어떻게 써야 정정이 안 나지?" (J004 정정률 91%) | ~~`draft_disclosure`~~ **❌ 폐기(2026-09-02)** → `find_precedents` + `read_disclosure` (타사 기재 패턴을 원문으로 주면 LLM 이 초안을 쓴다) · 제출 전 점검은 `check_j004_consistency` |
+| P9 | "피어 비교표를 만들어야 하는데 반나절 걸림" | ~~`benchmark_peers`~~ **❌ 폐기(2026-09-02)** → 대응하지 않는다. 투자 관점 DART MCP 의 영역 |
 | P10 | "이거 늦으면 과태료 얼마인지 임원 보고해야 함" | `check_disclosure_duty(estimate_penalty)` |
 
 **v1.1 추가 검토**: `discover_tools` / `execute_tool` 메타 패턴 — 도구가 14개가 되었으므로 XBRL·지분공시 상세 등 저빈도 도구를 숨겨 컨텍스트를 절약한다. korean-law-mcp가 19개→10개로 통폐합해 "컨텍스트 52% 감축"을 달성한 경로를 따른다.
@@ -922,7 +930,7 @@ DART 기업개황 API가 `jurir_no`(13자리 법인등록번호)를 반환함을
 | 레이어 | 선택 | 근거 |
 |---|---|---|
 | 언어 | TypeScript 5.x | 벤치마크 2종과 동일, 타입 안전한 스키마 |
-| 런타임 | **Node.js ≥ 22.5** | `node:sqlite` 내장 요건. Node 20은 2026-04 EOL이라 실익 없음 |
+| 런타임 | **Node.js ≥ 22.13** | `node:sqlite` 내장 요건. **v22.13.0부터 `--experimental-sqlite` 플래그 없이 동작**하므로 하한을 22.5 → 22.13 으로 정정(2026-09-02). Node 20은 2026-04 EOL이라 실익 없음 |
 | MCP | `@modelcontextprotocol/sdk` (최신) | 표준 |
 | 스키마 | `zod` v4 고정 | MCP 도구 스키마 (버전 혼용 이슈 주의) |
 | HTTP | `undici` / native fetch | 의존성 최소화. **connect/read 타임아웃 분리**(10s / 100s) |
@@ -1036,17 +1044,17 @@ gongsi-mcp/
 > "우리 집단 올해 남은 공시 일정 정리해줘"
 → `get_disclosure_calendar(view:"upcoming")` → 의무별 기한·D-day·근거조문
 
-**S12 — 작성 지원** (확장)
+**S12 — 작성 지원** (확장) — **❌ 전용 도구 폐기(2026-09-02), 시나리오는 유효**
 > "특수관계인에대한자금대여 공시 써야 하는데 뭘 적어야 해?"
-→ `draft_disclosure` → 기재항목 체크리스트 + 타사 최근 3건 기재 패턴 + 초안
+→ ~~`draft_disclosure`~~ → **`find_precedents`(타사 최근 공시를 원문과 함께) + `read_disclosure`** 로 기재 패턴을 확보하면 LLM 이 그 자리에서 초안을 쓴다. 전용 도구를 만들지 않는다
 
 **S13 — 과태료 예측** (확장)
 > "3일 늦게 공시했는데 과태료 얼마나 나올까?"
 → `check_disclosure_duty(estimate_penalty:true)` → 고시 기준 산정액 + 감경 요건 + 면책 고지
 
-**S14 — IR 비교표** (확장)
+**S14 — IR 비교표** (확장) — **❌ 폐기(2026-09-02): 이 서버의 시나리오가 아니다**
 > "동종업계 5개사랑 임원보수·배당 비교표 CSV로 만들어줘"
-→ `benchmark_peers(dimensions:["compensation","dividend"], output:"csv")`
+→ ~~`benchmark_peers(dimensions:["compensation","dividend"], output:"csv")`~~ — 투자 관점 DART MCP 를 함께 쓰도록 안내한다
 
 **S15 — 잔액 관리** (확장)
 > "A사와의 자금대여 총거래잔액 지금 얼마야?"
@@ -1152,8 +1160,8 @@ M0에서 확보한 사실을 반영해 14개 도구를 4축으로 평가했다.
 | `get_corporate_event` | 중 | 중 | 낮음 | **없음** | 없음 | 10 |
 | `get_company_profile` | 낮음 | 낮음 | 낮음 | 없음 | 여러 API | 11 |
 | `audit_group_disclosures` | **최상** | **최상** | **최상(오탐)** | **최상** | 전부 | 12 |
-| `benchmark_peers` | 중 | 상 | 중 | 중 | 여러 도구 | 13 |
-| `draft_disclosure` | 상 | **최상** | 상 | **최상** | read+서식 | 14 |
+| ~~`benchmark_peers`~~ | 중 | 상 | 중 | 중 | 여러 도구 | ~~13~~ **❌ 폐기(2026-09-02)** |
+| ~~`draft_disclosure`~~ | 상 | **최상** | 상 | **최상** | read+서식 | ~~14~~ **❌ 폐기(2026-09-02)** |
 
 **판단에서 나온 3가지 결론**
 
@@ -1168,7 +1176,7 @@ M0에서 확보한 사실을 반영해 14개 도구를 4축으로 평가했다.
 | 도구 | v1.0에 넣는 것 | 뒤로 미루는 것 |
 |---|---|---|
 | `audit_group_disclosures` | **단일 회사 감사** (corp_code만 필요, 매핑 테이블 불요) | 집단 전체 감사 (매핑 테이블 필요) |
-| `draft_disclosure` | **서식별 기재항목 체크리스트** (ACODE 매핑만으로 가능) | 타사 사례 수집 + 초안 생성 |
+| ~~`draft_disclosure`~~ **❌ 폐기(2026-09-02)** | ~~서식별 기재항목 체크리스트~~ — 둘 다 만들지 않는다 | ~~타사 사례 수집 + 초안 생성~~ → `find_precedents` 가 담당 |
 | `read_disclosure` | **트랙 A 8종 라벨 추출** | 트랙 B 4종, 첨부 HWP/PDF 파싱 |
 
 ### M1 — 룰 엔진 코어 (1주) · API 의존도 0
@@ -1204,8 +1212,8 @@ README(§8.3 전략) · 문서 · 데모 · **npm 배포 + 플러그인 마켓�
 ### v1.1 — 신뢰가 쌓인 뒤
 
 - **`audit_group_disclosures` 집단 전체 모드** (공시 역수집 매핑 테이블 선행)
-- `draft_disclosure` 타사 사례·초안 생성
-- `benchmark_peers`
+- ~~`draft_disclosure` 타사 사례·초안 생성~~ **❌ 폐기(2026-09-02)** — `find_precedents` 로 대체됨
+- ~~`benchmark_peers`~~ **❌ 폐기(2026-09-02)** — 비목표(투자 관점)
 - `read_disclosure` 트랙 B + 첨부 HWP/PDF
 - `discover_tools`/`execute_tool` 메타 패턴 (도구 14개 → 컨텍스트 절감)
 
@@ -1215,6 +1223,12 @@ XBRL 파싱 · 하도급대금 공시 심화 · 원격 MCP 엔드포인트
 ---
 
 **총 7주. v1.0 스코프는 도구 11종**(14종 중 `benchmark_peers` 제외, `audit`·`draft`는 축소 모드).
+
+> **실제 경과 (2026-09-02 기준)**: 계획한 14종 중 `draft_disclosure`·`benchmark_peers` 2종을 **폐기**하고,
+> 계획에 없던 `check_j004_consistency`·`assess_correction_risk`·`search_ftc_qna`·`calc_business_days`·
+> `find_precedents`·`server_info`·`audit_periodic_disclosures`·`detect_undisclosed_transactions`·
+> `disclosure_calendar` 를 신설해 **현재 16종**이다. 방향 전환의 근거는 리서치(§1.2 질문 코퍼스 1,102건)와
+> 실사용 피드백이며, 공통점은 **"근거 있는 확신"에 직결되는 것만 만들었다**는 것이다.
 
 ---
 
