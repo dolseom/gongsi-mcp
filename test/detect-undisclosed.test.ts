@@ -1522,3 +1522,110 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(r['goods_services_matrix_signals']).toBeUndefined();
   });
 });
+
+/**
+ * ★ 실물에서 잡은 결함 — (6)과 (5)가 같은 회사를 다르게 적으면 쌍 키 정규화가 듣지 않는다.
+ *
+ * 미래에셋 20260819000341 실호출에서 발견: 같은 205,454백만 보험판매 거래를
+ * (6)은 '미래에셋생명(주)', (5)는 '미래에셋 생명보험(주)' 로 적는다. 공백·법인격을 지워도
+ * '미래에셋생명' ≠ '미래에셋생명보험' 이라 중복 제거를 비껴가 같은 거래가 양쪽에
+ * candidate_if_counterparty_qualified 로 올랐다.
+ *
+ * 버리는 쪽(같은 매출회사 + 같은 금액이면 제거)은 우연히 금액이 같은 별개 거래를 조용히
+ * 지운다 — 거짓 안심 방향이라 채택하지 않았다. 대신 표시한다.
+ * 아래 문서는 실물의 그 두 행을 이름·금액 그대로 옮긴 것이다.
+ */
+describe('(5)↔(6) 회사명 표기 차이로 중복 제거를 비껴가는 경우 (실물 20260819000341)', () => {
+  const 백만 = 1_000_000;
+  const DUP_MD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 금융회사 | 미래에셋금융서비스(주) | 1,000 | 89,639 |',
+    '| 금융회사 | 미래에셋생명보험(주) | 1,000 | 4,000 |',
+    '## (5) 계열회사간 상품ㆍ용역거래 현황',
+    '| (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |',
+    '| --- |',
+    '| 매출 / 매입회사 |  | 금융회사 |  |  |',
+    '| --- | --- | --- | --- | --- |',
+    // 실물 (5) 표기 — 공백 있는 '미래에셋 생명보험(주)'
+    '| (소속회사) |  | 미래에셋 생명보험(주) | 미래에셋 증권(주) | 소계 |',
+    '| 금융회사 | 미래에셋 금융서비스(주) | 205,454 | - | 205,454 |',
+    '| 합 계 |  | 205,454 | - | 205,454 |',
+    '## (6) 계열회사간 주요 상품ㆍ용역거래 내역',
+    '나. 비상장회사와 그 계열회사간 주요 상품ㆍ용역거래 내역 (연1회)',
+    '| (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |',
+    '| --- |',
+    '| 소속회사명 |  | 거래상대방 | 업종 | 품목 | 대금지급조건 | 거래상대방 선정방식 | 매출액 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    // 실물 (6) 표기 — '미래에셋생명(주)' ('보험' 이 없다)
+    '| 금융회사 | 미래에셋금융서비스(주) | 미래에셋생명(주) | K6620(보험및연금관련서비스업) | 보험판매 | 현금 | 수의계약 | 205,454 |',
+  ].join('\n');
+
+  const DUP_CORPS = {
+    미래에셋금융서비스: [{ corpCode: '01041305', corpName: '미래에셋금융서비스' }],
+  };
+
+  async function run(): Promise<Record<string, any>> {
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: DUP_MD, corps: DUP_CORPS, j001: [] }),
+    )) as Record<string, any>;
+  }
+
+  it('쌍 키로는 중복이 걸러지지 않는다 (표기가 다르다) — 그 사실 자체를 고정한다', async () => {
+    const r = await run();
+    expect(r['summary'].goods_services_matrix_pairs_also_in_major_detail).toBe(0);
+    expect(r['summary'].goods_services_matrix_pairs_supplemented).toBe(1);
+    // (6) 쪽 신호는 그대로 살아 있다
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(1);
+  });
+
+  it('같은 매출회사·같은 금액이면 중복 의심으로 **표시**한다 (버리지 않는다)', async () => {
+    const r = await run();
+    const m = (r['goods_services_matrix_signals'] as Array<Record<string, any>>)[0]!;
+    expect(m['company']).toBe('미래에셋 금융서비스(주)');
+    expect(m['counterparty']).toBe('미래에셋 생명보험(주)');
+    expect(m['annual_amount']).toBe(205_454 * 백만);
+    const dup = m['possible_duplicate_of_major_detail'];
+    expect(dup).toBeDefined();
+    expect(dup.major_detail_counterparty).toBe('미래에셋생명(주)');
+    expect(String(dup.note)).toContain('같은 거래');
+    expect(r['summary'].goods_services_matrix_possible_duplicates).toBe(1);
+    expect(r['diagnostics'].goods_services_matrix.possible_duplicates).toBe(1);
+  });
+
+  it('중복 의심을 notes 와 caveat 로 사용자에게 알린다', async () => {
+    const r = await run();
+    expect(
+      (r['notes'] as string[]).some(
+        (n) => n.includes('(5) 보완 신호 1건') && n.includes('같은 금액'),
+      ),
+    ).toBe(true);
+    const m = (r['goods_services_matrix_signals'] as Array<Record<string, any>>)[0]!;
+    // caveat ③ 이 "중복되지 않습니다" 라고 단정하면 안 된다 (실물에서 거짓이었다)
+    expect(String(m['caveat'])).not.toContain('중복되지 않습니다');
+    expect(String(m['caveat'])).toContain('possible_duplicate_of_major_detail');
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('그 키가 듣지 않습니다')),
+    ).toBe(true);
+  });
+
+  it('금액이 다르면 중복 의심 표시를 붙이지 않는다', async () => {
+    const md = DUP_MD.replace(
+      '| 금융회사 | 미래에셋금융서비스(주) | 미래에셋생명(주) | K6620(보험및연금관련서비스업) | 보험판매 | 현금 | 수의계약 | 205,454 |',
+      '| 금융회사 | 미래에셋금융서비스(주) | 미래에셋생명(주) | K6620(보험및연금관련서비스업) | 보험판매 | 현금 | 수의계약 | 100,000 |',
+    );
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: DUP_CORPS, j001: [] }),
+    )) as Record<string, any>;
+    const m = (r['goods_services_matrix_signals'] as Array<Record<string, any>>)[0]!;
+    expect(m['possible_duplicate_of_major_detail']).toBeUndefined();
+    expect(r['summary'].goods_services_matrix_possible_duplicates).toBe(0);
+  });
+});

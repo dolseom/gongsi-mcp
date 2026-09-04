@@ -557,6 +557,16 @@ interface GoodsMatrixSignal {
     | 'threshold_unknown';
   /** 거래상대방 이름이 이 문서·포털의 회사 목록에서 확인되지 않았다 (표기 흔들림·국외 계열사 등) */
   counterparty_in_known_list?: false;
+  /**
+   * (6) 주요 내역에 **같은 매출회사·같은 금액**의 행이 다른 상대방 이름으로 있다 —
+   * 두 표가 같은 회사를 다르게 적은 같은 거래일 가능성이 높다는 표시다 (실물에서 확인:
+   * (6) '미래에셋생명(주)' vs (5) '미래에셋 생명보험(주)'). 버리지 않고 표시만 한다.
+   */
+  possible_duplicate_of_major_detail?: {
+    major_detail_counterparty: string;
+    amount_display: string;
+    note: string;
+  };
   /** (6) 주요 내역과 같은 상대방 요건 미확인 한계가 그대로 적용된다 */
   counterparty_qualification?: 'not_verified';
   /** (5)만의 한계를 사용자에게 그대로 전달한다 */
@@ -1388,13 +1398,31 @@ export async function detectUndisclosedTransactions(
   //   그 쌍은 (5)에서 보완 신호로 낸다 — 실측상 (5)에는 배당금수익이 실리지 않으므로
   //   (5)의 값은 그 caveat 행과 다른 거래일 개연성이 크고, 조용히 버리면 누락이 된다.
   const goodsPairKeys = new Set(aggregates.keys());
+  // ★ 실물에서 **쌍 키 정규화가 못 잡는 표기 차이**가 확인됐다 (미래에셋 20260819000341):
+  //   같은 205,454백만 보험판매 거래를 (6)은 '미래에셋생명(주)', (5)는 '미래에셋 생명보험(주)'
+  //   로 적는다. 공백·법인격을 지워도 '미래에셋생명' ≠ '미래에셋생명보험' 이라 중복 제거를
+  //   비껴가 같은 거래가 양쪽에 후보로 올랐다. 이름만으로 같은 회사인지 알 방법이 없다
+  //   (DART↔포털 표기 체계가 다르다는 이 프로젝트의 오래된 전제와 같은 문제다).
+  // ★ 그렇다고 "같은 매출회사 + 같은 금액"으로 **버리면** 우연히 금액이 같은 별개 거래가
+  //   조용히 사라진다 — 이 프로젝트가 반복해서 금지한 거짓 안심 방향이다. 그래서 버리지 않고
+  //   **표시만 한다** (화이트리스트를 필터가 아니라 표시로 쓰는 것과 같은 규칙).
+  const majorByCompanyAmount = new Map<string, string>();
+  for (const a of aggregates.values()) {
+    // 금액 0 은 우연 일치가 흔해 힌트로 쓰지 않는다
+    if (a.total > 0) {
+      majorByCompanyAmount.set(`${normalizeCompanyName(a.company)} ${a.total}`, a.counterparty);
+    }
+  }
   const GOODS5_CAVEAT =
     '(5) 계열회사간 상품ㆍ용역거래 **총괄표**에서 온 값입니다 — ① 상대방별 **연간 총액**이라 ' +
     '기준금액 판단 단위인 **분기 합계액**(고시 §4③2호)으로 분해되지 않습니다 ② 총괄표에는 ' +
     '**품목이 없어** 배당·이자·임대차처럼 상품·용역이 아닌 항목을 가려내지 못합니다 ' +
-    '(실측상 총괄표에 배당금수익은 실리지 않았습니다) ③ (6) 주요 내역에 없는 쌍만 보완한 것이라 ' +
-    '(6) 쪽 신호와 중복되지 않습니다.';
+    '(실측상 총괄표에 배당금수익은 실리지 않았습니다) ③ (6) 주요 내역과 **회사명이 정규화 ' +
+    '일치하는 쌍**은 제외했습니다. 다만 두 표가 같은 회사를 다르게 적으면(실측: (6) ' +
+    "'미래에셋생명(주)' vs (5) '미래에셋 생명보험(주)') 같은 거래가 양쪽에 남습니다 — " +
+    '그 가능성이 보이면 possible_duplicate_of_major_detail 로 표시하니 확인 전에 먼저 보세요.';
   let goodsMatrixPairsAlsoInDetail = 0;
+  let goodsMatrixPossibleDuplicates = 0;
   const judgedGoodsMatrix: GoodsMatrixSignal[] = [];
   for (const c of goodsMatrixSeed.cells) {
     const key = `${normalizeCompanyName(c.rowCompany)} ${normalizeCompanyName(c.colCompany)}`;
@@ -1402,6 +1430,12 @@ export async function detectUndisclosedTransactions(
       goodsMatrixPairsAlsoInDetail++;
       continue;
     }
+    // 같은 매출회사가 (6)에서 **원 단위까지 같은 금액**을 다른 이름의 상대방에게 적었다면
+    // 같은 거래일 가능성이 높다 — 판정은 그대로 두고 표시만 한다
+    const dupCounterparty = majorByCompanyAmount.get(
+      `${normalizeCompanyName(c.rowCompany)} ${c.amount}`,
+    );
+    if (dupCounterparty !== undefined) goodsMatrixPossibleDuplicates++;
     const th = thresholds.get(normalizeCompanyName(c.rowCompany));
     const j = judgeOverThreshold(c.amount, th);
     const base: GoodsMatrixSignal = {
@@ -1424,6 +1458,19 @@ export async function detectUndisclosedTransactions(
       ...(knownKeys.has(normalizeCompanyName(c.colCompany))
         ? {}
         : { counterparty_in_known_list: false }),
+      ...(dupCounterparty !== undefined
+        ? {
+            possible_duplicate_of_major_detail: {
+              major_detail_counterparty: dupCounterparty,
+              amount_display: fmtWon(c.amount),
+              note:
+                `(6) 주요 내역에도 같은 매출회사가 **같은 금액**(${fmtWon(c.amount)})을 ` +
+                `'${dupCounterparty}' 에게 적은 행이 있습니다 — 두 표가 같은 회사를 다르게 ` +
+                '적은 **같은 거래**일 가능성이 높습니다. 그 경우 (6) 쪽 신호와 이 신호는 하나로 ' +
+                '세어야 합니다. 우연히 금액이 같은 별개 거래일 수도 있어 버리지 않고 표시만 합니다',
+            },
+          }
+        : {}),
       quarterly_logic: 'threshold_unknown',
       caveat: GOODS5_CAVEAT,
       status: 'not_judged',
@@ -1995,7 +2042,10 @@ export async function detectUndisclosedTransactions(
       '서식상 "거래한 금액이 **일정 규모 이상**인 경우"만 싣고 그 규모 기준은 우리가 계산하는 ' +
       '기준금액과 다릅니다. 그래서 (5) 계열회사간 상품ㆍ용역거래 **총괄표**(전 쌍 수록)에서 ' +
       '**(6)에 없는 (매출회사, 매입회사) 쌍만** 보완 신호로 냅니다(goods_services_matrix_signals, ' +
-      'source:"(5)총괄"). 중복은 정규화된 쌍 키로 제거하므로 같은 거래가 두 번 오르지 않습니다. ' +
+      'source:"(5)총괄"). 중복은 정규화된 쌍 키로 제거하지만 **두 표가 같은 회사를 다르게 적으면 ' +
+      '그 키가 듣지 않습니다** (실측: (6) "미래에셋생명(주)" vs (5) "미래에셋 생명보험(주)" — 같은 ' +
+      '205,454백만 거래가 양쪽에 남았습니다). 같은 매출회사·같은 금액이면 ' +
+      'possible_duplicate_of_major_detail 로 표시하니 후보 수를 셀 때 확인하세요. ' +
       '보완 신호는 연간 총액이 ≥ 4×기준금액일 때만 (6)과 같은 강도의 조건부 후보이고, 총액만 ' +
       '기준 이상이면 candidate_aggregate_only(분기로 나누면 전부 미달일 수 있음)입니다. ' +
       '또 총괄표에는 **품목이 없어** 배당·이자·임대차 분리를 적용하지 못하고, 국외 계열사 열도 ' +
@@ -2050,6 +2100,17 @@ export async function detectUndisclosedTransactions(
         '쌍입니다 ((6)은 일정 규모 이상만 싣습니다). 총괄표는 **연간 총액·품목 없음**이라 신호가 ' +
         '한 단계 약합니다 — 각 신호의 caveat 와 status 를 그대로 전달하고, 분기별 거래액과 ' +
         '상대방 지분 요건을 확인하세요.',
+    );
+  }
+  if (goodsMatrixPossibleDuplicates > 0) {
+    const dups = judgedGoodsMatrix.filter((m) => m.possible_duplicate_of_major_detail);
+    notes.push(
+      `⚠️ (5) 보완 신호 ${goodsMatrixPossibleDuplicates}건은 (6) 주요 내역에 **같은 매출회사· ` +
+        `같은 금액** 행이 다른 상대방 이름으로 있습니다 (${dups
+          .map((m) => `${m.company}→${m.counterparty}/${m.annual_amount_display}`)
+          .join(', ')}) — 두 표가 같은 회사를 다르게 적은 **같은 거래**일 가능성이 높습니다 ` +
+        '(실측: (6) "미래에셋생명(주)" vs (5) "미래에셋 생명보험(주)"). 그 경우 양쪽 신호를 ' +
+        '하나로 세세요. 우연히 금액이 같은 별개 거래일 수도 있어 버리지 않고 표시만 했습니다.',
     );
   }
   if (secCandidates.length > 0) {
@@ -2242,6 +2303,11 @@ export async function detectUndisclosedTransactions(
       goods_services_matrix_pairs_extracted: goodsMatrixSeed.cells.length,
       goods_services_matrix_pairs_supplemented: judgedGoodsMatrix.length,
       goods_services_matrix_pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
+      /**
+       * 회사명이 달라 중복 제거를 비껴갔지만 (6)에 **같은 매출회사·같은 금액** 행이 있는 쌍.
+       * 같은 거래가 양쪽에 실렸을 수 있으니 후보 수를 셀 때 이 수를 빼고 세어야 할 수 있다.
+       */
+      goods_services_matrix_possible_duplicates: goodsMatrixPossibleDuplicates,
       /** 연간 총액 ≥ 4×기준금액(비둘기집 성립) + J001 부재 — (6) 경로와 같은 강도의 조건부 후보 */
       goods_services_matrix_candidates_if_qualified: gmCandidates.length,
       /** 총액만 기준 이상 — 분기로 나누면 전부 미달일 수 있어 "후보"가 아니라 확인 대상이다 */
@@ -2359,6 +2425,8 @@ export async function detectUndisclosedTransactions(
         duplicate_pairs: goodsMatrixSeed.duplicatePairs,
         /** (6) 주요 내역에 이미 있어 보완하지 않은 쌍 수 (중복 방지가 실제로 동작한 횟수) */
         pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
+        /** 이름은 달랐지만 (6)에 같은 매출회사·같은 금액 행이 있어 중복 의심으로 표시한 쌍 수 */
+        possible_duplicates: goodsMatrixPossibleDuplicates,
         /** 회사 목록에서 확인되지 않은 매입회사 이름 (표기 흔들림·국외 계열사 등) */
         counterparties_not_in_known_list: [
           ...new Set(
