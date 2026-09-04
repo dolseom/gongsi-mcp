@@ -1334,6 +1334,7 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     const all = [
       ...((r['goods_services_matrix_signals'] ?? []) as Array<Record<string, any>>),
       ...((r['goods_services_matrix_below_threshold'] ?? []) as Array<Record<string, any>>),
+      ...((r['goods_services_matrix_foreign_affiliate'] ?? []) as Array<Record<string, any>>),
     ];
     return all.find(
       (m) =>
@@ -1418,7 +1419,7 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(m['quarterly_logic']).toBe('annual_geq_threshold');
     expect(m['status']).toBe('candidate_aggregate_only');
     expect(String(m['reason'])).toContain('분기 합계액');
-    expect(r['summary'].goods_services_matrix_candidates_aggregate_only).toBe(4);
+    expect(r['summary'].goods_services_matrix_candidates_aggregate_only).toBe(3);
   });
 
   /**
@@ -1432,7 +1433,7 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(m['threshold'].value).toBe(10 * 억);
     expect(m['quarterly_logic']).toBe('annual_below_threshold');
     expect(m['status']).toBe('below_threshold');
-    expect(r['summary'].goods_services_matrix_below_threshold).toBe(8);
+    expect(r['summary'].goods_services_matrix_below_threshold).toBe(7);
   });
 
   it('기준금액을 모르면 not_judged — "후보 아님"으로 흘리지 않는다', async () => {
@@ -1442,9 +1443,9 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(m['quarterly_logic']).toBe('threshold_unknown');
     expect(m['status']).toBe('not_judged');
     expect(String(m['reason'])).toContain('threshold_unknown');
-    expect(r['summary'].goods_services_matrix_not_judged).toBe(48);
+    expect(r['summary'].goods_services_matrix_not_judged).toBe(41);
     expect(
-      (r['notes'] as string[]).some((n) => n.includes('(5) 총괄 보완 신호') && n.includes('48건')),
+      (r['notes'] as string[]).some((n) => n.includes('(5) 총괄 보완 신호') && n.includes('41건')),
     ).toBe(true);
   });
 
@@ -1485,18 +1486,38 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
   });
 
   /**
-   * 화이트리스트는 **필터가 아니라 표시**다 (유가증권 통합과 같은 규칙) —
-   * 국외 계열사 열은 목록 밖이지만 버리지 않고 표시만 한다. 버리면 조용한 누락이 된다.
+   * ★ 국외 계열회사 상대 거래에는 공시의무가 **없다** (법 §26①·고시 §2③2호·공정위 매뉴얼
+   * lit26-020 원문 확인 2026-09-04). 그래서 후보가 아니라 별도 상태로 분리한다.
+   * 판별은 **원문 표의 그룹 헤더('해외계열사')로만** 한다 — 국내 법인도 영문 상호를 쓰므로
+   * 회사명 모양으로 추측하면 안 된다. 버리지는 않고 금액·근거와 함께 남긴다.
    */
-  it('회사 목록 밖 상대방(국외 계열사)은 버리지 않고 표시한다', async () => {
+  it('국외 계열회사 열은 후보가 아니라 not_applicable_foreign_affiliate 다', async () => {
     const r = await run();
     const m = findPair(r, '미래에셋 캐피탈(주)', 'Mirae Asset Finance Company (Vietnam)')!;
     expect(m['annual_amount']).toBe(10_439 * 백만);
-    expect(m['counterparty_in_known_list']).toBe(false);
-    expect(m['status']).toBe('candidate_aggregate_only');
-    expect(r['diagnostics'].goods_services_matrix.counterparties_not_in_known_list).toContain(
-      'Mirae Asset Finance Company (Vietnam)',
+    expect(m['status']).toBe('not_applicable_foreign_affiliate');
+    expect(m['column_group']).toContain('해외계열사');
+    expect(String(m['reason'])).toContain('국외 계열회사는 제외한다');
+    expect(String(m['reason'])).toContain('간접적으로');
+    // 실물 (5)의 해외계열사 열은 9개다 — 국내 열은 하나도 섞이지 않아야 한다
+    expect(r['summary'].goods_services_matrix_foreign_affiliate).toBe(9);
+    expect(r['goods_services_matrix_foreign_affiliate']).toHaveLength(9);
+    for (const f of r['goods_services_matrix_foreign_affiliate'] as Array<Record<string, any>>) {
+      expect(String(f['counterparty']), String(f['counterparty'])).toMatch(/^(Mirae|MAC)/);
+    }
+    // 유가증권 (3) 표는 '국내 계열회사' 전용이라 해외 열이 없다
+    expect(r['summary'].securities_foreign_affiliate).toBe(0);
+  });
+
+  it('국외 판정 근거를 scope_caveats 에 조문으로 싣는다', async () => {
+    const r = await run();
+    const c = (r['scope_caveats'] as string[]).find((x) =>
+      x.includes('국외(해외) 계열회사 상대 거래에는 공시의무가 없습니다'),
     );
+    expect(c).toBeDefined();
+    expect(String(c)).toContain('법 §26①');
+    expect(String(c)).toContain('고시 §2③2호');
+    expect(String(c)).toContain('2026-04-27');
   });
 
   it('(5)만의 한계를 caveat 로 매 신호에 동봉한다', async () => {

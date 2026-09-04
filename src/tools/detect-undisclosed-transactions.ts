@@ -51,6 +51,41 @@ import {
   type GoodsServiceRow,
 } from '../parsers/j004-transactions.js';
 import { extractGoodsServicesMatrix, extractSecuritiesMatrix } from '../parsers/j004-matrix.js';
+
+/**
+ * 이 매트릭스 열이 **국외 계열회사** 묶음인가 — 원문 그룹 헤더로만 판별한다.
+ *
+ * ★ 국외 계열회사와의 거래에는 대규모내부거래 공시의무가 **없다** (원문 3중 확인, 2026-09-04):
+ *  - 법 §26① : "…에 속하는 국내 회사는 특수관계인(**국외 계열회사는 제외한다.** 이하 이 조에서
+ *    같다)을 상대방으로 하거나 특수관계인을 위하여 …"
+ *  - 고시 §2③2호 : "…특수관계인(**국외 계열회사는 제외한다.** 이하 이 호에서 같다)을 상대방으로
+ *    하거나 …"
+ *  - 공정위 공시 업무 매뉴얼(2026-04-27) : "공시대상회사와 공익법인이 해당 공시대상기업집단에
+ *    속하는 국외 계열회사와 대규모내부거래 등을 하는 경우 이에 대한 **이사회 의결 및 공시의무
+ *    없음**" (lit26-020)
+ *
+ * ⚠️ 회사명 모양(영문 상호 등)으로 추측하지 않는다 — 국내 법인도 영문 상호를 쓴다.
+ * J004 (5) 총괄표가 열 묶음을 '국내계열사'/'해외계열사' 그룹 헤더로 스스로 구분하므로 그것만 쓴다.
+ */
+export function isForeignAffiliateColumn(colGroup: string): boolean {
+  return /(해외|국외)계열/.test(colGroup.replace(/[\s ]+/g, ''));
+}
+
+/** 국외 계열회사 열로 분류한 신호에 붙이는 근거·한계 문구 (사용자에게 그대로 전달된다) */
+function foreignAffiliateReason(colGroup: string): string {
+  return (
+    'not_applicable_foreign_affiliate — 원문 표가 이 열을 **국외(해외) 계열회사** 묶음으로 ' +
+    `분류합니다(그룹 헤더: "${colGroup.replace(/\|+$/, '').replace(/\|/g, ' › ')}"). ` +
+    '법 §26①은 "특수관계인(**국외 계열회사는 제외한다**. 이하 이 조에서 같다)"이라고 명시하고 ' +
+    '고시 §2③2호도 같은 문언이며, 공정위 공시 업무 매뉴얼(2026-04-27)도 "국외 계열회사와 ' +
+    '대규모내부거래 등을 하는 경우 이사회 의결 및 공시의무 없음"이라고 답합니다 — 따라서 ' +
+    '미공시 후보가 아닙니다. ' +
+    '⚠️ 다만 같은 매뉴얼은 "특수관계인이 발행한 주식 등을 **국외 계열회사를 통하여 간접적으로** ' +
+    '매입하는 등 특수관계인을 **위한** 거래"에는 의무가 있다고 합니다 — 이 표는 상대방만 보여 ' +
+    '그런 간접거래인지 구분하지 못하므로, 금액이 크면 거래 성격을 직접 확인하세요. ' +
+    '또한 열 그룹은 병합 헤더를 왼쪽부터 이어받아 읽은 것이라 분류가 틀릴 수 있습니다'
+  );
+}
 import { normalizeCompanyName } from '../parsers/md-table.js';
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
@@ -503,10 +538,14 @@ interface SecuritySignal {
    * 판정에서 빼지는 않되 상대방 확인이 필요함을 알린다.
    */
   counterparty_in_known_list?: false;
+  /** 원문이 이 열을 국외(해외) 계열회사로 분류했는가 — 판정 근거를 사용자가 보게 남긴다 */
+  column_group?: string;
   status?:
     | 'below_threshold'
     | 'candidate_aggregate_only'
     | 'j001_filing_exists'
+    /** 국외 계열회사 상대 거래 — 법 §26①·고시 §2③2호가 특수관계인에서 제외한다 */
+    | 'not_applicable_foreign_affiliate'
     | 'not_judged';
   reason?: string;
   j001_search?: { from: string; to: string; type_filter: string };
@@ -571,11 +610,15 @@ interface GoodsMatrixSignal {
   counterparty_qualification?: 'not_verified';
   /** (5)만의 한계를 사용자에게 그대로 전달한다 */
   caveat: string;
+  /** 원문이 이 열을 국외(해외) 계열회사로 분류했는가 — 판정 근거를 사용자가 보게 남긴다 */
+  column_group?: string;
   status?:
     | 'candidate_if_counterparty_qualified'
     | 'candidate_aggregate_only'
     | 'j001_filing_exists'
     | 'below_threshold'
+    /** 국외 계열회사 상대 거래 — 법 §26①·고시 §2③2호가 특수관계인에서 제외한다 */
+    | 'not_applicable_foreign_affiliate'
     | 'not_judged';
   reason?: string;
   j001_search?: { from: string; to: string; type_filter: string };
@@ -1363,6 +1406,16 @@ export async function detectUndisclosedTransactions(
         : { counterparty_in_known_list: false }),
       status: 'not_judged',
     };
+    // 국외 계열회사는 법 §26①·고시 §2③2호가 특수관계인에서 제외한다 — 후보가 될 수 없다.
+    // 버리지 않고 근거와 함께 남긴다 (그룹 헤더 판독이 틀렸을 수 있다).
+    if (isForeignAffiliateColumn(c.colGroup)) {
+      return {
+        ...base,
+        column_group: c.colGroup,
+        status: 'not_applicable_foreign_affiliate' as const,
+        reason: foreignAffiliateReason(c.colGroup),
+      };
+    }
     if (j.over === false) {
       // ★ 이 방향만 확실하다 — 상대방별 **연간 총액**이 기준 미만이면 그 상대방과의
       //   어떤 개별 거래도 기준 미만이다 (부분은 합계를 넘지 못한다).
@@ -1475,6 +1528,16 @@ export async function detectUndisclosedTransactions(
       caveat: GOODS5_CAVEAT,
       status: 'not_judged',
     };
+    // 국외 계열회사 열은 후보가 될 수 없다 (법 §26①·고시 §2③2호). 버리지 않고 근거와 함께 남긴다.
+    if (isForeignAffiliateColumn(c.colGroup)) {
+      judgedGoodsMatrix.push({
+        ...base,
+        column_group: c.colGroup,
+        status: 'not_applicable_foreign_affiliate',
+        reason: foreignAffiliateReason(c.colGroup),
+      });
+      continue;
+    }
     if (j.over === false) {
       // ★ 이 방향만 확실하다 — 분기 합계는 연간 총액을 넘지 못하므로, 연간 총액이 기준 미만이면
       //   네 분기 전부 기준 미만이다. (기준금액 자체는 J004 자본 스냅샷 기반 근사치다.)
@@ -1963,6 +2026,12 @@ export async function detectUndisclosedTransactions(
   const gmFilingExists = judgedGoodsMatrix.filter((m) => m.status === 'j001_filing_exists');
   const gmNotJudged = judgedGoodsMatrix.filter((m) => m.status === 'not_judged');
   const gmBelow = judgedGoodsMatrix.filter((m) => m.status === 'below_threshold');
+  const gmForeign = judgedGoodsMatrix.filter(
+    (m) => m.status === 'not_applicable_foreign_affiliate',
+  );
+  const secForeign = judgedSecurities.filter(
+    (sec) => sec.status === 'not_applicable_foreign_affiliate',
+  );
 
   const secCandidates = judgedSecurities.filter(
     (sec) => sec.status === 'candidate_aggregate_only',
@@ -2048,8 +2117,17 @@ export async function detectUndisclosedTransactions(
       'possible_duplicate_of_major_detail 로 표시하니 후보 수를 셀 때 확인하세요. ' +
       '보완 신호는 연간 총액이 ≥ 4×기준금액일 때만 (6)과 같은 강도의 조건부 후보이고, 총액만 ' +
       '기준 이상이면 candidate_aggregate_only(분기로 나누면 전부 미달일 수 있음)입니다. ' +
-      '또 총괄표에는 **품목이 없어** 배당·이자·임대차 분리를 적용하지 못하고, 국외 계열사 열도 ' +
-      '포함될 수 있습니다(counterparty_in_known_list 로 표시).',
+      '또 총괄표에는 **품목이 없어** 배당·이자·임대차 분리를 적용하지 못합니다.',
+    '★ **국외(해외) 계열회사 상대 거래에는 공시의무가 없습니다** — 법 §26①이 "특수관계인(**국외 ' +
+      '계열회사는 제외한다**. 이하 이 조에서 같다)"이라 명시하고, 고시 §2③2호도 같은 문언이며, ' +
+      '공정위 공시 업무 매뉴얼(2026-04-27)도 "국외 계열회사와 대규모내부거래 등을 하는 경우 ' +
+      '이사회 의결 및 공시의무 없음"이라고 답합니다. 그래서 (5) 총괄표가 **그룹 헤더로 ' +
+      '"해외계열사"라고 밝힌 열**은 not_applicable_foreign_affiliate 로 분리합니다 — 회사명 ' +
+      '모양으로 추측하지 않고 원문 표의 분류만 씁니다(column_group 으로 근거를 함께 냅니다). ' +
+      '⚠️ 두 가지 한계: ① 같은 매뉴얼은 "특수관계인이 발행한 주식 등을 **국외 계열회사를 통하여 ' +
+      '간접적으로** 매입하는 등 특수관계인을 **위한** 거래"에는 의무가 있다고 하는데 이 표로는 ' +
+      '그런 간접거래를 구분할 수 없습니다 ② 그룹 헤더는 병합 셀을 왼쪽부터 이어받아 읽으므로 ' +
+      '분류가 틀릴 수 있어, 버리지 않고 금액·기준금액과 함께 출력에 남깁니다.',
     '자금 차입의 대규모내부거래 해당 여부는 고시 §4③에 따라 "동일 거래상대방과의 동일 거래대상" ' +
       '기준으로 판단합니다 — J004 로는 동일 거래대상(같은 약정) 여부를 알 수 없어, 개별 건이 기준 ' +
       '미달이어도 같은 상대방 연간 합산이 기준 이상이면 below_threshold 로 단정하지 않고 not_judged' +
@@ -2315,6 +2393,9 @@ export async function detectUndisclosedTransactions(
       goods_services_matrix_filing_exists: gmFilingExists.length,
       goods_services_matrix_below_threshold: gmBelow.length,
       goods_services_matrix_not_judged: gmNotJudged.length,
+      /** 국외 계열회사 상대 — 법 §26①·고시 §2③2호가 특수관계인에서 제외해 후보가 아니다 */
+      goods_services_matrix_foreign_affiliate: gmForeign.length,
+      securities_foreign_affiliate: secForeign.length,
       securities_pairs_extracted: securitiesMatrix.cells.length,
       /** 연간 총액이 기준금액 이상 + 유형 J001 부재 — "미공시 후보"가 아니라 확인 대상이다 */
       securities_candidates_aggregate_only: secCandidates.length,
@@ -2353,6 +2434,8 @@ export async function detectUndisclosedTransactions(
             ...gmNotJudged,
           ],
           ...(gmBelow.length ? { goods_services_matrix_below_threshold: gmBelow } : {}),
+          /** 국외 계열회사 상대 — 공시의무 자체가 없다 (버리지 않고 근거와 함께 남긴다) */
+          ...(gmForeign.length ? { goods_services_matrix_foreign_affiliate: gmForeign } : {}),
         }
       : {}),
     /**
@@ -2363,6 +2446,7 @@ export async function detectUndisclosedTransactions(
       ? {
           securities_signals: [...secCandidates, ...secFilingExists, ...secNotJudged],
           ...(secBelow.length ? { securities_below_threshold: secBelow } : {}),
+          ...(secForeign.length ? { securities_foreign_affiliate: secForeign } : {}),
         }
       : {}),
     ...(joinFailures.length ? { join_failures: joinFailures } : {}),

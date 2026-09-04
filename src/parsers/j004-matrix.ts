@@ -41,6 +41,19 @@ export interface MatrixCell {
   colCompany: string;
   /** 금액 (원). 단위 캡션으로 환산한 값 — 캡션을 못 읽은 표는 통째로 건너뛴다 */
   amount: number;
+  /**
+   * 이 열이 속한 **그룹 헤더** 텍스트 — 회사명 줄 위의 헤더 줄들을 병합 전개해 이어붙인 것.
+   *
+   * 왜 필요한가: 원문이 스스로 열 묶음의 성격을 밝히는 자리다. 실물 (5) 총괄표는
+   * `| … | 국내계열사계 | 해외계열사 |  |  |  |` 처럼 **국내/해외 계열사를 그룹 헤더로 구분**한다.
+   * 법 §26①·고시 §2③2호가 국외 계열회사를 특수관계인에서 제외하므로, 판정 쪽이 이 정보를
+   * 써야 한다 — 회사명 모양(영문 상호 등)으로 추측하면 안 된다.
+   *
+   * ⚠️ 병합 셀은 첫 칸에만 라벨이 있고 나머지가 비어 있어 **왼쪽 값을 이어받아** 채운다.
+   * 라벨이 없는 열에 앞 그룹이 잘못 번질 수 있으므로, 이 값으로 무언가를 **버리면 안 되고**
+   * 분류 근거를 사용자에게 함께 보여야 한다.
+   */
+  colGroup: string;
 }
 
 export interface MatrixResult {
@@ -228,6 +241,23 @@ export function extractMatrix(
     }
     const firstValueCol = Math.min(...cols);
 
+    // 열 그룹 헤더 — 회사명 줄 **위의** 줄들만 쓴다 (회사명 줄 자체는 열 이름이다).
+    // 병합 셀은 첫 칸에만 라벨이 있으므로 왼쪽 값을 이어받아 전개한다 (MatrixCell.colGroup 주석).
+    const tableWidth = Math.max(
+      0,
+      ...t.header.map((r) => r.length),
+      ...t.rows.map((r) => r.length),
+    );
+    const groupText: string[] = new Array<string>(tableWidth).fill('');
+    for (let i = 0; i < nameRow; i++) {
+      let carry = '';
+      for (let c = 0; c < tableWidth; c++) {
+        const cell = normalizeCell(t.header[i]?.[c] ?? '');
+        if (cell !== '') carry = cell;
+        groupText[c] = `${groupText[c] ?? ''}${carry}|`;
+      }
+    }
+
     // 열 회사명 — 값 열이면서 헤더 어디에도 집계 표기가 없는 열만 쓴다
     const colNames = new Map<number, string>();
     for (const c of cols) {
@@ -276,7 +306,12 @@ export function extractMatrix(
           continue;
         }
         seenPairs.add(key);
-        res.cells.push({ rowCompany, colCompany, amount: amount * unit });
+        res.cells.push({
+          rowCompany,
+          colCompany,
+          amount: amount * unit,
+          colGroup: groupText[c] ?? '',
+        });
       }
     }
   }
