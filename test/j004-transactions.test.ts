@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import {
   extractCapitals,
   extractFundBorrowings,
+  extractGroupName,
   extractMajorGoodsServices,
   parseLooseDate,
   sliceSection,
@@ -222,5 +223,22 @@ describe('진단', () => {
     const d = diagnose('# 다른 공시\n\n내용 없음');
     expect(d.sections_missing).toEqual(['재무현황', '자금거래', '주요 상품·용역']);
     expect(d.fund_borrowings).toBe(0);
+  });
+});
+
+describe('기업집단명 추출 (rcept_no 경로 포털 조인용)', () => {
+  it('표지의 "기업집단명" 행에서 집단명을 읽는다 (실물 20260819000341 과 같은 형태)', () => {
+    expect(extractGroupName(md)).toBe('미래에셋');
+  });
+
+  it('콜론 위치·공백 변형을 흡수한다', () => {
+    expect(extractGroupName('| 기업집단 명 | : 삼성 |')).toBe('삼성');
+    expect(extractGroupName('| 기업집단명: | 에스케이 |')).toBe('에스케이');
+  });
+
+  it('행이 없거나 값이 비면 null — 추측하지 않는다', () => {
+    expect(extractGroupName('# 다른 공시\n\n내용 없음')).toBeNull();
+    expect(extractGroupName('| 기업집단명 : |  |')).toBeNull();
+    expect(extractGroupName('| 기업집단명 : | - |')).toBeNull();
   });
 });

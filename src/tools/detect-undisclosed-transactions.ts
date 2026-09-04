@@ -44,6 +44,7 @@ import { classifyReportName, isCorrection } from './audit-periodic-disclosures.j
 import {
   extractCapitals,
   extractFundBorrowings,
+  extractGroupName,
   extractMajorGoodsServices,
   diagnose,
   type FundBorrowing,
@@ -173,6 +174,41 @@ function normalizeReportNm(nm: string): string {
 /** 자금 차입 거래를 커버할 수 있는 J001 보고서명인가 */
 export function isBorrowingReport(reportNm: string): boolean {
   return normalizeReportNm(reportNm).includes('자금차입');
+}
+
+/**
+ * 자금 **대여** 거래를 커버할 수 있는 J001 보고서명인가 (대여회사 관점).
+ *
+ * 대규모내부거래 공시의무는 거래를 하는 계열회사 **각자에게** 있다 — 차입회사가
+ * "특수관계인으로부터의 자금차입" 을 공시하는 것과 별개로, 자금을 대준 계열회사에는
+ * "특수관계인에 대한 자금대여" 공시의무가 있다 (J001 ACODE 80719, 실측 보고서명
+ * '특수관계인에대한자금대여'). 차입회사 쪽만 보면 대여회사의 미공시가 통째로 시야 밖이다.
+ */
+export function isLendingReport(reportNm: string): boolean {
+  return normalizeReportNm(reportNm).includes('자금대여');
+}
+
+/**
+ * 거래상대방 이름이 법인이 아니라 **자연인(동일인·친족)** 으로 보이는가 — 어디까지나
+ * 이름 모양에 근거한 **추정**이다.
+ *
+ * 왜 필요한가: J004 §거래현황은 "계열회사와 **특수관계인**간 거래현황" 이라 자연인인
+ * 동일인·친족이 거래상대방으로 실릴 수 있다. 자연인은 회사가 아니므로 J001 공시의무자가
+ * 아니고, 그 이름으로 "대여회사 미공시 후보" 를 만들면 오경보다.
+ *
+ * 안전 방향: 이 추정이 틀려(짧은 상호의 실제 법인) 자연인으로 분류되더라도, 그 건은
+ * 어차피 조인에 실패해 판정되지 않는 자리다 — 두 경우 모두 "판정하지 않음" 이므로
+ * 오분류가 거짓 안심을 만들지 않는다. 그래서 호출부는 **조인·소속 확인이 모두 실패한
+ * 뒤에만** 이 함수를 쓴다.
+ */
+export function looksLikeNaturalPerson(name: string): boolean {
+  const n = name.replace(/[\s ]+/g, '');
+  // 한글 2~4자만 (한국 성명 형태). 괄호·숫자·영문·법인격 표기가 섞이면 회사로 본다.
+  if (!/^[가-힣]{2,4}$/.test(n)) return false;
+  // 짧아도 조직임이 드러나는 어미는 제외한다
+  return !/(회사|법인|재단|조합|은행|증권|보험|생명|화재|투자|공사|상사|산업|물산|건설|개발|기금|공단|협회|센터)$/.test(
+    n,
+  );
 }
 
 /** 상품·용역 거래를 커버할 수 있는 J001 보고서명인가 (변경 공시 포함) */
@@ -305,9 +341,54 @@ type TxStatus =
   /** 날짜 개념이 없는 신호(상품·용역)의 존재 확인 */
   | 'j001_filing_exists'
   | 'below_threshold'
-  /** 계열편입일 이전 거래 — 편입 전에는 공시의무가 없다 (group 경로 한정) */
+  /** 계열편입일 이전 거래 — 편입 전에는 공시의무가 없다 (포털 소속회사 목록을 불러온 경우) */
   | 'no_duty_before_joining'
   | 'not_judged';
+
+/**
+ * 대여회사(자금을 대준 계열회사) 관점의 판정 어휘.
+ * 차입회사 쪽 어휘(TxStatus)를 그대로 쓰되, 상대방을 회사로 특정하지 못하는 두 경우를 더한다.
+ */
+type LenderStatus =
+  | 'undisclosed_candidate'
+  | 'j001_filing_near_date'
+  | 'j001_filing_in_window_only'
+  | 'below_threshold'
+  | 'no_duty_before_joining'
+  | 'not_judged'
+  /** 상대방 이름을 DART corp_code 로 잇지 못했다 — 조회 자체가 불가능 */
+  | 'counterparty_not_joined'
+  /** 상대방이 자연인(동일인·친족)으로 **추정**된다 — 회사가 아니면 J001 의무자가 아니다 */
+  | 'counterparty_not_company';
+
+/**
+ * 한 차입 건의 **대여회사 쪽** 공시의무 대조 결과.
+ * 기준금액은 대여회사 자신의 자본으로 계산한다 (같은 J004 재무현황 표).
+ */
+interface LenderSide {
+  /** 대여회사 = 이 차입 건의 거래상대방 */
+  company: string;
+  corp_code?: string;
+  status: LenderStatus;
+  reason?: string;
+  threshold?: {
+    value: number;
+    value_display: string;
+    formula: string;
+    source_row: string;
+  };
+  certainty?: Certainty;
+  joined_group_at?: string;
+  j001_search?: { from: string; to: string; type_filter: string };
+  matching_filings?: FilingRef[];
+  matching_filings_total?: number;
+  nearest_filing_gap_days?: number;
+  same_counterparty_annual_total?: number;
+  same_counterparty_annual_total_display?: string;
+  cancellations_of_type_in_window?: number;
+  search_partial?: boolean;
+  other_j001_in_window?: number;
+}
 
 interface JudgedBorrowing {
   company: string;
@@ -345,6 +426,8 @@ interface JudgedBorrowing {
   search_partial?: boolean;
   other_j001_in_window?: number;
   other_j001_sample?: FilingRef[];
+  /** 자금을 대준 계열회사 쪽의 "자금대여" 공시의무 대조 (거래 한 건에 의무자가 둘이다) */
+  lender_side?: LenderSide;
 }
 
 interface GoodsItem {
@@ -517,13 +600,21 @@ export async function detectUndisclosedTransactions(
   let sourceReportNm: string | null = null;
   let sourceIsCorrection = false;
   let population: Population | null = null;
+  /** 포털 소속회사 목록을 실제로 불러왔는가 (rcept_no 경로는 문서의 기업집단명으로 시도한다) */
+  let populationSource: 'portal' | 'none' = 'none';
+  let populationGroup: string | null = null;
+  let populationYearMonth: string | null = null;
+  let populationReason: string | null = null;
   let filingYear: number;
 
   if (input.group) {
     const year = input.year ?? Number(today.slice(0, 4));
     filingYear = year;
     // 포털 스냅샷은 매년 5/1 기준 — 점검 연도의 5월로 맞춘다 (audit_periodic 과 같은 이유)
-    population = await deps.resolvePop({ group: input.group, year_month: `${year}05` });
+    populationYearMonth = `${year}05`;
+    population = await deps.resolvePop({ group: input.group, year_month: populationYearMonth });
+    populationSource = 'portal';
+    populationGroup = input.group;
 
     // 대표회사 corp_code — 포털 대표회사명을 소속회사 목록과 정규화 이름으로 조인
     const repName = String(
@@ -622,6 +713,54 @@ export async function detectUndisclosedTransactions(
     );
   }
 
+  // ── ①-b rcept_no 경로: 문서가 밝힌 기업집단명으로 포털 소속회사 목록을 불러온다 ──
+  //
+  // 종전에는 rcept_no 경로에 모집단 자체가 없어 조인이 "DART 상호 완전일치" 한 갈래뿐이었다.
+  // 그 결과 ① 동명 비계열 회사로 오조인될 위험을 걸러내지 못하고 ② 계열편입일(편입 전 거래는
+  // 의무 없음) 대조를 못 하며 ③ 유가증권 매트릭스의 거래상대방이 계열사인지 확인할 목록이
+  // 재무현황 표뿐이었다. 문서 표지의 '기업집단명' 행 하나면 group 경로와 같은 모집단을 쓸 수 있다.
+  //
+  // ★ 실패는 전부 폴백이다 — EGROUP 키가 없어도(README 약속: DART 키 하나면 동작) 집단명을
+  //   못 읽어도 포털이 죽어도, 종전 동작(DART 상호 매칭)으로 조용히 되돌아가고 사유만 남긴다.
+  if (!input.group) {
+    const docGroup = extractGroupName(markdown);
+    if (!docGroup) {
+      populationReason =
+        'group_name_not_found — 문서에서 "기업집단명" 행을 찾지 못했습니다 (서식 변형 가능)';
+    } else {
+      // group 경로와 같은 규칙: 포털 스냅샷은 매년 5/1 기준이고 연1회 J004 기한은 5/31이라,
+      // **그 문서가 제출된 해의 5월** 스냅샷이 문서 시점의 소속 상태에 가장 가깝다.
+      populationYearMonth = `${filingYear}05`;
+      try {
+        population = await deps.resolvePop({
+          group: docGroup,
+          year_month: populationYearMonth,
+        });
+        populationSource = 'portal';
+        populationGroup = docGroup;
+      } catch (err) {
+        population = null;
+        populationYearMonth = null;
+        populationReason =
+          `portal_unavailable — 문서의 기업집단명 '${docGroup}' 으로 포털 소속회사 목록을 ` +
+          `불러오지 못했습니다 (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`;
+      }
+    }
+    if (populationSource === 'portal') {
+      notes.push(
+        `ℹ️ 문서의 기업집단명('${populationGroup}')으로 포털 소속회사 목록(${populationYearMonth} 기준, ` +
+          `조인 ${population!.corpCodes.size}개사·미조인 ${population!.unjoined.length}개사)을 불러와 ` +
+          '회사명 조인과 계열사 확인에 사용했습니다.',
+      );
+    } else {
+      notes.push(
+        `ℹ️ 포털 소속회사 목록 없이 DART 상호 완전일치만으로 조인했습니다 (${populationReason}) — ` +
+          '동명 비계열 회사 오조인·계열편입일 대조 불가 등 조인 품질이 낮습니다. ' +
+          'group 경로로 호출하면 같은 문서를 포털 목록과 함께 점검합니다.',
+      );
+    }
+  }
+
   // ── ② 파싱 ──
   const parseDiag = diagnose(markdown);
   const capitals = extractCapitals(markdown);
@@ -685,6 +824,107 @@ export async function detectUndisclosedTransactions(
       }
       if (!popNameConflicts.has(key)) popByName.set(key, code);
     }
+  }
+
+  // ── ③-b 회사명 → corp_code 조인 ──
+  // ① 집단 소속회사(포털 이름) 정규화 매칭 ② DART 법인 인덱스 상호 완전일치.
+  // ★ ② 폴백으로 찾은 corp_code 가 집단 목록 어디에도 없으면 **비계열 동명 회사일 수 있다** —
+  // 그 회사의 J001 로 filing_exists 를 만들면 오조인이 거짓 안심으로 직결되므로 조인 실패로
+  // 처리한다 (Codex 4차 M7). 포털 목록을 못 불러온 경우(population === null)에는 이 검증이
+  // 불가능하다 — scope_caveats 로 밝힌다.
+  //
+  // 판정 순서상 **차입 판정보다 앞에** 둔다: 대여회사 쪽 의무를 판정하려면 검색 예산을 짜기
+  // 전에 상대방이 조인되는 계열회사인지 알아야 한다.
+  const joinFailures: Array<{ company: string; reason: string }> = [];
+  // 포털이 소속을 보증하는 이름들 — jurir 미조인이라 corp_code 는 없지만 계열사임은 확실하다
+  const popUnjoinedKeys = new Set(
+    (population?.unjoined ?? []).map((n) => normalizeCompanyName(n)),
+  );
+  /** 포털이 소속을 보증하는 이름인가 (조인분·미조인분 모두) */
+  function isKnownAffiliateName(rawName: string): boolean {
+    if (population === null) return false;
+    const key = normalizeCompanyName(rawName);
+    return popByName.has(key) || popNameConflicts.has(key) || popUnjoinedKeys.has(key);
+  }
+  /** 이 문서 재무현황 표(계열회사별 자본)에 실린 이름 — 자본을 못 읽은 행도 포함한다 */
+  const capitalNameKeys = new Set(capitals.map((c) => normalizeCompanyName(c.company)));
+  /**
+   * 이름의 주인이 **회사임이 문서·포털로 확인되는가.**
+   * corp_code 조인과는 독립이다 — 조인은 DART 인덱스 캐시 사정으로도 실패하지만,
+   * 재무현황 표(계열회사별 자본)나 포털 소속회사 목록에 실린 이름은 그 자체로 계열 '회사'다.
+   */
+  function isConfirmedCompanyName(rawName: string): boolean {
+    return isKnownAffiliateName(rawName) || capitalNameKeys.has(normalizeCompanyName(rawName));
+  }
+  function verifyMembership(code: string, rawName: string): { code?: string; reason?: string } {
+    if (population === null) return { code };
+    if (population.corpCodes.has(code)) return { code };
+    // 미조인 계열사: 포털 소속 목록에 같은 이름이 있고 DART 완전일치가 유일하면 그 회사다
+    // (동명 법인이 실존하면 findCorps 가 2건 이상을 돌려줘 여기 오기 전에 거부된다)
+    if (popUnjoinedKeys.has(normalizeCompanyName(rawName))) return { code };
+    return {
+      reason:
+        'dart_join_unverified — DART 에 상호가 일치하는 회사는 있으나 집단 소속회사 목록 ' +
+        '어디에도 없습니다. 비계열 동명 회사일 수 있어 그 회사의 공시로 판정하지 않습니다 ' +
+        '(실제 계열사라면 resolve_entity(fetchJurirNo=true) 로 조인 캐시를 채우세요)',
+    };
+  }
+  /** 포털이 계열사로 확인해 준 이름인데 DART 쪽에서 못 이은 경우의 안내를 덧붙인다 */
+  function withAffiliateHint(rawName: string, reason: string): string {
+    if (!isKnownAffiliateName(rawName)) return reason;
+    return (
+      `${reason}. 다만 이 이름은 포털 소속회사 목록에 있는 **계열회사**입니다 — ` +
+      'resolve_entity(fetchJurirNo=true) 로 법인등록번호 조인 캐시를 채우면 대조할 수 있습니다'
+    );
+  }
+  function joinCorpCodeUncached(rawName: string): { code?: string; reason?: string } {
+    const key = normalizeCompanyName(rawName);
+    if (popNameConflicts.has(key)) {
+      // 포털 목록 안에서조차 동명이라 어느 쪽인지 알 수 없다 — DART 완전일치로만 재시도
+      const exactOnly = deps.findCorps(rawName.trim());
+      if (exactOnly.length === 1) return verifyMembership(exactOnly[0]!.corpCode, rawName);
+      return { reason: '집단 소속회사 목록에 정규화 동명 2건 이상 — 자동 선택하지 않습니다' };
+    }
+    const fromPop = popByName.get(key);
+    if (fromPop) return { code: fromPop };
+    // 이름 변형을 순서대로 시도한다.
+    // ★ 매트릭스 표의 회사명에는 열 폭 때문에 줄바꿈에서 온 **공백이 섞인다**
+    //   ('미래에셋 자산운용(주)'). 공백을 그대로 두면 DART 상호 완전일치가 전부 실패해
+    //   신호가 통째로 join_failed 로 빠진다 (실측: 유가증권 신호 11건 전원 조인 실패).
+    const base = rawName.trim();
+    const stripLegal = (n: string): string =>
+      n.replace(/\(주\)|\(유\)|㈜|주식회사|유한회사|유한책임회사|합자회사|합명회사/g, '').trim();
+    const noSpace = base.replace(/[\s ]+/g, '');
+    const tried = new Set<string>();
+    for (const variant of [base, noSpace, stripLegal(base), stripLegal(noSpace)]) {
+      if (!variant || tried.has(variant)) continue;
+      tried.add(variant);
+      const hits = deps.findCorps(variant);
+      if (hits.length === 1) return verifyMembership(hits[0]!.corpCode, rawName);
+      if (hits.length > 1) {
+        return {
+          reason: withAffiliateHint(rawName, `동명 법인 ${hits.length}건 — 자동 선택하지 않습니다`),
+        };
+      }
+    }
+    return {
+      reason: withAffiliateHint(
+        rawName,
+        population === null
+          ? 'DART 법인 인덱스에서 상호 일치 없음'
+          : '집단 소속회사 목록·DART 법인 인덱스 어디에서도 조인 실패',
+      ),
+    };
+  }
+  // 같은 회사가 차입회사·대여회사·매트릭스 행으로 여러 번 나온다 — 인덱스 조회를 한 번만 한다
+  const joinCache = new Map<string, { code?: string; reason?: string }>();
+  function joinCorpCode(rawName: string): { code?: string; reason?: string } {
+    const key = normalizeCompanyName(rawName);
+    const hit = joinCache.get(key);
+    if (hit) return hit;
+    const r = joinCorpCodeUncached(rawName);
+    joinCache.set(key, r);
+    return r;
   }
 
   // ── ④ 거래 판정 1차 — 기준 초과 여부 ──
@@ -768,7 +1008,7 @@ export async function detectUndisclosedTransactions(
     }
   }
 
-  // ④-1. 계열편입일 이전 거래 분리 (group 경로 한정) — 편입 전에는 공시의무 자체가 없다.
+  // ④-1. 계열편입일 이전 거래 분리 — 편입 전에는 공시의무 자체가 없다.
   // audit_periodic 이 같은 오탐(신규 편입사의 과거 기한이 통째로 "미제출")을 겪고 도입한
   // joinedGroupAt(포털 grinil)을 여기서도 쓴다 (교차검토 M-6).
   if (population?.joinedGroupAt) {
@@ -785,11 +1025,125 @@ export async function detectUndisclosedTransactions(
           '대규모내부거래 공시의무가 없습니다. 단 편입일 데이터의 정확성·재편입 여부는 확인하지 않았습니다';
       }
     }
-  } else if (input.group) {
+  } else if (population) {
     notes.push(
       'ℹ️ 포털에서 계열편입일(grinil)을 얻지 못해 "편입 전 거래 = 의무 없음" 분리를 하지 않았습니다 — ' +
         '신규 편입 회사의 편입 전 거래가 후보로 나올 수 있습니다.',
     );
+  }
+
+  // ── ④-2. 대여회사(자금을 대준 계열회사) 관점 1차 판정 ──
+  //
+  // 대규모내부거래 공시의무는 거래를 하는 계열회사 **각자에게** 있다. 차입 한 건에 의무자가
+  // 둘이고(차입회사 = 자금차입 / 대여회사 = 특수관계인에 대한 자금대여), 기준금액은 **각자의
+  // 자본**으로 계산한다. 종전에는 차입회사 쪽만 봐서, 자본이 작은 대여회사의 미공시가 통째로
+  // 시야 밖이었다 (반대로 차입회사가 기준 미달이라 below_threshold 로 빠진 건이라도 대여회사
+  // 기준으로는 초과일 수 있다 — 그래서 차입회사 판정과 **독립적으로** 계산한다).
+  //
+  // 여기서는 조인·기준금액까지만 확정하고(순수 계산), J001 조회가 필요한 대여회사는 아래
+  // 검색 예산(⑤)에 함께 올린다. 상태는 ⑦에서 차입회사와 같은 함수·창·근접 규칙으로 확정한다.
+  /** 대여회사 정규화 이름 → 원문 이름 (검색 단계에서 조인에 쓴다) */
+  const lenderRawNames = new Map<string, string>();
+  /** J001 조회가 필요한 대여회사 키 → 이 대여회사가 관련된 차입일 목록 */
+  const lenderNeedsSearch = new Map<string, string[]>();
+  {
+    // (대여회사, 차입회사) 연간 합산 — §4③ 판단 단위는 차입회사 쪽과 같은 쌍이다
+    const pairTotals = new Map<string, number>();
+    for (const b of judgedBorrowings) {
+      const k = `${normalizeCompanyName(b.counterparty)} ${normalizeCompanyName(b.company)}`;
+      pairTotals.set(k, (pairTotals.get(k) ?? 0) + b.amount);
+    }
+    for (const b of judgedBorrowings) {
+      const lender = b.counterparty;
+      const key = normalizeCompanyName(lender);
+      const side: LenderSide = { company: lender, status: 'not_judged' };
+      b.lender_side = side;
+
+      // 차입회사 쪽과 같은 이유로 미래 일자는 판정하지 않는다
+      if (b.date && b.date > today) {
+        side.reason =
+          `future_transaction_date — 차입일(${b.date})이 오늘(${today}) 이후입니다 — ` +
+          '대여회사 쪽도 판정하지 않습니다';
+        continue;
+      }
+
+      const joined = joinCorpCode(lender);
+      if (!joined.code) {
+        // 자연인 추정은 **조인 실패 + 소속 확인 실패**가 모두 성립한 뒤에만 쓴다.
+        // ★ 조인 실패만으로 자연인 추정을 돌리면 안 된다: 한글 2~4자 상호가 실재하고
+        //   (예: '한샘'), 조인은 DART 인덱스 캐시 사정만으로도 실패한다. 재무현황 표나
+        //   포털 소속회사 목록이 회사임을 보증하는 이름을 자연인으로 분류하면 그 계열사의
+        //   자금대여 미공시가 counterparty_not_company 로 조용히 사라진다 — 거짓 안심이다.
+        if (!isConfirmedCompanyName(lender) && looksLikeNaturalPerson(lender)) {
+          side.status = 'counterparty_not_company';
+          side.reason =
+            'counterparty_looks_like_natural_person — 거래상대방 이름이 자연인(동일인·친족) 형태로 ' +
+            '보입니다. 자연인은 회사가 아니어서 J001 공시의무자가 아니므로 대조하지 않았습니다 — ' +
+            '**이름 모양에 근거한 추정**이니 실제로 법인이라면 그 회사의 자금대여 공시를 직접 확인하세요';
+        } else {
+          side.status = 'counterparty_not_joined';
+          side.reason =
+            `counterparty_not_joined — 대여회사 이름을 DART corp_code 로 잇지 못해 자금대여 공시를 ` +
+            `조회할 수 없었습니다 (${joined.reason ?? '조인 실패'}) — "공시 없음"이 아니라 확인하지 못한 것입니다` +
+            (capitalNameKeys.has(key)
+              ? '. 이 이름은 같은 문서의 재무현황 표에 있는 **계열회사**입니다 — ' +
+                'resolve_entity 로 corp_code 를 확인해 직접 대조하세요'
+              : '');
+        }
+        continue;
+      }
+      side.corp_code = joined.code;
+      lenderRawNames.set(key, lender);
+
+      // 대여회사도 편입 전에는 의무가 없다 (차입회사와 같은 근거·같은 한계)
+      const joinedAt = population?.joinedGroupAt?.get(joined.code);
+      if (b.date && joinedAt && b.date < joinedAt) {
+        side.status = 'no_duty_before_joining';
+        side.joined_group_at = joinedAt;
+        side.reason =
+          `차입일(${b.date})이 대여회사의 계열편입일(${joinedAt}, 포털 grinil)보다 앞섭니다 — ` +
+          '편입 전 거래에는 공시의무가 없습니다';
+        continue;
+      }
+
+      // 기준금액은 **대여회사 자신의 자본**으로 (같은 J004 재무현황 표)
+      const th = thresholds.get(key);
+      if (th) {
+        side.threshold = {
+          value: th.value,
+          value_display: fmtWon(th.value),
+          formula: th.formula,
+          source_row: th.source_row,
+        };
+      }
+      const j = judgeOverThreshold(b.amount, th);
+      if (j.certainty) side.certainty = j.certainty;
+      if (j.over === null) {
+        side.reason =
+          'threshold_unknown — 재무현황 표에서 대여회사의 자본을 찾지 못했고 거래금액이 100억원 ' +
+          '미만이라 기준금액 초과 여부를 판정할 수 없습니다';
+        continue;
+      }
+      if (j.over === false) {
+        const total = pairTotals.get(`${key} ${normalizeCompanyName(b.company)}`)!;
+        if (total >= CAP_100 || total >= th!.value) {
+          // 차입회사 쪽 aggregation_unknown 과 같은 근거 (고시 §4③ 동일 거래대상)
+          side.same_counterparty_annual_total = total;
+          side.same_counterparty_annual_total_display = fmtWon(total);
+          side.reason =
+            `aggregation_unknown — 이 건(${b.amount_display})은 대여회사 기준금액 미달이지만 같은 ` +
+            `상대방과의 연간 대여 합산이 ${fmtWon(total)}로 기준 이상입니다 — 같은 약정의 분할 ` +
+            '실행이면 합산 기준으로 공시대상일 수 있어 "기준 미달"로 단정하지 않습니다';
+          continue;
+        }
+        side.status = 'below_threshold';
+        continue;
+      }
+      // 기준 초과 — J001 자금대여 공시를 대조해야 한다
+      const dates = lenderNeedsSearch.get(key) ?? [];
+      if (b.date) dates.push(b.date);
+      lenderNeedsSearch.set(key, dates);
+    }
   }
 
   // 상품·용역 — 품목 성격상 제외할 행을 먼저 갈라내고, 나머지를 (회사, 상대방) 단위로 합산한다.
@@ -895,7 +1249,10 @@ export async function detectUndisclosedTransactions(
   // "유가증권 형태 자금조달 미검토"를 coverage 에 적어두는 것이 전부였다).
   const knownCompanyNames = new Set<string>([
     ...capitals.map((c) => c.company),
-    ...(population ? [...population.corpCodes.values()] : []),
+    // 포털 소속회사는 **조인분(corpCodes)과 미조인분(unjoined)을 모두** 넣는다 —
+    // jurir 캐시가 비어 미조인일 뿐 소속은 포털이 보증한다. 조인분만 넣으면 캐시 상태에 따라
+    // 같은 계열사가 "목록 밖 상대방"으로 표시돼 확인 우선순위가 흔들린다.
+    ...(population ? [...population.corpCodes.values(), ...population.unjoined] : []),
     ...securitiesSeed.cells.map((c) => c.rowCompany),
   ]);
   // ★ 화이트리스트를 **필터로 쓰지 않는다.** 같은 회사가 표마다 다르게 적히기 때문이다
@@ -981,67 +1338,22 @@ export async function detectUndisclosedTransactions(
     needsSearch.set(k, e);
   }
 
+  // 대여회사도 같은 예산·같은 캐시를 쓴다 — 차입회사와 같은 회사면 J001 조회는 1회뿐이다
+  // (유형 필터만 '자금대여'로 달리 적용한다).
+  for (const [key, dates] of lenderNeedsSearch) {
+    const maxAmount = judgedBorrowings
+      .filter((b) => normalizeCompanyName(b.counterparty) === key)
+      .reduce((m, b) => Math.max(m, b.amount), 0);
+    const e = needsSearch.get(key) ?? { maxAmount: 0, dates: [] };
+    e.maxAmount = Math.max(e.maxAmount, maxAmount);
+    e.dates.push(...dates);
+    needsSearch.set(key, e);
+  }
+
   // 예산: 금액 큰 회사부터. 넘치는 회사의 거래는 판정하지 않고 그렇다고 말한다.
   const ranked = [...needsSearch.entries()].sort((a, b) => b[1].maxAmount - a[1].maxAmount);
   const withinBudget = ranked.slice(0, MAX_COMPANIES_TO_SEARCH);
   const overBudgetKeys = new Set(ranked.slice(MAX_COMPANIES_TO_SEARCH).map(([k]) => k));
-
-  // 조인: ① 집단 소속회사(포털 이름) 정규화 매칭 ② DART 법인 인덱스 상호 완전일치.
-  // ★ group 경로에서 ② 폴백으로 찾은 corp_code 가 집단 조인 목록에 없으면 **비계열 동명
-  // 회사일 수 있다** — 그 회사의 J001 로 filing_exists 를 만들면 오조인이 거짓 안심으로
-  // 직결되므로 조인 실패로 처리한다 (Codex 4차 M7). rcept_no 경로는 소속 목록 자체가 없어
-  // 이 검증이 불가능하다 — join_source 와 caveat 로 밝힌다.
-  const joinFailures: Array<{ company: string; reason: string }> = [];
-  // 포털이 소속을 보증하는 이름들 — jurir 미조인이라 corp_code 는 없지만 계열사임은 확실하다
-  const popUnjoinedKeys = new Set(
-    (population?.unjoined ?? []).map((n) => normalizeCompanyName(n)),
-  );
-  function verifyMembership(code: string, rawName: string): { code?: string; reason?: string } {
-    if (population === null) return { code };
-    if (population.corpCodes.has(code)) return { code };
-    // 미조인 계열사: 포털 소속 목록에 같은 이름이 있고 DART 완전일치가 유일하면 그 회사다
-    // (동명 법인이 실존하면 findCorps 가 2건 이상을 돌려줘 여기 오기 전에 거부된다)
-    if (popUnjoinedKeys.has(normalizeCompanyName(rawName))) return { code };
-    return {
-      reason:
-        'dart_join_unverified — DART 에 상호가 일치하는 회사는 있으나 집단 소속회사 목록 ' +
-        '어디에도 없습니다. 비계열 동명 회사일 수 있어 그 회사의 공시로 판정하지 않습니다 ' +
-        '(실제 계열사라면 resolve_entity(fetchJurirNo=true) 로 조인 캐시를 채우세요)',
-    };
-  }
-  function joinCorpCode(rawName: string): { code?: string; reason?: string } {
-    const key = normalizeCompanyName(rawName);
-    if (popNameConflicts.has(key)) {
-      // 포털 목록 안에서조차 동명이라 어느 쪽인지 알 수 없다 — DART 완전일치로만 재시도
-      const exactOnly = deps.findCorps(rawName.trim());
-      if (exactOnly.length === 1) return verifyMembership(exactOnly[0]!.corpCode, rawName);
-      return { reason: '집단 소속회사 목록에 정규화 동명 2건 이상 — 자동 선택하지 않습니다' };
-    }
-    const fromPop = popByName.get(key);
-    if (fromPop) return { code: fromPop };
-    // 이름 변형을 순서대로 시도한다.
-    // ★ 매트릭스 표의 회사명에는 열 폭 때문에 줄바꿈에서 온 **공백이 섞인다**
-    //   ('미래에셋 자산운용(주)'). 공백을 그대로 두면 DART 상호 완전일치가 전부 실패해
-    //   신호가 통째로 join_failed 로 빠진다 (실측: 유가증권 신호 11건 전원 조인 실패).
-    const base = rawName.trim();
-    const stripLegal = (n: string): string =>
-      n.replace(/\(주\)|\(유\)|㈜|주식회사|유한회사|유한책임회사|합자회사|합명회사/g, '').trim();
-    const noSpace = base.replace(/[\s ]+/g, '');
-    const tried = new Set<string>();
-    for (const variant of [base, noSpace, stripLegal(base), stripLegal(noSpace)]) {
-      if (!variant || tried.has(variant)) continue;
-      tried.add(variant);
-      const hits = deps.findCorps(variant);
-      if (hits.length === 1) return verifyMembership(hits[0]!.corpCode, rawName);
-      if (hits.length > 1) return { reason: `동명 법인 ${hits.length}건 — 자동 선택하지 않습니다` };
-    }
-    return {
-      reason:
-        population === null
-          ? 'DART 법인 인덱스에서 상호 일치 없음'
-          : '집단 소속회사 목록·DART 법인 인덱스 어디에서도 조인 실패',
-    };
-  }
 
   // ── ⑥ 회사당 1회 J001 수집 ──
   // 창 상한은 **오늘**이다. 종전의 "사업연도말 +90일" 상한은 J004 작성 중 누락을 발견해
@@ -1055,6 +1367,7 @@ export async function detectUndisclosedTransactions(
       overBorrowings.find((b) => normalizeCompanyName(b.company) === key)?.company ??
       signalGoods.find((g) => normalizeCompanyName(g.company) === key)?.company ??
       signalSecurities.find((sec) => normalizeCompanyName(sec.company) === key)?.company ??
+      lenderRawNames.get(key) ??
       key;
     const joined = joinCorpCode(rawName);
     if (!joined.code) {
@@ -1193,7 +1506,7 @@ export async function detectUndisclosedTransactions(
 
   /** 존재/부재 공통 필드를 대상 객체에 옮겨 담는다 */
   function applyCommon(
-    target: JudgedBorrowing | GoodsSignal | SecuritySignal,
+    target: JudgedBorrowing | GoodsSignal | SecuritySignal | LenderSide,
     chk: CompanyCheck,
   ): void {
     if (chk.corp_code) target.corp_code = chk.corp_code;
@@ -1247,6 +1560,52 @@ export async function detectUndisclosedTransactions(
         `+${NEAR_AFTER_DAYS}일)에는 없습니다 (최근접 ${nearest}일). 연초 한도 의결이 커버하는 정상 ` +
         '케이스일 수도, **이 건만 공시가 누락된 부분 공시**일 수도 있습니다 — matching_filings 를 ' +
         '열어 이 거래가 실제로 포함되는지 확인하세요';
+    }
+  }
+
+  // ⑦-b. 대여회사 쪽 상태 확정 — 차입회사와 **같은 함수·같은 창·같은 근접 규칙**을 쓰고
+  //       보고서명 필터만 '자금대여' 계열로 바꾼다.
+  for (const b of judgedBorrowings) {
+    const side = b.lender_side;
+    if (!side || side.status !== 'not_judged' || side.reason) continue; // 기준 초과 건만
+    const chk = checkCompany(normalizeCompanyName(side.company), isLendingReport, '자금대여');
+    applyCommon(side, chk);
+    if (chk.outcome === 'not_judged') {
+      side.reason = chk.reason!;
+      if (chk.matching && chk.matching.length > 0) {
+        side.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
+      }
+      continue;
+    }
+    if (chk.outcome === 'none') {
+      side.status = 'undisclosed_candidate';
+      side.reason =
+        'j001_lending_absent — 대여회사의 창 안에 "특수관계인에 대한 자금대여" 유형 J001 공시가 ' +
+        '없습니다. 대여회사에도 별도의 공시의무가 있으므로 미공시 후보입니다 — 다만 차입회사 쪽과 ' +
+        '같은 구조적 한계(한도 의결·약관특례·유형 분류)가 그대로 적용됩니다';
+      continue;
+    }
+    const matching = chk.matching!;
+    side.matching_filings = matching.slice(0, 10).map(toFilingRef);
+    if (matching.length > 10) side.matching_filings_total = matching.length;
+    if (!b.date) {
+      side.status = 'j001_filing_in_window_only';
+      side.reason =
+        'transaction_date_unknown — 거래일을 읽지 못해 건별 근접 대조를 할 수 없었습니다. ' +
+        '창 안에 자금대여 공시가 존재한다는 것까지만 확인됐습니다';
+      continue;
+    }
+    const gaps = matching.map((f) => daysBetween(f.rcept_dt, b.date!));
+    const nearest = gaps.reduce((a, g) => (Math.abs(g) < Math.abs(a) ? g : a));
+    side.nearest_filing_gap_days = nearest;
+    if (gaps.some((g) => g >= -NEAR_BEFORE_DAYS && g <= NEAR_AFTER_DAYS)) {
+      side.status = 'j001_filing_near_date';
+    } else {
+      side.status = 'j001_filing_in_window_only';
+      side.reason =
+        `filing_far_from_date — 창 안에 자금대여 공시는 있으나 거래일 근방(−${NEAR_BEFORE_DAYS}~` +
+        `+${NEAR_AFTER_DAYS}일)에는 없습니다 (최근접 ${nearest}일) — matching_filings 를 열어 ` +
+        '이 거래가 실제로 포함되는지 확인하세요';
     }
   }
 
@@ -1348,6 +1707,23 @@ export async function detectUndisclosedTransactions(
   const secBelow = judgedSecurities.filter((sec) => sec.status === 'below_threshold');
   const secNotJudged = judgedSecurities.filter((sec) => sec.status === 'not_judged');
 
+  // 대여회사 쪽 집계 — 차입 건 단위다 (한 대여회사가 여러 건에 걸릴 수 있다)
+  const lenderSides = judgedBorrowings
+    .map((b) => b.lender_side)
+    .filter((s): s is LenderSide => s !== undefined);
+  const lenderCounts: Record<LenderStatus, number> = {
+    undisclosed_candidate: 0,
+    j001_filing_near_date: 0,
+    j001_filing_in_window_only: 0,
+    below_threshold: 0,
+    no_duty_before_joining: 0,
+    not_judged: 0,
+    counterparty_not_joined: 0,
+    counterparty_not_company: 0,
+  };
+  for (const s of lenderSides) lenderCounts[s.status]++;
+  const lenderCandidates = lenderSides.filter((s) => s.status === 'undisclosed_candidate');
+
   const scopeCaveats: string[] = [
     '★ 모든 결과는 **후보**입니다. undisclosed_candidate 를 "미공시 확정"으로 읽으면 안 되는 구조적 이유: ' +
       `① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ` +
@@ -1380,10 +1756,13 @@ export async function detectUndisclosedTransactions(
       '또한 계열 금융회사 간 유가증권 매매는 상당수가 약관특례(고시 §9, 트랙 B) 분기 일괄공시 ' +
       '대상이라, 정상 공시를 놓쳐 오경보를 내지 않도록 보고서명 필터를 넓게 잡았습니다 ' +
       '(matching_filings 로 실제 무엇에 걸렸는지 확인하세요).',
-    '거래의 한쪽 관점만 확인합니다 — 차입 거래는 **차입회사의 "자금차입" 공시**만 보고 자금을 대준 ' +
-      '계열회사의 "자금대여" 공시의무는 확인하지 않으며, 상품·용역도 **판매회사(매출) 쪽**만 보고 ' +
-      '매입(구매)회사 쪽 공시의무는 확인하지 않습니다. 유가증권도 **매입회사 쪽**만 봅니다 — ' +
-      '매도한 계열회사의 공시의무는 확인하지 않습니다.',
+    '★ 자금 차입은 **양쪽 관점**을 봅니다 — 대규모내부거래 공시의무는 거래를 하는 계열회사 ' +
+      '각자에게 있으므로, 차입회사의 "자금차입" 공시(항목 본문)와 대여회사의 "특수관계인에 대한 ' +
+      '자금대여" 공시(lender_side)를 **각자의 자본으로 계산한 기준금액**으로 따로 판정합니다. ' +
+      '대여회사가 DART corp_code 로 조인되지 않으면 counterparty_not_joined, 이름이 자연인(동일인·' +
+      '친족) 형태면 counterparty_not_company 로 남으며 둘 다 "의무 없음"이 아니라 **확인하지 못한 ' +
+      '것**입니다. 반면 상품·용역은 **판매회사(매출) 쪽**만, 유가증권은 **매입회사 쪽**만 봅니다 — ' +
+      '매입회사·매도회사의 공시의무는 확인하지 않습니다.',
     '★ 상품·용역의 공시의무는 **상대방 요건이 전제**입니다 — 법 §26①4호·령 §33②·고시 §4①4호는 ' +
       '상대방을 "자연인인 동일인이 단독으로 또는 친족과 합하여 20% 이상 출자한 계열회사 또는 그 ' +
       '상법 §342의2 자회사"로 한정합니다. 이 도구는 지분 데이터가 없어 요건을 확인하지 못하므로 ' +
@@ -1405,14 +1784,21 @@ export async function detectUndisclosedTransactions(
       'J004 에 안 실린 거래는 애초에 이 도구의 시야 밖입니다.',
     '각 회사가 실제로 공시의무자인지(소속·청산·휴업 등)와 **집단의 지정 연혁**은 판정하지 않습니다 — ' +
       '집단이 그 거래 연도에 공시대상으로 지정돼 있지 않았다면(신규 지정) 전년도 거래 전체가 의무 ' +
-      '없음일 수 있습니다. group 경로는 계열편입일(포털 grinil) 이전 차입만 no_duty_before_joining 으로 ' +
-      '분리하며, rcept_no 경로는 편입일 대조 자체를 하지 않습니다. 상품·용역은 연간 합계라 편입 시점 ' +
+      '없음일 수 있습니다. 계열편입일(포털 grinil) 이전 차입만 no_duty_before_joining 으로 분리하며, ' +
+      '이는 포털 소속회사 목록을 실제로 불러온 경우에만 가능합니다(diagnostics.population 참조). ' +
+      '상품·용역은 연간 합계라 편입 시점 ' +
       '대조가 불가능합니다. 또한 **편입 전 체결 거래라도 편입 후 주요내용을 변경하면 의결·공시의무가 ' +
       '있습니다**(고시 §4④) — 이 도구는 변경 여부를 보지 못하므로 no_duty_before_joining 도 그 ' +
       '한도에서만 유효합니다.',
-    'rcept_no 경로의 회사명 조인은 포털 소속회사 목록 없이 DART 상호 완전일치만 씁니다 — 동명 ' +
-      '비계열 회사로 오조인되면 그 회사의 공시가 근거로 잘못 붙을 수 있습니다. group 경로는 폴백 ' +
-      '조인 결과가 집단 목록에 없으면 판정하지 않습니다(dart_join_unverified).',
+    populationSource === 'portal'
+      ? `회사명 조인에 포털 소속회사 목록(${populationGroup}, ${populationYearMonth} 기준)을 썼습니다 — ` +
+        'DART 폴백 조인 결과가 집단 목록 어디에도 없으면 비계열 동명 회사일 수 있어 판정하지 ' +
+        '않습니다(dart_join_unverified). 포털 목록은 **연 1회(매년 5/1 기준) 스냅샷**이라 거래 시점의 ' +
+        '소속과 다를 수 있고, 목록에는 있으나 DART 법인등록번호 조인 캐시가 비어 있으면 여전히 ' +
+        '조인에 실패합니다(resolve_entity(fetchJurirNo=true) 로 채울 수 있습니다).'
+      : `포털 소속회사 목록 없이 DART 상호 완전일치만으로 조인했습니다 (${populationReason ?? '사유 미상'}) — ` +
+        '동명 비계열 회사로 오조인되면 그 회사의 공시가 근거로 잘못 붙을 수 있고, 계열편입일 ' +
+        '대조(편입 전 거래 = 의무 없음)도 하지 못합니다.',
   ];
 
   if (undisclosed.length > 0) {
@@ -1441,10 +1827,33 @@ export async function detectUndisclosedTransactions(
         '일괄공시 대상일 수 있습니다 — 개별 거래 내역을 먼저 확인하세요.',
     );
   }
-  if (undisclosed.length === 0 && goodsCandidates.length === 0 && secCandidates.length === 0) {
+  if (lenderCandidates.length > 0) {
+    const names = [...new Set(lenderCandidates.map((s) => s.company))];
     notes.push(
-      'ℹ️ 미공시 후보 0건은 "미공시 없음"의 확인이 아닙니다 — 이 도구가 보는 유형(자금차입·주요 상품·용역·' +
-        '유가증권 총괄)과 이 문서에 실린 거래의 범위 안에서 후보를 찾지 못했다는 뜻입니다 (scope_caveats 참조).',
+      `⚠️ **대여회사 쪽** 자금대여 미공시 후보 ${lenderCandidates.length}건 (${names.join(', ')}) — ` +
+        '차입회사가 자금차입을 공시했더라도 자금을 대준 계열회사에는 "특수관계인에 대한 자금대여" ' +
+        '공시의무가 **별도로** 있고, 기준금액도 그 회사 자신의 자본으로 계산합니다. ' +
+        'lender_side 를 열어 matching_filings·기준금액을 확인하고, scope_caveats 와 함께 전달하세요.',
+    );
+  }
+  if (lenderCounts.counterparty_not_joined + lenderCounts.counterparty_not_company > 0) {
+    notes.push(
+      `ℹ️ 대여회사 ${lenderCounts.counterparty_not_joined}건은 corp_code 조인 실패, ` +
+        `${lenderCounts.counterparty_not_company}건은 자연인(동일인·친족) 추정으로 자금대여 공시를 ` +
+        '대조하지 않았습니다 — 조인 실패는 "공시 없음"이 아니라 **확인하지 못한 것**이고, ' +
+        '자연인 추정은 이름 모양에 근거한 추정입니다.',
+    );
+  }
+  if (
+    undisclosed.length === 0 &&
+    goodsCandidates.length === 0 &&
+    secCandidates.length === 0 &&
+    lenderCandidates.length === 0
+  ) {
+    notes.push(
+      'ℹ️ 미공시 후보 0건은 "미공시 없음"의 확인이 아닙니다 — 이 도구가 보는 유형(자금차입·자금대여·' +
+        '주요 상품·용역·유가증권 총괄)과 이 문서에 실린 거래의 범위 안에서 후보를 찾지 못했다는 ' +
+        '뜻입니다 (scope_caveats 참조).',
     );
   }
   if (windowOnly.length > 0) {
@@ -1552,6 +1961,8 @@ export async function detectUndisclosedTransactions(
     goodsConditionalCandidates: goodsCandidates.length,
     securitiesPairs: securitiesMatrix.cells.length,
     securitiesCandidates: secCandidates.length,
+    lenderCandidates: lenderCandidates.length,
+    populationSource,
     listCalls,
   });
 
@@ -1588,6 +1999,11 @@ export async function detectUndisclosedTransactions(
       securities_filing_exists: secFilingExists.length,
       securities_below_threshold: secBelow.length,
       securities_not_judged: secNotJudged.length,
+      /**
+       * 대여회사(자금을 대준 계열회사) 쪽 판정 — 차입 **건 단위** 집계다.
+       * 차입회사 쪽 판정과 독립적이다 (기준금액이 각자의 자본이라 한쪽만 초과일 수 있다).
+       */
+      lender_side: lenderCounts,
     },
     /** 자금 차입 — 차입일 단위 대조라 신뢰도가 가장 높다 */
     undisclosed_candidates: undisclosed,
@@ -1615,7 +2031,8 @@ export async function detectUndisclosedTransactions(
     ...(joinFailures.length ? { join_failures: joinFailures } : {}),
     coverage: {
       transaction_types_checked: [
-        '자금 차입 (차입일 단위, 건별 근접 대조)',
+        '자금 차입 — 차입회사 관점 (차입일 단위, 건별 근접 대조)',
+        '자금 대여 — 대여회사(거래상대방) 관점 (같은 차입 건을 대여회사 자본 기준으로 재판정)',
         '주요 상품·용역 (상대방별 연간 합산, 4×기준금액 이상만)',
         '유가증권 총괄 매트릭스 (상대방별 연간 총액 — 개별 거래로 분해되지 않음)',
       ],
@@ -1627,7 +2044,7 @@ export async function detectUndisclosedTransactions(
           '채무보증',
           '부동산 임대차',
           '기타자산 거래',
-          '자금 대여(상대방 관점)',
+          '상품·용역 매입(상대방 관점)',
           '유가증권 매도(상대방 관점)',
         ],
         /** "주요" 기준 미달로 J004 표에 실리지 않은 상품·용역 거래 */
@@ -1640,6 +2057,22 @@ export async function detectUndisclosedTransactions(
     notes,
     diagnostics: {
       parse: parseDiag,
+      /** 포털 소속회사 목록을 실제로 썼는가 — 'none' 이면 DART 상호 완전일치만으로 조인했다 */
+      population_source: populationSource,
+      population: {
+        ...(populationGroup ? { group: populationGroup } : {}),
+        ...(populationYearMonth ? { year_month: populationYearMonth } : {}),
+        ...(population
+          ? {
+              joined_companies: population.corpCodes.size,
+              unjoined_companies: population.unjoined.length,
+              joined_group_at_known: population.joinedGroupAt?.size ?? 0,
+            }
+          : {}),
+        ...(populationReason ? { reason: populationReason } : {}),
+        /** 문서에서 집단명을 읽어 포털을 조회했는가 (rcept_no 경로 전용) */
+        from_document: !input.group && populationSource === 'portal',
+      },
       list_calls: listCalls,
       companies_searched: searches.size,
       companies_over_budget: overBudgetKeys.size,

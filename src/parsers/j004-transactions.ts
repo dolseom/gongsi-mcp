@@ -224,6 +224,35 @@ function companyCell(row: string[], cCompany: number, otherCols: number[]): stri
   return (row[cCompany + 1] ?? row[cCompany] ?? '').trim();
 }
 
+/**
+ * 문서 표지의 **기업집단명**을 뽑는다 (실측: 대표회사 연1회 서식 20260819000341 의
+ * `| 기업집단명 : | 미래에셋 |` 행. 픽스처도 같은 형태).
+ *
+ * 왜 필요한가: rcept_no 로 문서를 직접 지정하면 어느 기업집단인지 입력이 없어,
+ * 포털 소속회사 목록(조인 품질·계열편입일·계열사 화이트리스트)을 통째로 못 쓴다.
+ * 문서가 스스로 밝히는 집단명을 읽어 group 경로와 같은 모집단을 불러올 수 있다.
+ *
+ * 앵커는 **행 제목**이다 (절 번호·행 위치는 서식마다 다르다). 첫 일치만 쓰고,
+ * 값이 비었거나 다시 제목처럼 생겼으면 못 읽은 것으로 본다 — 추측하지 않는다.
+ */
+export function extractGroupName(markdown: string): string | null {
+  for (const line of markdown.split(/\r?\n/)) {
+    if (!line.includes('|')) continue;
+    const cells = splitRow(line);
+    if (cells.length < 2) continue;
+    // '기업집단명', '기업집단명 :', '기업집단 명' 등 표기 흔들림을 흡수한다
+    const head = normalizeCell(cells[0] ?? '').replace(/[\s:：]/g, '');
+    if (head !== '기업집단명') continue;
+    for (const raw of cells.slice(1)) {
+      const v = normalizeCell(raw).replace(/^[:：]\s*/, '').trim();
+      if (!v || v === '-' || /^-{3,}$/.test(v)) continue;
+      if (v.replace(/[\s:：]/g, '') === '기업집단명') continue;
+      return v;
+    }
+  }
+  return null;
+}
+
 /** 계열사별 자본 수치 (원 단위) */
 export interface CapitalRow {
   company: string;

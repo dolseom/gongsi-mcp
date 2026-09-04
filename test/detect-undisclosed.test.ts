@@ -19,6 +19,8 @@ import {
   isBorrowingReport,
   isGoodsServicesReport,
   isSecuritiesReport,
+  isLendingReport,
+  looksLikeNaturalPerson,
   itemLikelyNotGoodsService,
   type DetectDeps,
 } from '../src/tools/detect-undisclosed-transactions.js';
@@ -26,7 +28,7 @@ import { extractCapitals } from '../src/parsers/j004-transactions.js';
 import type { Disclosure } from '../src/clients/dart.js';
 import type { BatchResult } from '../src/search/batch.js';
 import type { DocMeta } from '../src/tools/read-disclosure.js';
-import type { Population } from '../src/tools/audit-group-disclosures.js';
+import type { Population, PopulationInput } from '../src/tools/audit-group-disclosures.js';
 import { ToolError } from '../src/lib/errors.js';
 import { 억 } from '../src/rules/thresholds.js';
 
@@ -90,6 +92,8 @@ function makeDeps(opts: {
   corps?: Record<string, Array<{ corpCode: string; corpName: string }>>;
   pop?: Population;
   calls?: CallLog[];
+  /** resolvePop 이 어떤 입력으로 불렸는지 기록 (rcept_no 경로의 문서 집단명 조회 검증용) */
+  popCalls?: PopulationInput[];
 }): DetectDeps {
   return {
     loadDoc: async () => ({ markdown: opts.markdown ?? FIXTURE_MD, meta: META }),
@@ -99,8 +103,11 @@ function makeDeps(opts: {
       const j = opts.j001 ?? [];
       return batch(typeof j === 'function' ? j(corpCode) : j, opts.j001Partial ?? false);
     },
-    resolvePop: async () => {
-      if (!opts.pop) throw new Error('resolvePop 이 호출되면 안 되는 테스트입니다');
+    resolvePop: async (input) => {
+      opts.popCalls?.push(input);
+      // pop 을 주지 않으면 "EGROUP 키 없음·포털 실패" 를 흉내낸다 — rcept_no 경로는 이때
+      // 예외 없이 종전 동작(DART 상호 매칭)으로 폴백해야 한다.
+      if (!opts.pop) throw new Error('EGROUP_API_KEY 가 설정되지 않았습니다 (테스트 스텁)');
       return opts.pop;
     },
     findCorps: (name) => opts.corps?.[name] ?? [],
@@ -948,3 +955,339 @@ describe('유가증권 총괄 매트릭스 (Codex 4차 M1)', () => {
     expect(res.securities_signals).toBeUndefined();
   });
 });
+
+describe('rcept_no 경로 포털 population 로드 (E-1)', () => {
+  const POP: Population = {
+    corpCodes: new Map([
+      ['00111111', '미래에셋캐피탈(주)'],
+      ['00222222', '와이케이디벨롭먼트(주)'],
+    ]),
+    group: { representative_company: '미래에셋캐피탈㈜' },
+    unjoined: ['미래에셋컨설팅(주)'],
+    joinedGroupAt: new Map([['00222222', '20161001']]),
+  };
+
+  it('문서의 기업집단명으로 포털 소속회사 목록을 불러온다 (year_month = 접수연도 05)', async () => {
+    const popCalls: PopulationInput[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ pop: POP, popCalls, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(popCalls).toEqual([{ group: '미래에셋', year_month: '202605' }]);
+    expect(r['diagnostics'].population_source).toBe('portal');
+    expect(r['diagnostics'].population.from_document).toBe(true);
+    expect(r['diagnostics'].population.joined_companies).toBe(2);
+    expect(r['diagnostics'].population.unjoined_companies).toBe(1);
+    // 포털 이름으로 조인되므로 DART 인덱스(corps 스텁 없음) 없이도 차입회사가 이어진다
+    expect(r['undisclosed_candidates'][0].corp_code).toBe('00222222');
+  });
+
+  it('EGROUP 키가 없거나 포털이 실패하면 예외 없이 기존 동작으로 폴백한다', async () => {
+    // pop 미지정 = resolvePop 이 throw (키 없음 흉내). README 약속: DART 키 하나면 동작한다.
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ corps: YKD_CORPS, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(r['diagnostics'].population_source).toBe('none');
+    expect(r['diagnostics'].population.reason).toContain('portal_unavailable');
+    // 종전 동작 그대로 — DART 상호 완전일치로 조인해 후보 2건
+    expect(r['summary'].undisclosed_candidates).toBe(2);
+    expect(r['undisclosed_candidates'][0].corp_code).toBe('00222222');
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('포털 소속회사 목록 없이')),
+    ).toBe(true);
+  });
+
+  it('문서에 기업집단명 행이 없으면 포털을 조회하지 않고 사유를 남긴다', async () => {
+    const md = [
+      '## (2) 회사 재무현황',
+      '| (단위 : 백만원, %) |',
+      '| --- |',
+      '| 계열회사명 |  | 자본금 | 자본총계 |',
+      '| --- | --- | --- | --- |',
+      '| 비금융회사 | 무명사(주) | 5,000 | 20,000 |',
+    ].join('\n');
+    const popCalls: PopulationInput[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, popCalls, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(popCalls).toHaveLength(0);
+    expect(r['diagnostics'].population_source).toBe('none');
+    expect(r['diagnostics'].population.reason).toContain('group_name_not_found');
+  });
+
+  it('포털을 불러오면 rcept_no 경로에서도 계열편입일 이전 차입을 분리한다', async () => {
+    const popLate: Population = {
+      ...POP,
+      joinedGroupAt: new Map([['00222222', '20250401']]),
+    };
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ pop: popLate, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(r['summary'].no_duty_before_joining).toBe(1);
+    expect(r['no_duty_before_joining'][0].date).toBe('20250219');
+  });
+
+  it('포털 목록에 있는 계열사인데 DART 조인이 안 되면 그 사실을 조인 실패 사유에 밝힌다', async () => {
+    // 포털은 소속을 보증하지만(unjoined) DART 인덱스에 상호가 없다 — 실물의
+    // 미래에셋생명보험(DART 상호는 '미래에셋생명') 유형. "없음"이 아니라 캐시 문제임을 말해야 한다.
+    const popNoYkd: Population = {
+      corpCodes: new Map([['00111111', '미래에셋캐피탈(주)']]),
+      group: { representative_company: '미래에셋캐피탈㈜' },
+      unjoined: ['와이케이디벨롭먼트(주)'],
+    };
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ pop: popNoYkd, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(r['join_failures'][0].reason).toContain('포털 소속회사 목록에 있는');
+    expect(r['join_failures'][0].reason).toContain('fetchJurirNo');
+  });
+});
+
+describe('대여회사(상대방) 관점 자금대여 대조 (E-2)', () => {
+  it('보고서명 필터 — 자금대여만 잡고 자금차입은 거른다', () => {
+    expect(
+      isLendingReport('대규모내부거래관련이사회의결및공시(특수관계인에대한자금대여)'),
+    ).toBe(true);
+    expect(isLendingReport('[기재정정]대규모내부거래관련 이사회 의결 및 공시 (자금 대여)')).toBe(
+      true,
+    );
+    expect(isLendingReport('대규모내부거래관련이사회의결및공시(자금차입)')).toBe(false);
+  });
+
+  it('자연인 추정은 한글 2~4자 이름 형태에만 적용한다', () => {
+    expect(looksLikeNaturalPerson('박현주')).toBe(true);
+    expect(looksLikeNaturalPerson('김 철 수')).toBe(true);
+    expect(looksLikeNaturalPerson('미래에셋컨설팅(주)')).toBe(false);
+    expect(looksLikeNaturalPerson('대한물산')).toBe(false); // 조직 어미
+    expect(looksLikeNaturalPerson('오딘제8차(유)')).toBe(false);
+  });
+
+  /** 대여회사 자본을 재무현황에 넣은 문서 — 대여회사 기준금액을 계산할 수 있게 한다 */
+  function mdWithLender(opts: {
+    /** '자본금 | 자본총계' (백만원) */
+    lenderCapital: string;
+    borrowings: Array<[counterparty: string, amountMillion: string, date: string]>;
+  }): string {
+    return [
+      '| 기업집단명 : | 테스트집단 |',
+      '| --- | --- |',
+      '## (2) 회사 재무현황',
+      '| (단위 : 백만원, %) |',
+      '| --- |',
+      '| 계열회사명 |  | 자본금 | 자본총계 |',
+      '| --- | --- | --- | --- |',
+      '| 비금융회사 | 차입회사(주) | 5,000 | 20,000 |',
+      `| 비금융회사 | 대여계열사(주) | ${opts.lenderCapital} |`,
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      ...opts.borrowings.map(
+        ([cp, amt, d]) => `| 비금융회사 | 차입회사(주) | ${cp} | ${amt} | ${d} |`,
+      ),
+    ].join('\n');
+  }
+
+  const LENDER_CORPS = {
+    차입회사: [{ corpCode: '00222222', corpName: '차입회사' }],
+    대여계열사: [{ corpCode: '00333333', corpName: '대여계열사' }],
+  };
+
+  it('대여회사에 근접 자금대여 공시가 있으면 j001_filing_near_date', async () => {
+    const md = mdWithLender({
+      lenderCapital: '1,000 | 4,000', // 자본총계 40억 → 기준금액 5억(하한)
+      borrowings: [['대여계열사(주)', '16,000', '2025-02-19']],
+    });
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        markdown: md,
+        corps: LENDER_CORPS,
+        j001: (corpCode) =>
+          corpCode === '00333333'
+            ? [
+                disc({
+                  corp_code: '00333333',
+                  report_nm: '대규모내부거래관련이사회의결및공시(특수관계인에대한자금대여)',
+                  rcept_no: '20250214000777',
+                  rcept_dt: '20250214',
+                }),
+              ]
+            : [],
+      }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.company).toBe('대여계열사(주)');
+    expect(side.corp_code).toBe('00333333');
+    expect(side.status).toBe('j001_filing_near_date');
+    expect(side.nearest_filing_gap_days).toBe(-5);
+    expect(side.threshold.value).toBe(5 * 억);
+    expect(r['summary'].lender_side.j001_filing_near_date).toBe(1);
+    // 차입회사 쪽은 공시가 없어 여전히 후보다 — 두 판정은 독립이다
+    expect(r['summary'].undisclosed_candidates).toBe(1);
+  });
+
+  it('대여회사에 자금대여 공시가 없으면 대여회사 쪽도 미공시 후보다', async () => {
+    const md = mdWithLender({
+      lenderCapital: '1,000 | 4,000',
+      borrowings: [['대여계열사(주)', '16,000', '2025-02-19']],
+    });
+    const calls: CallLog[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: LENDER_CORPS, j001: [], calls }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('undisclosed_candidate');
+    expect(side.reason).toContain('j001_lending_absent');
+    expect(r['summary'].lender_side.undisclosed_candidate).toBe(1);
+    expect((r['notes'] as string[]).some((n) => n.includes('대여회사 쪽'))).toBe(true);
+    // 차입회사·대여회사 각 1콜
+    expect(calls.filter((c) => c.ty === 'J001')).toHaveLength(2);
+  });
+
+  it('대여회사 기준금액에 미달하면 below_threshold (차입회사 판정과 독립)', async () => {
+    // 대여회사 자본총계 2,000억 → 기준금액 100억 상한. 차입회사 기준금액은 10억.
+    // 60억 차입은 차입회사 기준으론 초과, 대여회사 기준으론 미달이다.
+    const md = mdWithLender({
+      lenderCapital: '10,000 | 200,000',
+      borrowings: [['대여계열사(주)', '6,000', '2025-02-19']],
+    });
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: LENDER_CORPS, j001: [] }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('below_threshold');
+    expect(side.threshold.value).toBe(100 * 억);
+    expect(r['summary'].lender_side.below_threshold).toBe(1);
+  });
+
+  it('대여회사를 corp_code 로 잇지 못하면 counterparty_not_joined — "공시 없음"이 아니다', async () => {
+    const md = mdWithLender({
+      lenderCapital: '1,000 | 4,000',
+      borrowings: [['대여계열사(주)', '16,000', '2025-02-19']],
+    });
+    const calls: CallLog[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      // 차입회사만 조인된다
+      makeDeps({ markdown: md, corps: { 차입회사: LENDER_CORPS.차입회사 }, j001: [], calls }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(side.corp_code).toBeUndefined();
+    expect(r['summary'].lender_side.counterparty_not_joined).toBe(1);
+    // 조인 못 한 회사는 조회하지 않는다
+    expect(calls.filter((c) => c.ty === 'J001')).toHaveLength(1);
+  });
+
+  it('거래상대방이 자연인(동일인·친족)으로 보이면 counterparty_not_company', async () => {
+    const md = mdWithLender({
+      lenderCapital: '1,000 | 4,000',
+      borrowings: [['박현주', '16,000', '2025-02-19']],
+    });
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: { 차입회사: LENDER_CORPS.차입회사 }, j001: [] }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_company');
+    expect(side.reason).toContain('추정');
+    expect(r['summary'].lender_side.counterparty_not_company).toBe(1);
+  });
+
+  /**
+   * ★ 자연인 추정은 **조인 실패 + 소속 확인 실패** 뒤에만 써야 한다.
+   * 한글 2~4자 상호는 실재하고(예: '한샘'), 조인은 DART 인덱스 캐시 사정만으로도 실패한다 —
+   * 재무현황 표가 회사임을 보증하는 이름을 자연인으로 분류하면 그 계열사의 자금대여 미공시가
+   * counterparty_not_company 로 조용히 사라진다 (거짓 안심).
+   */
+  it('재무현황 표에 있는 이름이면 조인에 실패해도 자연인으로 분류하지 않는다', async () => {
+    const md = [
+      '| 기업집단명 : | 테스트집단 |',
+      '| --- | --- |',
+      '## (2) 회사 재무현황',
+      '| (단위 : 백만원, %) |',
+      '| --- |',
+      '| 계열회사명 |  | 자본금 | 자본총계 |',
+      '| --- | --- | --- | --- |',
+      '| 비금융회사 | 차입회사(주) | 5,000 | 20,000 |',
+      '| 비금융회사 | 한샘 | 1,000 | 4,000 |',
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 차입회사(주) | 한샘 | 16,000 | 2025-02-19 |',
+    ].join('\n');
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      // 차입회사만 DART 인덱스에 있다 — '한샘' 은 조인 실패한다
+      makeDeps({ markdown: md, corps: { 차입회사: LENDER_CORPS.차입회사 }, j001: [] }),
+    )) as Record<string, any>;
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(side.reason).toContain('재무현황 표에 있는 **계열회사**');
+    expect(r['summary'].lender_side.counterparty_not_company).toBe(0);
+    expect(r['summary'].lender_side.counterparty_not_joined).toBe(1);
+  });
+
+  it('개별 미달이어도 같은 상대방 연간 합산이 대여회사 기준 이상이면 단정하지 않는다', async () => {
+    // 대여회사 기준금액 5억. 3억씩 2건(합산 6억) — 같은 약정의 분할 실행이면 공시대상일 수 있다.
+    const md = mdWithLender({
+      lenderCapital: '1,000 | 4,000',
+      borrowings: [
+        ['대여계열사(주)', '300', '2025-02-19'],
+        ['대여계열사(주)', '300', '2025-06-30'],
+      ],
+    });
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: LENDER_CORPS, j001: [] }),
+    )) as Record<string, any>;
+
+    const sides = (r['below_threshold'] as Array<Record<string, any>>).map((b) => b.lender_side);
+    expect(sides).toHaveLength(2);
+    expect(sides.every((s) => s.status === 'not_judged')).toBe(true);
+    expect(sides[0].reason).toContain('aggregation_unknown');
+    expect(sides[0].same_counterparty_annual_total).toBe(6 * 억);
+    expect(r['summary'].lender_side.not_judged).toBe(2);
+  });
+
+  it('scope_caveats·coverage 가 대여회사 대조를 실제 동작으로 설명한다', async () => {
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ corps: YKD_CORPS, j001: [] }),
+    )) as Record<string, any>;
+
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('자금 차입은 **양쪽 관점**')),
+    ).toBe(true);
+    expect(r['coverage'].transaction_types_checked).toContain(
+      '자금 대여 — 대여회사(거래상대방) 관점 (같은 차입 건을 대여회사 자본 기준으로 재판정)',
+    );
+    expect(r['coverage'].undetectable.other_transaction_types).not.toContain(
+      '자금 대여(상대방 관점)',
+    );
+  });
+});
+
