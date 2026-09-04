@@ -2047,3 +2047,77 @@ describe('상대방 관점 — 상품·용역 매입회사 / 유가증권 매도
     expect(foreign.every((m) => m['buyer_side'] === undefined)).toBe(true);
   });
 });
+
+/**
+ * 보고서명만으로 유형을 알 수 없는 J001 이 창 안에 있으면 후보로 단정하지 않는다.
+ *
+ * ★ 실측 근거 (전체시장 2024-01~2026-09 J001 22,794건, test/j001-report-names.test.ts):
+ *   '특수관계인과의내부거래' 740건 · '약관에의한금융거래시계열금융회사의거래상대방의공시' 447건.
+ *   전자는 실물 20260903000201 에서 **벤처투자조합 출자**를, 후자는 실물 20260902000068 에서
+ *   **차입금 415.2억**을 이 이름으로 공시했다 — 우리 유형 필터에 하나도 걸리지 않는다.
+ */
+describe('유형 미상 J001 이 있으면 판정을 보류한다', () => {
+  it('자금차입 후보가 유형 미상 공시 때문에 not_judged 로 내려간다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [
+          disc({
+            corp_code: '00222222',
+            // 실물 서식명 — 차입을 이 이름으로 공시한 사례가 있다
+            report_nm: '약관에의한금융거래시계열금융회사의거래상대방의공시',
+            rcept_no: '20250220000111',
+            rcept_dt: '20250220',
+          }),
+        ],
+      }),
+    )) as Record<string, any>;
+
+    expect(res['summary'].undisclosed_candidates).toBe(0);
+    expect(res['summary'].not_judged).toBe(2);
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(String(nj['reason'])).toContain('type_ambiguous_filing_present');
+    expect(String(nj['reason'])).toContain('공시 있음"으로 확인한 것이 아닙니다');
+    expect(nj['type_ambiguous_filings']).toHaveLength(1);
+    expect(nj['type_ambiguous_filings'][0].rcept_no).toBe('20250220000111');
+  });
+
+  it('유형이 이름에 드러나는 공시는 종전대로 filing 으로 처리한다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [
+          disc({
+            corp_code: '00222222',
+            report_nm: '특수관계인으로부터자금차입',
+            rcept_no: '20250214000777',
+            rcept_dt: '20250214',
+          }),
+        ],
+      }),
+    )) as Record<string, any>;
+    expect(res['summary'].j001_filing_near_date).toBe(1);
+    expect(res['summary'].not_judged).toBe(0);
+  });
+
+  it('유형 미상 공시가 없으면 종전대로 후보가 나온다 (보류가 남발되지 않는다)', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [
+          disc({
+            corp_code: '00222222',
+            report_nm: '특수관계인에대한담보제공', // 다른 유형 — 보류 대상이 아니다
+            rcept_no: '20250220000112',
+            rcept_dt: '20250220',
+          }),
+        ],
+      }),
+    )) as Record<string, any>;
+    expect(res['summary'].undisclosed_candidates).toBe(2);
+    expect(res['summary'].not_judged).toBe(0);
+  });
+});

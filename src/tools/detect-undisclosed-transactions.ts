@@ -298,8 +298,37 @@ export function isSecuritiesReport(reportNm: string): boolean {
  * 아니다 (교차검토 S-5). 취소된 원본 접수분은 목록에 별도 행으로 남으므로, 취소 행만
  * 근거에서 빼면 "원본은 있고 취소만 있는" 경우를 잘못 후보로 만들지 않는다.
  */
+/**
+ * ⚠️ **실측: J001 에 '공시취소' 보고서명은 존재하지 않는다.**
+ * 전체시장 2024-01-01~2026-09-04 J001 **22,794건 / 서로 다른 보고서명 94종**을 전수 수집해
+ * `취소·철회·무효·해제` 를 찾았더니 **0건**이었다 (픽스처 `j001-report-names-2024-2026.json`).
+ * 고시 §8①단서의 "거래 취소"는 별도 서식이 아니라 **정정([기재정정], 1,496건)·변경 공시**로
+ * 표현된다. 이 함수는 그래도 남겨 둔다 — 서식이 생기면 그 즉시 판정을 보류시키는 방어선이고,
+ * 비용이 0 이다. 다만 **이 경로에 의존하는 판정은 없다**고 알고 읽어야 한다.
+ */
 function isCancellationReport(reportNm: string): boolean {
   return normalizeReportNm(reportNm).includes('공시취소');
+}
+
+/**
+ * 보고서명만으로 **거래유형을 알 수 없는** J001 서식인가 — 유형 필터를 빠져나가는 실측 사례다.
+ *
+ * ★ 왜 필요한가 (실측 2026-09-05, 전체시장 2.7년 22,794건):
+ *  - `특수관계인과의내부거래` **740건** — 유형이 이름에 없다. 실물 20260903000201(플랜에이치
+ *    벤처스)은 **벤처투자조합 출자**(유가증권 유형)를 이 이름으로 공시했다.
+ *  - `약관에의한금융거래시계열금융회사의거래상대방의공시` **433건** — 고시 §9② 약관특례의
+ *    거래상대방 쪽 공시다. 실물 20260902000068(농협양곡)은 **차입금 415.2억**을 이 이름으로
+ *    공시했다 — 우리 '자금차입' 필터에 걸리지 않는다.
+ *
+ * 이 이름들이 창 안에 있는데 유형 필터에는 안 걸리면, "공시 없음 → 미공시 후보"가 **오탐**일
+ * 수 있다. 그렇다고 "공시 존재"로 삼으면 거짓 안심이므로, 후보를 만들지 않고 **판정을 보류**한다.
+ */
+export function isTypeAmbiguousReport(reportNm: string): boolean {
+  const n = normalizeReportNm(reportNm);
+  return (
+    n.includes('특수관계인과의내부거래') ||
+    n.includes('약관에의한금융거래시계열금융회사의거래상대방')
+  );
 }
 
 /** 회사별 기준금액 (J004 재무현황 기반 근사치) */
@@ -441,6 +470,8 @@ interface LenderSide {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
 }
 
 /**
@@ -484,6 +515,8 @@ interface CounterpartySide {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
 }
 
 interface JudgedBorrowing {
@@ -521,6 +554,8 @@ interface JudgedBorrowing {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
   other_j001_sample?: FilingRef[];
   /** 자금을 대준 계열회사 쪽의 "자금대여" 공시의무 대조 (거래 한 건에 의무자가 둘이다) */
   lender_side?: LenderSide;
@@ -569,6 +604,8 @@ interface GoodsSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
   /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
   buyer_side?: CounterpartySide;
 }
@@ -617,6 +654,8 @@ interface SecuritySignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
   /** 매도회사 쪽 의무 — 유가증권은 상대방 지분 요건이 없어 각자의 기준금액만 본다 */
   seller_side?: CounterpartySide;
 }
@@ -692,6 +731,8 @@ interface GoodsMatrixSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
+  type_ambiguous_filings?: FilingRef[];
   /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
   buyer_side?: CounterpartySide;
 }
@@ -1962,6 +2003,8 @@ export async function detectUndisclosedTransactions(
     others?: Disclosure[];
     search_partial?: boolean;
     cancelled_of_type?: number;
+    /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 (isTypeAmbiguousReport) */
+    type_ambiguous?: Disclosure[];
   }
   function checkCompany(
     key: string,
@@ -2026,6 +2069,28 @@ export async function detectUndisclosedTransactions(
       }
       return { ...common, outcome: 'exists', matching, others };
     }
+    // ★ 이름만으로 유형을 알 수 없는 공시가 창 안에 있으면 "공시 없음"이라 할 수 없다.
+    //   실측: '특수관계인과의내부거래'(출자를 이 이름으로 공시한 실물 있음)·'약관에의한금융거래시
+    //   계열금융회사의거래상대방의공시'(차입 415억을 이 이름으로 공시한 실물 있음).
+    //   "공시 존재"로 삼으면 거짓 안심이므로 후보를 만들지 않고 **판정을 보류**한다.
+    const ambiguous = s.rows.filter(
+      (r) => isTypeAmbiguousReport(r.report_nm) && !isCancellationReport(r.report_nm),
+    );
+    if (ambiguous.length > 0) {
+      return {
+        ...common,
+        outcome: 'not_judged',
+        reason:
+          `type_ambiguous_filing_present — 이 유형(${typeLabel})의 J001 공시는 창 안에 없지만, ` +
+          `**보고서명만으로 거래유형을 알 수 없는** 공시가 ${ambiguous.length}건 있습니다 ` +
+          `(${[...new Set(ambiguous.map((r) => normalizeReportNm(r.report_nm)))].join(', ')}). ` +
+          '실측상 이 서식들에는 출자·차입 같은 실제 유형이 담깁니다 — 이 거래를 커버할 수 ' +
+          '있으므로 미공시 후보로 올리지 않았습니다. type_ambiguous_filings 를 read_disclosure 로 ' +
+          '열어 거래대상·상대방을 확인하세요 ("공시 있음"으로 확인한 것이 아닙니다)',
+        type_ambiguous: ambiguous,
+        others,
+      };
+    }
     // 수집이 불완전한데 "공시 없음"이면 수집 누락일 수 있다 — 후보로 단정하지 않는다 (교차검토 M-7)
     if (s.partial) {
       return {
@@ -2056,6 +2121,9 @@ export async function detectUndisclosedTransactions(
     if (chk.search_partial) target.search_partial = true;
     if (chk.cancelled_of_type) target.cancellations_of_type_in_window = chk.cancelled_of_type;
     if (chk.others) target.other_j001_in_window = chk.others.length;
+    if (chk.type_ambiguous && chk.type_ambiguous.length > 0) {
+      target.type_ambiguous_filings = chk.type_ambiguous.slice(0, 5).map(toFilingRef);
+    }
   }
 
   for (const b of judgedBorrowings) {
@@ -2396,6 +2464,18 @@ export async function detectUndisclosedTransactions(
       '약관특례(고시 §9, 트랙 B) 분기 일괄공시에 실릴 수 있는데 그 서식은 보고서명이 달라 ' +
       '유형 필터에 걸리지 않을 수 있습니다 ③ 보고서명 유형 분류가 원문 표기와 어긋날 수 있습니다 — ' +
       'other_j001_in_window 가 0 이 아니면 그 공시들을 먼저 확인하세요.',
+    '★ **보고서명만으로 거래유형을 알 수 없는 J001 서식이 실재합니다** (실측 2026-09-05, 전체시장 ' +
+      '2024-01~2026-09 J001 22,794건·보고서명 94종 전수): `특수관계인과의내부거래` 740건은 실물에서 ' +
+      '**벤처투자조합 출자**를(20260903000201), `약관에의한금융거래시계열금융회사의거래상대방의공시` ' +
+      '433건은 실물에서 **차입금 415.2억**을(20260902000068) 이 이름으로 공시했습니다. 이런 공시가 ' +
+      '창 안에 있으면 "유형 공시 없음 → 미공시 후보"가 오탐일 수 있어 **후보로 올리지 않고 판정을 ' +
+      '보류**합니다(not_judged, type_ambiguous_filing_present). ⚠️ 이것은 "공시가 있다"를 확인한 것이 ' +
+      '**아닙니다** — type_ambiguous_filings 를 read_disclosure 로 열어 거래대상·상대방을 직접 ' +
+      '대조해야 합니다.',
+    '같은 전수 측정에서 J001 에 **“공시취소” 보고서명은 0건**이었습니다 — 고시 §8①단서의 거래 ' +
+      '취소는 별도 서식이 아니라 정정([기재정정] 1,496건)·변경 공시로 표현됩니다. ' +
+      'cancellations_of_type_in_window 는 서식이 생길 때를 대비한 방어선이며 현재 판정에 관여하지 ' +
+      '않습니다.',
     `j001_filing_near_date 는 차입일 근방(−${NEAR_BEFORE_DAYS}~+${NEAR_AFTER_DAYS}일)에 같은 유형 ` +
       '공시가 있다는 뜻이고, j001_filing_in_window_only 는 검색창 안 어딘가에만 있다는 뜻입니다 — ' +
       '후자는 한도 의결이 커버하는 정상 케이스일 수도, **일부 차입만 공시한 부분 누락**일 수도 있습니다 ' +
