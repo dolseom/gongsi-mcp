@@ -30,6 +30,7 @@ import type { Disclosure } from '../src/clients/dart.js';
 import type { BatchResult } from '../src/search/batch.js';
 import type { DocMeta } from '../src/tools/read-disclosure.js';
 import type { Population, PopulationInput } from '../src/tools/audit-group-disclosures.js';
+import type { JurirNoFetch } from '../src/resolver/corp-index.js';
 import { ToolError } from '../src/lib/errors.js';
 import { 억 } from '../src/rules/thresholds.js';
 
@@ -95,6 +96,10 @@ function makeDeps(opts: {
   calls?: CallLog[];
   /** resolvePop 이 어떤 입력으로 불렸는지 기록 (rcept_no 경로의 문서 집단명 조회 검증용) */
   popCalls?: PopulationInput[];
+  /** corp_code → 기업개황 법인등록번호 응답 (동명 2건 확정 검증용) */
+  jurir?: Record<string, JurirNoFetch>;
+  /** fetchJurirNo 가 어떤 corp_code 로 몇 번 불렸는지 (호출 예산·캐시 검증용) */
+  jurirCalls?: string[];
 }): DetectDeps {
   return {
     loadDoc: async () => ({ markdown: opts.markdown ?? FIXTURE_MD, meta: META }),
@@ -112,6 +117,10 @@ function makeDeps(opts: {
       return opts.pop;
     },
     findCorps: (name) => opts.corps?.[name] ?? [],
+    fetchJurirNo: async (corpCode) => {
+      opts.jurirCalls?.push(corpCode);
+      return opts.jurir?.[corpCode] ?? { status: 'absent' };
+    },
   };
 }
 
@@ -1648,5 +1657,204 @@ describe('(5)↔(6) 회사명 표기 차이로 중복 제거를 비껴가는 경
     const m = (r['goods_services_matrix_signals'] as Array<Record<string, any>>)[0]!;
     expect(m['possible_duplicate_of_major_detail']).toBeUndefined();
     expect(r['summary'].goods_services_matrix_possible_duplicates).toBe(0);
+  });
+});
+
+/**
+ * ★ DART 상호 동명 2건 이상을 **법인등록번호로** 확정한다.
+ *
+ * 이 프로젝트의 원래 조인 설계가 법인등록번호 직접 조인이다 — 포털은 한글 음차,
+ * DART 는 영문 약어라 이름 매칭이 성립하지 않는다. 실측(미래에셋 20260819000341):
+ * '미래에셋 증권(주)' 는 DART 상호가 동명 2건이라 jurir 캐시를 채워도 자동 선택되지 않았고,
+ * 그 결과 유가증권 신호가 통째로 join_failed 로 빠졌다.
+ */
+describe('동명 2건 법인등록번호 확정 (백로그 2)', () => {
+  const 백만 = 1_000_000;
+  /** 차입회사 1곳 + 동명 2건인 대여회사 1곳 */
+  const MD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 비금융회사 | 차입회사(주) | 5,000 | 20,000 |',
+    '| 금융회사 | 동명증권(주) | 1,000 | 4,000 |',
+    '## (1) 계열회사간 자금거래 현황',
+    '가. 일반 차입',
+    '| (단위 : 백만원) |',
+    '| --- |',
+    '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+    '| --- | --- | --- | --- | --- |',
+    '| 비금융회사 | 차입회사(주) | 동명증권(주) | 16,000 | 2025-02-19 |',
+  ].join('\n');
+
+  /** '동명증권' 은 DART 인덱스에 2건 — 이름으로는 고를 수 없다 */
+  const CORPS = {
+    차입회사: [{ corpCode: '00222222', corpName: '차입회사' }],
+    동명증권: [
+      { corpCode: '00311030', corpName: '동명증권' },
+      { corpCode: '00999999', corpName: '동명증권' },
+    ],
+  };
+
+  /** 포털 소속회사 목록 — 동명증권의 법인등록번호를 알고 있다 */
+  function popWith(jurirNoByName: Map<string, string>): Population {
+    return {
+      corpCodes: new Map([['00222222', '차입회사(주)']]),
+      group: { representative_company: '차입회사(주)' },
+      unjoined: ['동명증권(주)'],
+      jurirNoByName,
+    };
+  }
+  const POP = popWith(new Map([['동명증권', '1101110011111']]));
+
+  async function run(over: Record<string, unknown> = {}): Promise<Record<string, any>> {
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: MD, corps: CORPS, pop: POP, j001: [], ...over }),
+    )) as Record<string, any>;
+  }
+
+  it('후보 중 포털 jurirno 와 일치하는 것이 정확히 1건이면 확정한다', async () => {
+    const jurirCalls: string[] = [];
+    const r = await run({
+      jurirCalls,
+      jurir: {
+        '00311030': { status: 'ok', jurirNo: '1101110011111' }, // 포털과 일치
+        '00999999': { status: 'ok', jurirNo: '1101110022222' }, // 불일치
+      },
+    });
+
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.corp_code).toBe('00311030');
+    expect(side.status).not.toBe('counterparty_not_joined');
+    expect(r['join_failures'] ?? []).toHaveLength(0);
+
+    const d = r['diagnostics'].jurir_disambiguation;
+    expect(d.lookups).toBe(2);
+    expect(d.resolved).toEqual([
+      { company: '동명증권(주)', corp_code: '00311030', jurir_no: '1101110011111', candidates: 2 },
+    ]);
+    expect(jurirCalls).toEqual(['00311030', '00999999']);
+    expect(
+      (r['notes'] as string[]).some((n) => n.includes('법인등록번호') && n.includes('확정')),
+    ).toBe(true);
+  });
+
+  it('일치가 0건이면 확정하지 않는다 — 후보 목록과 일치 건수를 사유에 남긴다', async () => {
+    const r = await run({
+      jurir: {
+        '00311030': { status: 'ok', jurirNo: '1101110033333' },
+        '00999999': { status: 'ok', jurirNo: '1101110022222' },
+      },
+    });
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(String(side.reason)).toContain('동명 법인 2건');
+    expect(String(side.reason)).toContain('동명증권(00311030)');
+    expect(String(side.reason)).toContain('일치 0건');
+    expect(r['diagnostics'].jurir_disambiguation.resolved).toEqual([]);
+  });
+
+  it('일치가 2건 이상이면 확정하지 않는다 (같은 법인등록번호에 corp_code 가 여럿)', async () => {
+    const r = await run({
+      jurir: {
+        '00311030': { status: 'ok', jurirNo: '1101110011111' },
+        '00999999': { status: 'ok', jurirNo: '1101110011111' },
+      },
+    });
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(String(side.reason)).toContain('일치 2건');
+  });
+
+  /** 조회 실패를 "불일치"로 뭉개면 재시도 안내가 거짓말이 된다 */
+  it('기업개황 조회 실패는 불일치와 구분해 사유에 센다', async () => {
+    const r = await run({
+      jurir: {
+        '00311030': { status: 'error', message: '조회 실패' },
+        '00999999': { status: 'ok', jurirNo: '1101110022222' },
+      },
+    });
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(String(side.reason)).toContain('조회 실패 1건');
+  });
+
+  it('포털 모집단이 없으면 종전대로 ambiguous — 기업개황을 부르지 않는다', async () => {
+    const jurirCalls: string[] = [];
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      // pop 미지정 = 포털 실패(EGROUP 키 없음)
+      makeDeps({ markdown: MD, corps: CORPS, j001: [], jurirCalls }),
+    )) as Record<string, any>;
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(String(side.reason)).toContain('포털 소속회사 목록이 없어');
+    expect(jurirCalls).toHaveLength(0);
+    expect(r['diagnostics'].jurir_disambiguation.lookups).toBe(0);
+  });
+
+  it('포털 목록에 그 이름의 법인등록번호가 없으면 대조하지 않는다', async () => {
+    const jurirCalls: string[] = [];
+    const r = await run({ jurirCalls, pop: popWith(new Map([['다른회사', '1101110011111']])) });
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('counterparty_not_joined');
+    expect(String(side.reason)).toContain('법인등록번호를 찾지 못했습니다');
+    expect(jurirCalls).toHaveLength(0);
+  });
+
+  it('후보가 상한(5개)을 넘으면 대조하지 않고 그 사실을 밝힌다', async () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      corpCode: `0099999${i}`,
+      corpName: '동명증권',
+    }));
+    const jurirCalls: string[] = [];
+    const r = await run({ jurirCalls, corps: { ...CORPS, 동명증권: many } });
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(String(side.reason)).toContain('상한 5개를 넘어');
+    expect(jurirCalls).toHaveLength(0);
+  });
+
+  it('같은 이름이 여러 번 나와도 기업개황은 한 번만 부른다 (조인 캐시)', async () => {
+    const md = MD.replace(
+      '| 비금융회사 | 차입회사(주) | 동명증권(주) | 16,000 | 2025-02-19 |',
+      '| 비금융회사 | 차입회사(주) | 동명증권(주) | 16,000 | 2025-02-19 |\n' +
+        '| 비금융회사 | 차입회사(주) | 동명증권(주) | 12,000 | 2025-06-30 |',
+    );
+    const jurirCalls: string[] = [];
+    const r = await run({
+      markdown: md,
+      jurirCalls,
+      jurir: {
+        '00311030': { status: 'ok', jurirNo: '1101110011111' },
+        '00999999': { status: 'ok', jurirNo: '1101110022222' },
+      },
+    });
+    expect(r['summary'].undisclosed_candidates).toBe(2);
+    // 차입 2건 × 후보 2개 = 4회가 아니라 2회여야 한다
+    expect(jurirCalls).toEqual(['00311030', '00999999']);
+    expect(r['diagnostics'].jurir_disambiguation.lookups).toBe(2);
+  });
+
+  it('법인등록번호 확정은 소속 검증 실패를 이유로 거부되지 않는다', async () => {
+    // 포털 corpCodes 에 없고 unjoined 이름과도 정규화가 다른 경우 — 종전 verifyMembership
+    // 이라면 dart_join_unverified 로 막혔겠지만, jurirno 일치는 그보다 강한 근거다.
+    const pop: Population = {
+      corpCodes: new Map([['00222222', '차입회사(주)']]),
+      group: { representative_company: '차입회사(주)' },
+      unjoined: ['전혀다른표기(주)'],
+      jurirNoByName: new Map([['동명증권', '1101110011111']]),
+    };
+    const r = await run({
+      pop,
+      jurir: {
+        '00311030': { status: 'ok', jurirNo: '1101110011111' },
+        '00999999': { status: 'ok', jurirNo: '1101110022222' },
+      },
+    });
+    expect(r['undisclosed_candidates'][0].lender_side.corp_code).toBe('00311030');
+    expect(r['diagnostics'].jurir_disambiguation.resolved).toHaveLength(1);
   });
 });

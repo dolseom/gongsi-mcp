@@ -26,6 +26,7 @@ import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
 import { loadCorpIndex, corpIndexIsStale } from '../resolver/corp-index.js';
 import { getGroupStructure } from './get-group-structure.js';
+import { normalizeCompanyName } from '../parsers/md-table.js';
 import { getStore } from '../lib/store.js';
 import { getConfig } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
@@ -157,6 +158,16 @@ export interface Population {
    * 과거 기한이 통째로 "미제출"로 뜬다 (실측: 웅진씽크빅은 2026년 5월 지정 이후 접수분만 있다).
    */
   joinedGroupAt?: Map<string, string>;
+  /**
+   * 정규화 소속회사명 → **법인등록번호**(포털 `jurirno`, 하이픈 제거 13자리). group 경로 전용.
+   *
+   * 이 프로젝트의 원래 조인 설계는 이름이 아니라 **법인등록번호 직접 조인**이다
+   * (포털 한글 음차 vs DART 영문 약어라 이름으로는 못 잇는다). DART 상호가 동명 2건 이상이라
+   * 자동 선택할 수 없을 때, 후보들의 `jurir_no` 를 받아 이 값과 대조하면 **추측 없이** 확정된다.
+   *
+   * ⚠️ 정규화 동명이 둘 이상인 이름은 **넣지 않는다** — 어느 회사의 법인등록번호인지 알 수 없다.
+   */
+  jurirNoByName?: Map<string, string>;
 }
 
 /** resolvePopulation 이 실제로 쓰는 입력만 추린 것 — 정기공시 감사도 같은 모집단 규칙을 쓴다 */
@@ -179,7 +190,21 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
     const corpCodes = new Map<string, string>();
     const joinedGroupAt = new Map<string, string>();
     const unjoined: string[] = [];
+    // 정규화 이름 → 법인등록번호. 정규화 동명이 나오면 그 키를 통째로 버린다 (추측 금지)
+    const jurirNoByName = new Map<string, string>();
+    const jurirNameConflicts = new Set<string>();
     for (const a of affiliates) {
+      const nameKey = normalizeCompanyName(String(a['name']));
+      const jurir = String(a['jurir_no'] ?? '').replace(/\D/g, '');
+      if (/^\d{13}$/.test(jurir) && nameKey !== '') {
+        const prev = jurirNoByName.get(nameKey);
+        if (prev !== undefined && prev !== jurir) {
+          jurirNoByName.delete(nameKey);
+          jurirNameConflicts.add(nameKey);
+        } else if (!jurirNameConflicts.has(nameKey)) {
+          jurirNoByName.set(nameKey, jurir);
+        }
+      }
       const code = a['corp_code'];
       if (typeof code === 'string') {
         corpCodes.set(code, String(a['name']));
@@ -201,6 +226,7 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
       group: gs['group'] as Record<string, unknown>,
       unjoined,
       ...(joinedGroupAt.size ? { joinedGroupAt } : {}),
+      ...(jurirNoByName.size ? { jurirNoByName } : {}),
     };
   }
 

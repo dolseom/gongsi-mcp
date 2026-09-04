@@ -87,6 +87,7 @@ function foreignAffiliateReason(colGroup: string): string {
   );
 }
 import { normalizeCompanyName } from '../parsers/md-table.js';
+import { fetchJurirNo, type JurirNoFetch } from '../resolver/corp-index.js';
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
@@ -127,6 +128,17 @@ export type DetectUndisclosedTransactionsInput = z.infer<
   typeof detectUndisclosedTransactionsInput
 >;
 
+/**
+ * 동명 1건을 확정하려고 기업개황을 조회할 **후보 수 상한**.
+ * 후보가 이보다 많으면 대조하지 않고 ambiguous 로 남긴다 (한 이름이 콜을 독점하지 않게).
+ */
+const MAX_JURIR_CANDIDATES = 5;
+/**
+ * 이 도구 한 번의 실행에서 기업개황(법인등록번호) 조회 **총 상한** — 60초 벽 대비.
+ * 결과는 캐시에 남으므로 다음 실행은 상한을 쓰지 않고도 조인된다.
+ */
+const MAX_JURIR_LOOKUPS = 20;
+
 /** J001 검색을 수행할 회사 수 상한 — 회사당 측정 1 + 수집 1 콜이라 60초 벽 대비 */
 const MAX_COMPANIES_TO_SEARCH = 20;
 /** 거래일 이전으로 여는 검색창 (달력일) — 한도성 이사회 의결이 거래보다 훨씬 앞설 수 있다 */
@@ -151,6 +163,11 @@ export interface DetectDeps {
   ) => Promise<BatchResult>;
   resolvePop: (input: PopulationInput) => Promise<Population>;
   findCorps: (name: string) => Array<{ corpCode: string; corpName: string }>;
+  /**
+   * DART 기업개황으로 한 회사의 **법인등록번호**를 얻는다 (조회 1회 = API 콜 1회, 결과는 캐시).
+   * 동명 2건 이상이라 이름으로 못 고르는 회사를 포털 `jurirno` 와 대조해 확정하는 데 쓴다.
+   */
+  fetchJurirNo: (corpCode: string) => Promise<JurirNoFetch>;
 }
 
 function realDeps(client: DartClient): DetectDeps {
@@ -175,6 +192,7 @@ function realDeps(client: DartClient): DetectDeps {
       getStore()
         .findCorpsByName(name)
         .map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
+    fetchJurirNo: (corpCode) => fetchJurirNo(corpCode, client),
   };
 }
 
@@ -955,6 +973,15 @@ export async function detectUndisclosedTransactions(
   // 판정 순서상 **차입 판정보다 앞에** 둔다: 대여회사 쪽 의무를 판정하려면 검색 예산을 짜기
   // 전에 상대방이 조인되는 계열회사인지 알아야 한다.
   const joinFailures: Array<{ company: string; reason: string }> = [];
+  /** 기업개황(법인등록번호) 조회 횟수 — 예산 상한 대비 */
+  let jurirLookups = 0;
+  /** 동명 2건 이상을 법인등록번호로 확정한 건 — 근거를 진단에 남긴다 */
+  const jurirResolved: Array<{
+    company: string;
+    corp_code: string;
+    jurir_no: string;
+    candidates: number;
+  }> = [];
   // 포털이 소속을 보증하는 이름들 — jurir 미조인이라 corp_code 는 없지만 계열사임은 확실하다
   const popUnjoinedKeys = new Set(
     (population?.unjoined ?? []).map((n) => normalizeCompanyName(n)),
@@ -996,7 +1023,83 @@ export async function detectUndisclosedTransactions(
       'resolve_entity(fetchJurirNo=true) 로 법인등록번호 조인 캐시를 채우면 대조할 수 있습니다'
     );
   }
-  function joinCorpCodeUncached(rawName: string): { code?: string; reason?: string } {
+  /**
+   * DART 상호 동명 2건 이상을 **법인등록번호로** 확정한다 (이름으로는 못 고른다).
+   *
+   * 이 프로젝트의 원래 조인 설계가 법인등록번호 직접 조인이다 — 포털은 한글 음차,
+   * DART 는 영문 약어라 이름 매칭이 성립하지 않기 때문이다. 포털 소속회사 목록에 그 회사의
+   * `jurirno` 가 있으므로, 후보들의 기업개황 `jurir_no` 를 받아 대조하면 **추측 없이** 하나로
+   * 좁혀진다 (실측: 미래에셋증권은 DART 상호 동명 2건이라 이 경로가 없으면 영원히 미조인).
+   *
+   * ★ 정확히 1건 일치일 때만 확정한다. 0건이면 후보 중에 그 계열사가 없다는 뜻이고,
+   *   2건 이상이면 같은 법인등록번호에 corp_code 가 여럿이라는 뜻이라 어느 쪽도 고르지 않는다.
+   * ★ 조회 실패(error)를 "불일치"로 뭉개지 않는다 — 실패 건수를 사유에 남긴다.
+   */
+  async function disambiguateByJurirNo(
+    rawName: string,
+    hits: Array<{ corpCode: string; corpName: string }>,
+  ): Promise<{ code?: string; reason?: string }> {
+    const key = normalizeCompanyName(rawName);
+    const list = hits.map((h) => `${h.corpName}(${h.corpCode})`).join(', ');
+    const ambiguous = (extra: string): { reason: string } => ({
+      reason: withAffiliateHint(rawName, `동명 법인 ${hits.length}건 [${list}] — ${extra}`),
+    });
+
+    const portalJurir = population?.jurirNoByName?.get(key);
+    if (!portalJurir) {
+      return ambiguous(
+        population === null
+          ? '자동 선택하지 않습니다 (포털 소속회사 목록이 없어 법인등록번호로 확정할 수 없습니다 — ' +
+              'group 경로로 호출하면 대조합니다)'
+          : '자동 선택하지 않습니다 (포털 소속회사 목록에서 이 이름의 법인등록번호를 찾지 못했습니다 — ' +
+              '표기가 다르거나 포털에도 동명이 있습니다)',
+      );
+    }
+    if (hits.length > MAX_JURIR_CANDIDATES) {
+      return ambiguous(
+        `후보가 상한 ${MAX_JURIR_CANDIDATES}개를 넘어 법인등록번호를 대조하지 않았습니다`,
+      );
+    }
+    if (jurirLookups + hits.length > MAX_JURIR_LOOKUPS) {
+      return ambiguous(
+        `법인등록번호 조회 예산(${MAX_JURIR_LOOKUPS}회)을 넘어 대조하지 않았습니다 — ` +
+          'resolve_entity(fetchJurirNo=true) 로 미리 캐시를 채우면 대조합니다',
+      );
+    }
+
+    const matched: Array<{ corpCode: string; corpName: string }> = [];
+    let failures = 0;
+    for (const h of hits) {
+      jurirLookups++;
+      const r = await deps.fetchJurirNo(h.corpCode);
+      if (r.status === 'ok') {
+        if (r.jurirNo === portalJurir) matched.push(h);
+      } else if (r.status === 'error') {
+        failures++;
+      }
+      // 'absent' = 확인된 부재 — 이 후보는 그 계열사가 아니다
+    }
+    if (matched.length === 1) {
+      jurirResolved.push({
+        company: rawName,
+        corp_code: matched[0]!.corpCode,
+        jurir_no: portalJurir,
+        candidates: hits.length,
+      });
+      // 법인등록번호 일치는 소속 검증(verifyMembership)보다 강한 근거다 — 포털이 그 번호를
+      // 이 집단 소속회사로 싣고 있으므로 비계열 동명 회사일 수 없다.
+      return { code: matched[0]!.corpCode };
+    }
+    return ambiguous(
+      `법인등록번호(${portalJurir}) 일치 ${matched.length}건` +
+        (failures > 0 ? `·조회 실패 ${failures}건` : '') +
+        ' — 정확히 1건일 때만 확정합니다',
+    );
+  }
+
+  async function joinCorpCodeUncached(
+    rawName: string,
+  ): Promise<{ code?: string; reason?: string }> {
     const key = normalizeCompanyName(rawName);
     if (popNameConflicts.has(key)) {
       // 포털 목록 안에서조차 동명이라 어느 쪽인지 알 수 없다 — DART 완전일치로만 재시도
@@ -1020,11 +1123,7 @@ export async function detectUndisclosedTransactions(
       tried.add(variant);
       const hits = deps.findCorps(variant);
       if (hits.length === 1) return verifyMembership(hits[0]!.corpCode, rawName);
-      if (hits.length > 1) {
-        return {
-          reason: withAffiliateHint(rawName, `동명 법인 ${hits.length}건 — 자동 선택하지 않습니다`),
-        };
-      }
+      if (hits.length > 1) return disambiguateByJurirNo(rawName, hits);
     }
     return {
       reason: withAffiliateHint(
@@ -1035,13 +1134,14 @@ export async function detectUndisclosedTransactions(
       ),
     };
   }
-  // 같은 회사가 차입회사·대여회사·매트릭스 행으로 여러 번 나온다 — 인덱스 조회를 한 번만 한다
+  // 같은 회사가 차입회사·대여회사·매트릭스 행으로 여러 번 나온다 — 인덱스 조회도 기업개황
+  // 호출도 이름당 한 번만 한다 (호출은 전부 순차라 경합이 없다)
   const joinCache = new Map<string, { code?: string; reason?: string }>();
-  function joinCorpCode(rawName: string): { code?: string; reason?: string } {
+  async function joinCorpCode(rawName: string): Promise<{ code?: string; reason?: string }> {
     const key = normalizeCompanyName(rawName);
     const hit = joinCache.get(key);
     if (hit) return hit;
-    const r = joinCorpCodeUncached(rawName);
+    const r = await joinCorpCodeUncached(rawName);
     joinCache.set(key, r);
     return r;
   }
@@ -1186,7 +1286,7 @@ export async function detectUndisclosedTransactions(
         continue;
       }
 
-      const joined = joinCorpCode(lender);
+      const joined = await joinCorpCode(lender);
       if (!joined.code) {
         // 자연인 추정은 **조인 실패 + 소속 확인 실패**가 모두 성립한 뒤에만 쓴다.
         // ★ 조인 실패만으로 자연인 추정을 돌리면 안 된다: 한글 2~4자 상호가 실재하고
@@ -1644,7 +1744,7 @@ export async function detectUndisclosedTransactions(
       signalGoodsMatrix.find((m) => normalizeCompanyName(m.company) === key)?.company ??
       lenderRawNames.get(key) ??
       key;
-    const joined = joinCorpCode(rawName);
+    const joined = await joinCorpCode(rawName);
     if (!joined.code) {
       joinFailures.push({ company: rawName, reason: joined.reason ?? '조인 실패' });
       continue;
@@ -2180,6 +2280,14 @@ export async function detectUndisclosedTransactions(
         '상대방 지분 요건을 확인하세요.',
     );
   }
+  if (jurirResolved.length > 0) {
+    notes.push(
+      `ℹ️ DART 상호가 동명 2건 이상이던 회사 ${jurirResolved.length}곳을 **법인등록번호**로 ` +
+        `확정했습니다 (${jurirResolved.map((r) => `${r.company}→${r.corp_code}`).join(', ')}) — ` +
+        '포털 소속회사 목록의 jurirno 와 DART 기업개황 jurir_no 를 대조한 결과이며, ' +
+        '정확히 1건 일치한 경우만 확정했습니다 (diagnostics.jurir_disambiguation).',
+    );
+  }
   if (goodsMatrixPossibleDuplicates > 0) {
     const dups = judgedGoodsMatrix.filter((m) => m.possible_duplicate_of_major_detail);
     notes.push(
@@ -2494,6 +2602,16 @@ export async function detectUndisclosedTransactions(
         from_document: !input.group && populationSource === 'portal',
       },
       list_calls: listCalls,
+      /**
+       * 동명 2건 이상을 **법인등록번호**(포털 jurirno ↔ DART 기업개황 jurir_no)로 확정한 건.
+       * 이름으로는 고를 수 없던 회사이므로 근거를 남긴다.
+       */
+      jurir_disambiguation: {
+        lookups: jurirLookups,
+        lookup_budget: MAX_JURIR_LOOKUPS,
+        max_candidates_per_name: MAX_JURIR_CANDIDATES,
+        resolved: jurirResolved,
+      },
       companies_searched: searches.size,
       companies_over_budget: overBudgetKeys.size,
       partial_results: partialLists,
