@@ -25,6 +25,7 @@ import {
   type DetectDeps,
 } from '../src/tools/detect-undisclosed-transactions.js';
 import { extractCapitals } from '../src/parsers/j004-transactions.js';
+import { normalizeCompanyName } from '../src/parsers/md-table.js';
 import type { Disclosure } from '../src/clients/dart.js';
 import type { BatchResult } from '../src/search/batch.js';
 import type { DocMeta } from '../src/tools/read-disclosure.js';
@@ -1291,3 +1292,233 @@ describe('대여회사(상대방) 관점 자금대여 대조 (E-2)', () => {
   });
 });
 
+/**
+ * 상품·용역 총괄 (5) 매트릭스 보완 — 백로그 2.
+ *
+ * 판정의 주 원천인 (6) '주요 상품ㆍ용역거래 **내역**' 은 서식상 "거래한 금액이 일정 규모
+ * 이상인 경우"만 싣는다. 그 규모 기준은 우리가 계산하는 기준금액(령 §33①)과 다르므로
+ * (6)만 보면 공시대상 쌍을 놓칠 수 있다. (5) 총괄표는 전 쌍을 담아 그 구멍을 메운다.
+ *
+ * 픽스처는 **실물 표 그대로**다 (미래에셋 대표회사 20260819000341 의 (3)(4)(5)(6) 절).
+ */
+describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
+  const MATRIX_MD = readFileSync(join(HERE, 'fixtures', 'j004-matrix.md'), 'utf8');
+  /** 차입·상품용역 픽스처(재무현황·(6) 내역 포함) + 실물 매트릭스 절들 */
+  const FULL_MD = FIXTURE_MD + '\n' + MATRIX_MD;
+  const 백만 = 1_000_000;
+
+  const FULL_CORPS: Record<string, Array<{ corpCode: string; corpName: string }>> = {
+    와이케이디벨롭먼트: [{ corpCode: '00222222', corpName: '와이케이디벨롭먼트' }],
+    미래에셋캐피탈: [{ corpCode: '00111111', corpName: '미래에셋캐피탈' }],
+    미래에셋자산운용: [{ corpCode: '00333333', corpName: '미래에셋자산운용' }],
+    미래에셋금융서비스: [{ corpCode: '00444444', corpName: '미래에셋금융서비스' }],
+    미래에셋증권: [{ corpCode: '00555555', corpName: '미래에셋증권' }],
+    미래에셋생명보험: [{ corpCode: '00666666', corpName: '미래에셋생명보험' }],
+  };
+
+  async function run(
+    j001?: Disclosure[] | ((corpCode: string) => Disclosure[]),
+  ): Promise<Record<string, any>> {
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: FULL_MD, corps: FULL_CORPS, j001: j001 ?? [] }),
+    )) as Record<string, any>;
+  }
+
+  /** (5) 보완 신호에서 한 쌍을 찾는다 (표기 흔들림을 정규화로 흡수) */
+  function findPair(
+    r: Record<string, any>,
+    company: string,
+    counterparty: string,
+  ): Record<string, any> | undefined {
+    const all = [
+      ...((r['goods_services_matrix_signals'] ?? []) as Array<Record<string, any>>),
+      ...((r['goods_services_matrix_below_threshold'] ?? []) as Array<Record<string, any>>),
+    ];
+    return all.find(
+      (m) =>
+        normalizeCompanyName(String(m['company'])) === normalizeCompanyName(company) &&
+        normalizeCompanyName(String(m['counterparty'])) === normalizeCompanyName(counterparty),
+    );
+  }
+
+  /**
+   * ★ 회귀 고정 — (5) 통합이 기존 세 경로(차입·(6) 주요 내역·유가증권)를 건드리지 않았음을
+   * 못 박는다. 같은 문서에서 (5) 절만 지우고 돌린 결과와 아래 값이 전부 같았다.
+   */
+  it('기존 차입·(6) 주요 내역·유가증권 판정을 바꾸지 않는다', async () => {
+    const r = await run();
+    expect(r['summary'].undisclosed_candidates).toBe(2);
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(1);
+    expect(r['summary'].goods_services_not_judged).toBe(0);
+    expect(r['summary'].securities_pairs_extracted).toBe(36);
+    expect(r['summary'].securities_candidates_aggregate_only).toBe(10);
+    expect(r['summary'].securities_below_threshold).toBe(4);
+    expect(r['summary'].securities_not_judged).toBe(22);
+  });
+
+  it('(5) 전 쌍을 읽고 (6)에 있는 쌍만 빼고 보완한다', async () => {
+    const r = await run();
+    expect(r['summary'].goods_services_matrix_pairs_extracted).toBe(62);
+    expect(r['summary'].goods_services_matrix_pairs_also_in_major_detail).toBe(1);
+    expect(r['summary'].goods_services_matrix_pairs_supplemented).toBe(61);
+    // 파서 진단 — 실물은 열이 많아 표가 4개로 쪼개져 있고 단위 캡션은 첫 표에만 있다
+    const d = r['diagnostics'].goods_services_matrix;
+    expect(d.tables).toBe(4);
+    expect(d.unit_inherited_tables).toBe(3);
+    expect(d.tables_unrecognized).toBe(0);
+    expect(d.tables_without_unit).toBe(0);
+    expect(d.duplicate_pairs).toBe(0);
+  });
+
+  /**
+   * ★ 중복 제거의 핵심 사례 — (5)는 '와이케이 디벨롭먼트(주)'·'미래에셋 증권(주)'(공백 있음),
+   * (6)은 '와이케이디벨롭먼트(주)'·'미래에셋증권'(공백·법인격 없음)으로 같은 거래를 적는다.
+   * 쌍 키를 정규화하지 않으면 71.89억 한 건이 두 바구니에 서로 다른 강도로 실린다.
+   */
+  it('(6)에 있는 쌍은 (5)에서 중복 생성하지 않는다 (와이케이디벨롭먼트→미래에셋증권 7,189백만)', async () => {
+    const r = await run();
+    const g6 = (r['goods_services_signals'] as Array<Record<string, any>>).find(
+      (g) =>
+        normalizeCompanyName(String(g['counterparty'])) === normalizeCompanyName('미래에셋증권'),
+    )!;
+    expect(g6['annual_amount_total']).toBe(7_189 * 백만);
+    expect(g6['source']).toBe('(6)주요내역');
+    expect(g6['status']).toBe('candidate_if_counterparty_qualified');
+    // 같은 쌍이 (5) 어느 바구니에도 없어야 한다
+    expect(findPair(r, '와이케이 디벨롭먼트(주)', '미래에셋 증권(주)')).toBeUndefined();
+  });
+
+  /**
+   * 비둘기집: 연간 총액 ≥ 4×기준금액이면 네 분기가 전부 기준 미만일 수 없다.
+   * 미래에셋금융서비스 → 미래에셋생명보험 205,454백만(2,054.54억) ≥ 4×100억.
+   */
+  it('연간 총액 ≥ 4×기준금액이면 (6)과 같은 강도의 조건부 후보다', async () => {
+    const r = await run();
+    const m = findPair(r, '미래에셋 금융서비스(주)', '미래에셋 생명보험(주)')!;
+    expect(m['annual_amount']).toBe(205_454 * 백만);
+    expect(m['quarterly_logic']).toBe('annual_geq_4x_threshold');
+    expect(m['certainty']).toBe('certain_by_cap');
+    expect(m['status']).toBe('candidate_if_counterparty_qualified');
+    expect(m['source']).toBe('(5)총괄');
+    // 상대방 요건 미확인 한계는 (6)과 똑같이 적용된다
+    expect(m['counterparty_qualification']).toBe('not_verified');
+    expect(r['summary'].goods_services_matrix_candidates_if_qualified).toBe(1);
+  });
+
+  /**
+   * ★ 총액만 기준을 넘은 경우는 후보가 아니라 **확인 대상**이다.
+   * 미래에셋자산운용 → 미래에셋증권 23,509백만(235.09억)은 100억 상한 기준으로 확실히
+   * 초과지만 4×(400억)에는 못 미쳐, 네 분기로 나누면 전부 미달일 수 있다.
+   */
+  it('총액만 기준 이상이면 candidate_aggregate_only — 비둘기집이 서지 않는다', async () => {
+    const r = await run();
+    const m = findPair(r, '미래에셋 자산운용(주)', '미래에셋 증권(주)')!;
+    expect(m['annual_amount']).toBe(23_509 * 백만);
+    expect(m['quarterly_logic']).toBe('annual_geq_threshold');
+    expect(m['status']).toBe('candidate_aggregate_only');
+    expect(String(m['reason'])).toContain('분기 합계액');
+    expect(r['summary'].goods_services_matrix_candidates_aggregate_only).toBe(4);
+  });
+
+  /**
+   * 반대 방향만 확실하다 — 분기 합계는 연간 총액을 넘지 못하므로 연간 총액이 기준 미만이면
+   * 어느 분기도 미달이다. 와이케이디벨롭먼트(기준금액 10억) → 미래에셋금융서비스 505백만.
+   */
+  it('연간 총액이 기준 미만이면 below_threshold 로 확정한다', async () => {
+    const r = await run();
+    const m = findPair(r, '와이케이 디벨롭먼트(주)', '미래에셋 금융서비스(주)')!;
+    expect(m['annual_amount']).toBe(505 * 백만);
+    expect(m['threshold'].value).toBe(10 * 억);
+    expect(m['quarterly_logic']).toBe('annual_below_threshold');
+    expect(m['status']).toBe('below_threshold');
+    expect(r['summary'].goods_services_matrix_below_threshold).toBe(8);
+  });
+
+  it('기준금액을 모르면 not_judged — "후보 아님"으로 흘리지 않는다', async () => {
+    const r = await run();
+    // 미래에셋증권은 이 문서 재무현황 표에 자본이 없다 (픽스처는 3개사만 싣는다)
+    const m = findPair(r, '미래에셋 증권(주)', '미래에셋 캐피탈(주)')!;
+    expect(m['quarterly_logic']).toBe('threshold_unknown');
+    expect(m['status']).toBe('not_judged');
+    expect(String(m['reason'])).toContain('threshold_unknown');
+    expect(r['summary'].goods_services_matrix_not_judged).toBe(48);
+    expect(
+      (r['notes'] as string[]).some((n) => n.includes('(5) 총괄 보완 신호') && n.includes('48건')),
+    ).toBe(true);
+  });
+
+  it('상품·용역 유형 J001 이 있으면 filing_exists 로 내려간다', async () => {
+    const r = await run((corpCode) =>
+      corpCode === '00444444'
+        ? [
+            disc({
+              corp_code: '00444444',
+              report_nm: '대규모내부거래관련이사회의결및공시(상품ㆍ용역거래)',
+              rcept_no: '20250310000001',
+              rcept_dt: '20250310',
+            }),
+          ]
+        : [],
+    );
+    const m = findPair(r, '미래에셋 금융서비스(주)', '미래에셋 생명보험(주)')!;
+    expect(m['status']).toBe('j001_filing_exists');
+    expect(m['matching_filings']).toHaveLength(1);
+    expect(r['summary'].goods_services_matrix_candidates_if_qualified).toBe(0);
+    expect(r['summary'].goods_services_matrix_filing_exists).toBe(1);
+  });
+
+  /**
+   * ★ 실측 집계 열 이름은 한 가지가 아니다 ('소계'·'계'·'국내계열사계'·'국내 매출액'·'해외 매출액').
+   * 하나라도 회사로 새면 **없는 거래**가 후보로 올라간다.
+   */
+  it('집계 열을 거래상대방으로 만들어내지 않는다', async () => {
+    const r = await run();
+    const all = [
+      ...(r['goods_services_matrix_signals'] as Array<Record<string, any>>),
+      ...(r['goods_services_matrix_below_threshold'] as Array<Record<string, any>>),
+    ];
+    const names = new Set(all.map((m) => normalizeCompanyName(String(m['counterparty']))));
+    for (const bad of ['소계', '계', '국내계열사계', '국내 매출액', '해외 매출액', '합계']) {
+      expect(names.has(normalizeCompanyName(bad)), bad).toBe(false);
+    }
+  });
+
+  /**
+   * 화이트리스트는 **필터가 아니라 표시**다 (유가증권 통합과 같은 규칙) —
+   * 국외 계열사 열은 목록 밖이지만 버리지 않고 표시만 한다. 버리면 조용한 누락이 된다.
+   */
+  it('회사 목록 밖 상대방(국외 계열사)은 버리지 않고 표시한다', async () => {
+    const r = await run();
+    const m = findPair(r, '미래에셋 캐피탈(주)', 'Mirae Asset Finance Company (Vietnam)')!;
+    expect(m['annual_amount']).toBe(10_439 * 백만);
+    expect(m['counterparty_in_known_list']).toBe(false);
+    expect(m['status']).toBe('candidate_aggregate_only');
+    expect(r['diagnostics'].goods_services_matrix.counterparties_not_in_known_list).toContain(
+      'Mirae Asset Finance Company (Vietnam)',
+    );
+  });
+
+  it('(5)만의 한계를 caveat 로 매 신호에 동봉한다', async () => {
+    const r = await run();
+    const m = findPair(r, '미래에셋 금융서비스(주)', '미래에셋 생명보험(주)')!;
+    expect(String(m['caveat'])).toContain('연간 총액');
+    expect(String(m['caveat'])).toContain('분기 합계액');
+    expect(String(m['caveat'])).toContain('품목이 없어');
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('상품·용역은 두 표를 함께 봅니다')),
+    ).toBe(true);
+    expect(r['coverage'].transaction_types_checked).toContain(
+      '상품·용역 총괄 (5) 매트릭스 — (6)에 없는 쌍만 보완 (상대방별 연간 총액)',
+    );
+  });
+
+  it('(5) 절이 없는 문서는 신호 없이 조용히 지나간다', async () => {
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ corps: YKD_CORPS, j001: [] }),
+    )) as Record<string, any>;
+    expect(r['summary'].goods_services_matrix_pairs_extracted).toBe(0);
+    expect(r['goods_services_matrix_signals']).toBeUndefined();
+  });
+});

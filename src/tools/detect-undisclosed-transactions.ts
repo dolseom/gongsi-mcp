@@ -50,7 +50,7 @@ import {
   type FundBorrowing,
   type GoodsServiceRow,
 } from '../parsers/j004-transactions.js';
-import { extractSecuritiesMatrix } from '../parsers/j004-matrix.js';
+import { extractGoodsServicesMatrix, extractSecuritiesMatrix } from '../parsers/j004-matrix.js';
 import { normalizeCompanyName } from '../parsers/md-table.js';
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
@@ -447,6 +447,8 @@ interface GoodsSignal {
   company: string;
   corp_code?: string;
   counterparty: string;
+  /** 어느 표에서 왔는가 — (6) 주요 내역은 품목·금액이 명시된 강한 원천이다 */
+  source: '(6)주요내역';
   annual_amount_total: number;
   annual_amount_total_display: string;
   items: GoodsItem[];
@@ -505,6 +507,65 @@ interface SecuritySignal {
     | 'below_threshold'
     | 'candidate_aggregate_only'
     | 'j001_filing_exists'
+    | 'not_judged';
+  reason?: string;
+  j001_search?: { from: string; to: string; type_filter: string };
+  matching_filings?: FilingRef[];
+  matching_filings_total?: number;
+  cancellations_of_type_in_window?: number;
+  search_partial?: boolean;
+  other_j001_in_window?: number;
+}
+
+/**
+ * 상품·용역 **총괄표 (5)** 의 (매출회사, 매입회사) 한 칸 — (6) 주요 내역에 없는 쌍의 보완 신호.
+ *
+ * 왜 필요한가: 판정의 주 원천인 (6) '주요 상품ㆍ용역거래 **내역**' 은 서식 설명 그대로
+ * "거래한 금액이 **일정 규모 이상**인 경우"만 싣는다. 그 규모 기준은 우리가 계산하는
+ * 기준금액(령 §33①)과 다르므로, **(6)에 없는데 공시대상인 쌍**이 존재할 수 있다.
+ * (5) 총괄표는 같은 문서 안에서 **전 쌍**을 담으므로 그 구멍을 메운다.
+ *
+ * ⚠️ 다만 (5)는 상대방별 **연간 총액**뿐이다. 상품·용역의 기준금액 판단 단위는 §4③2호상
+ * **분기 합계액**이라, 연간 총액이 기준 이상이라고 해서 어느 분기가 기준을 넘었다고 단정할 수
+ * 없다. 비둘기집 논증(연간 ≥ 4×기준 ⇒ 네 분기가 전부 미만일 수는 없다)이 성립할 때만
+ * (6) 경로와 같은 강도의 후보로 올리고, 그 미만은 `candidate_aggregate_only`(확인 대상)다.
+ * 반대 방향(연간 총액 < 기준 ⇒ 어느 분기도 미달)은 확실하므로 below_threshold 로 확정한다.
+ *
+ * ⚠️ (5)에는 (6)과 달리 **품목이 없다.** 실측(미래에셋 20260819000341)상 (5)에는 배당금수익이
+ * 실리지 않지만, 품목을 볼 수 없으므로 item_caveat(배당·이자·임대차 분리)을 적용하지 못한다.
+ */
+interface GoodsMatrixSignal {
+  /** 매출회사 (매트릭스 행) — 이 회사의 J001 을 대조한다 */
+  company: string;
+  corp_code?: string;
+  /** 매입회사 (매트릭스 열) */
+  counterparty: string;
+  source: '(5)총괄';
+  /** 직전 사업연도 1년 합계 (원) */
+  annual_amount: number;
+  annual_amount_display: string;
+  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  certainty?: Certainty;
+  /**
+   * 연간 총액과 기준금액의 관계. `annual_geq_4x_threshold` 만 비둘기집 논증이 성립한다.
+   * `annual_geq_threshold` 는 "연간 총액은 넘었으나 분기 하한을 알 수 없음" 이다.
+   */
+  quarterly_logic:
+    | 'annual_geq_4x_threshold'
+    | 'annual_geq_threshold'
+    | 'annual_below_threshold'
+    | 'threshold_unknown';
+  /** 거래상대방 이름이 이 문서·포털의 회사 목록에서 확인되지 않았다 (표기 흔들림·국외 계열사 등) */
+  counterparty_in_known_list?: false;
+  /** (6) 주요 내역과 같은 상대방 요건 미확인 한계가 그대로 적용된다 */
+  counterparty_qualification?: 'not_verified';
+  /** (5)만의 한계를 사용자에게 그대로 전달한다 */
+  caveat: string;
+  status?:
+    | 'candidate_if_counterparty_qualified'
+    | 'candidate_aggregate_only'
+    | 'j001_filing_exists'
+    | 'below_threshold'
     | 'not_judged';
   reason?: string;
   j001_search?: { from: string; to: string; type_filter: string };
@@ -771,6 +832,11 @@ export async function detectUndisclosedTransactions(
   // 준다. 화이트리스트는 ① 재무현황 표의 계열사 ② (group 경로면) 포털 소속회사
   // ③ 매트릭스 자신의 **행** 회사 — 행은 집계 행이 이미 제거돼 있어 회사만 남는다.
   const securitiesSeed = extractSecuritiesMatrix(markdown);
+  // 상품·용역 **총괄** 매트릭스 (5). (6) '주요 내역' 은 일정 규모 이상만 실리므로 그것만 보면
+  // 규모 미달로 빠진 공시대상 쌍을 못 본다 — (5)는 전 쌍을 담아 그 구멍을 메운다.
+  // 화이트리스트는 유가증권과 같은 이유로 **필터가 아니다** (표기 흔들림으로 진짜 거래가
+  // 사라지는 쪽이 더 위험하다). 집계 열 방어는 파서의 isAggregateLabel 이 맡는다.
+  const goodsMatrixSeed = extractGoodsServicesMatrix(markdown);
 
   if (parseDiag.sections_missing.length > 0) {
     notes.push(
@@ -1214,6 +1280,7 @@ export async function detectUndisclosedTransactions(
     const base: GoodsSignal = {
       company: a.company,
       counterparty: a.counterparty,
+      source: '(6)주요내역',
       annual_amount_total: a.total,
       annual_amount_total_display: fmtWon(a.total),
       items: a.items,
@@ -1254,6 +1321,7 @@ export async function detectUndisclosedTransactions(
     // 같은 계열사가 "목록 밖 상대방"으로 표시돼 확인 우선순위가 흔들린다.
     ...(population ? [...population.corpCodes.values(), ...population.unjoined] : []),
     ...securitiesSeed.cells.map((c) => c.rowCompany),
+    ...goodsMatrixSeed.cells.map((c) => c.rowCompany),
   ]);
   // ★ 화이트리스트를 **필터로 쓰지 않는다.** 같은 회사가 표마다 다르게 적히기 때문이다
   //   (실측: 열 '미래에셋 파트너스 제9호…' vs 행 '미래에셋 파트너스 제구호…').
@@ -1308,6 +1376,89 @@ export async function detectUndisclosedTransactions(
     return base; // over — 상태는 J001 대조 후 확정
   });
 
+  // ④-4. 상품·용역 **총괄표 (5)** 로 (6) 주요 내역의 구멍을 메운다.
+  //
+  // ★ 중복을 만들지 않는 것이 제1 요건이다 — 같은 거래가 두 바구니에 서로 다른 강도로 실리면
+  //   사용자가 같은 건을 두 번 확인하게 되고, 무엇이 진짜 신호인지 흐려진다. 쌍 키는
+  //   (6) 합산과 **완전히 같은 형식**(정규화된 매출회사·매입회사)이라 표기 차이를 흡수한다
+  //   (실측: (5)의 '와이케이 디벨롭먼트(주)'·'미래에셋 증권(주)' ↔ (6)의 '와이케이디벨롭먼트(주)'·
+  //   '미래에셋증권' — 공백·법인격 표기가 다르지만 같은 쌍이다).
+  //
+  // ⚠️ 품목 성격상 (6)에서 분리한 행(배당·이자·임대차)만 있는 쌍은 `aggregates` 에 없다.
+  //   그 쌍은 (5)에서 보완 신호로 낸다 — 실측상 (5)에는 배당금수익이 실리지 않으므로
+  //   (5)의 값은 그 caveat 행과 다른 거래일 개연성이 크고, 조용히 버리면 누락이 된다.
+  const goodsPairKeys = new Set(aggregates.keys());
+  const GOODS5_CAVEAT =
+    '(5) 계열회사간 상품ㆍ용역거래 **총괄표**에서 온 값입니다 — ① 상대방별 **연간 총액**이라 ' +
+    '기준금액 판단 단위인 **분기 합계액**(고시 §4③2호)으로 분해되지 않습니다 ② 총괄표에는 ' +
+    '**품목이 없어** 배당·이자·임대차처럼 상품·용역이 아닌 항목을 가려내지 못합니다 ' +
+    '(실측상 총괄표에 배당금수익은 실리지 않았습니다) ③ (6) 주요 내역에 없는 쌍만 보완한 것이라 ' +
+    '(6) 쪽 신호와 중복되지 않습니다.';
+  let goodsMatrixPairsAlsoInDetail = 0;
+  const judgedGoodsMatrix: GoodsMatrixSignal[] = [];
+  for (const c of goodsMatrixSeed.cells) {
+    const key = `${normalizeCompanyName(c.rowCompany)} ${normalizeCompanyName(c.colCompany)}`;
+    if (goodsPairKeys.has(key)) {
+      goodsMatrixPairsAlsoInDetail++;
+      continue;
+    }
+    const th = thresholds.get(normalizeCompanyName(c.rowCompany));
+    const j = judgeOverThreshold(c.amount, th);
+    const base: GoodsMatrixSignal = {
+      company: c.rowCompany,
+      counterparty: c.colCompany,
+      source: '(5)총괄',
+      annual_amount: c.amount,
+      annual_amount_display: fmtWon(c.amount),
+      ...(th
+        ? {
+            threshold: {
+              value: th.value,
+              value_display: fmtWon(th.value),
+              formula: th.formula,
+              source_row: th.source_row,
+            },
+          }
+        : {}),
+      ...(j.certainty ? { certainty: j.certainty } : {}),
+      ...(knownKeys.has(normalizeCompanyName(c.colCompany))
+        ? {}
+        : { counterparty_in_known_list: false }),
+      quarterly_logic: 'threshold_unknown',
+      caveat: GOODS5_CAVEAT,
+      status: 'not_judged',
+    };
+    if (j.over === false) {
+      // ★ 이 방향만 확실하다 — 분기 합계는 연간 총액을 넘지 못하므로, 연간 총액이 기준 미만이면
+      //   네 분기 전부 기준 미만이다. (기준금액 자체는 J004 자본 스냅샷 기반 근사치다.)
+      judgedGoodsMatrix.push({
+        ...base,
+        quarterly_logic: 'annual_below_threshold',
+        status: 'below_threshold',
+        reason:
+          'annual_total_below_threshold — 이 상대방과의 연간 총액이 기준금액 미만이므로 어느 ' +
+          '분기 합계도 기준 미만입니다. 다만 기준금액은 J004 자본 스냅샷 기반 근사치입니다',
+      });
+      continue;
+    }
+    if (j.over === null) {
+      judgedGoodsMatrix.push({
+        ...base,
+        status: 'not_judged',
+        reason:
+          'threshold_unknown — 재무현황 표에서 이 회사의 자본을 찾지 못했고 연간 총액이 100억원 ' +
+          '미만이라 기준금액 초과 여부를 판정할 수 없습니다',
+      });
+      continue;
+    }
+    // 기준 초과 — 비둘기집이 서는지로 신호 강도를 가른다. 상태는 J001 대조 후 확정한다.
+    const fourX = c.amount >= 4 * CAP_100 || (th !== undefined && c.amount >= 4 * th.value);
+    judgedGoodsMatrix.push({
+      ...base,
+      quarterly_logic: fourX ? 'annual_geq_4x_threshold' : 'annual_geq_threshold',
+    });
+  }
+
   // ── ⑤ J001 대조 대상 회사 확정 (조인 + 예산) ──
   const needsSearch = new Map<string, { maxAmount: number; dates: string[] }>();
   const overBorrowings = judgedBorrowings.filter(
@@ -1325,6 +1476,19 @@ export async function detectUndisclosedTransactions(
     const k = normalizeCompanyName(g.company);
     const e = needsSearch.get(k) ?? { maxAmount: 0, dates: [] };
     e.maxAmount = Math.max(e.maxAmount, g.annual_amount_total);
+    needsSearch.set(k, e);
+  }
+
+  // (5) 총괄 보완 신호 — 기준 초과분(비둘기집 성립 여부와 무관)만 J001 을 대조한다
+  const signalGoodsMatrix = judgedGoodsMatrix.filter(
+    (m) =>
+      m.quarterly_logic === 'annual_geq_4x_threshold' ||
+      m.quarterly_logic === 'annual_geq_threshold',
+  );
+  for (const m of signalGoodsMatrix) {
+    const k = normalizeCompanyName(m.company);
+    const e = needsSearch.get(k) ?? { maxAmount: 0, dates: [] };
+    e.maxAmount = Math.max(e.maxAmount, m.annual_amount);
     needsSearch.set(k, e);
   }
 
@@ -1367,6 +1531,7 @@ export async function detectUndisclosedTransactions(
       overBorrowings.find((b) => normalizeCompanyName(b.company) === key)?.company ??
       signalGoods.find((g) => normalizeCompanyName(g.company) === key)?.company ??
       signalSecurities.find((sec) => normalizeCompanyName(sec.company) === key)?.company ??
+      signalGoodsMatrix.find((m) => normalizeCompanyName(m.company) === key)?.company ??
       lenderRawNames.get(key) ??
       key;
     const joined = joinCorpCode(rawName);
@@ -1506,7 +1671,7 @@ export async function detectUndisclosedTransactions(
 
   /** 존재/부재 공통 필드를 대상 객체에 옮겨 담는다 */
   function applyCommon(
-    target: JudgedBorrowing | GoodsSignal | SecuritySignal | LenderSide,
+    target: JudgedBorrowing | GoodsSignal | GoodsMatrixSignal | SecuritySignal | LenderSide,
     chk: CompanyCheck,
   ): void {
     if (chk.corp_code) target.corp_code = chk.corp_code;
@@ -1639,6 +1804,47 @@ export async function detectUndisclosedTransactions(
     if (matching.length > 10) g.matching_filings_total = matching.length;
   }
 
+  // (5) 총괄 보완 신호 — (6) 경로와 **같은 유형 필터·같은 창**을 쓰고, 후보 어휘만
+  // 비둘기집 성립 여부로 가른다.
+  for (const m of signalGoodsMatrix) {
+    // 상대방 요건(동일인·친족 20%↑ 출자) 미확인 한계는 (6)과 똑같이 적용된다
+    m.counterparty_qualification = 'not_verified';
+    const chk = checkCompany(normalizeCompanyName(m.company), isGoodsServicesReport, '상품·용역');
+    applyCommon(m, chk);
+    if (chk.outcome === 'not_judged') {
+      m.status = 'not_judged';
+      m.reason = chk.reason!;
+      if (chk.matching && chk.matching.length > 0) {
+        m.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
+      }
+      continue;
+    }
+    if (chk.outcome === 'none') {
+      if (m.quarterly_logic === 'annual_geq_4x_threshold') {
+        // 비둘기집이 선다 — (6) 경로와 같은 강도·같은 어휘의 조건부 후보
+        m.status = 'candidate_if_counterparty_qualified';
+        m.reason =
+          'j001_absent_but_qualification_unknown — 연간 총액이 4×기준금액 이상이라 어느 분기 ' +
+          '하나는 반드시 기준금액 이상인데(비둘기집) 창 안에 상품·용역 유형 J001 공시가 ' +
+          '없습니다. 다만 상대방이 동일인(자연인)·친족 합계 20% 이상 출자 계열회사(또는 그 ' +
+          '자회사)인지 확인하지 못했습니다 — 요건을 충족하는 상대방일 때만 미공시 후보입니다';
+      } else {
+        // ★ 총액만 넘었다 — 분기로 쪼개면 전부 미달일 수 있어 후보로 단정하지 않는다
+        m.status = 'candidate_aggregate_only';
+        m.reason =
+          'j001_absent_for_annual_total — 이 상대방과의 연간 총액은 기준금액 이상인데 창 안에 ' +
+          '상품·용역 유형 J001 공시가 없습니다. 다만 기준금액 판단 단위는 **분기 합계액**이고 ' +
+          '연간 총액이 4×기준금액 미만이라, 네 분기로 나누면 전부 기준 미만일 수 있습니다 — ' +
+          '이것만으로 미공시로 볼 수 없습니다. 분기별 거래액을 확인하세요';
+      }
+      continue;
+    }
+    const matching = chk.matching!;
+    m.status = 'j001_filing_exists';
+    m.matching_filings = matching.slice(0, 10).map(toFilingRef);
+    if (matching.length > 10) m.matching_filings_total = matching.length;
+  }
+
   for (const sec of signalSecurities) {
     const chk = checkCompany(normalizeCompanyName(sec.company), isSecuritiesReport, '유가증권');
     applyCommon(sec, chk);
@@ -1700,6 +1906,17 @@ export async function detectUndisclosedTransactions(
   const goodsItemCaveats4x = caveatRows.filter(
     (r) => r.quarterly_logic === 'annual_geq_4x_threshold',
   );
+  // (5) 총괄 보완 — 비둘기집이 서는 후보와 총액만 넘은 확인 대상을 끝까지 분리해 센다
+  const gmCandidates = judgedGoodsMatrix.filter(
+    (m) => m.status === 'candidate_if_counterparty_qualified',
+  );
+  const gmAggregateOnly = judgedGoodsMatrix.filter(
+    (m) => m.status === 'candidate_aggregate_only',
+  );
+  const gmFilingExists = judgedGoodsMatrix.filter((m) => m.status === 'j001_filing_exists');
+  const gmNotJudged = judgedGoodsMatrix.filter((m) => m.status === 'not_judged');
+  const gmBelow = judgedGoodsMatrix.filter((m) => m.status === 'below_threshold');
+
   const secCandidates = judgedSecurities.filter(
     (sec) => sec.status === 'candidate_aggregate_only',
   );
@@ -1743,10 +1960,9 @@ export async function detectUndisclosedTransactions(
       '거래금액 100억원 이상(certainty:"certain_by_cap")만 자본과 무관하게 확실합니다(령 §33①1호 상한).',
     'below_threshold 도 같은 근사 기준입니다 — **"기준 미달 = 공시의무 없음 확정"이 아닙니다.** ' +
       '경계(±수억) 거래는 정확한 자본(주총 승인 재무제표)으로 check_disclosure_duty 재판정이 필요합니다.',
-    '이 도구가 보는 거래유형은 **자금 차입**(차입일 단위)·**주요 상품·용역**(상대방별 연간 합산)· ' +
-      '**유가증권 총괄**(상대방별 연간 총액)입니다. 상품·용역 매출/매입 총괄 매트릭스는 파싱은 되나 ' +
-      '아직 판정에 쓰지 않으며(주요 내역 표와 중복), 담보·채무보증·부동산 임대차·기타자산 등 다른 ' +
-      '유형과 "주요" 기준에 못 미쳐 내역 표에 실리지 않은 상품·용역 거래는 보지 않습니다.',
+    '이 도구가 보는 거래유형은 **자금 차입/대여**(차입일 단위)·**상품·용역**((6) 주요 내역 + ' +
+      '(5) 총괄표 보완)·**유가증권 총괄**(상대방별 연간 총액)입니다. 담보·채무보증·부동산 임대차· ' +
+      '기타자산 등 다른 유형은 보지 않습니다.',
     '★ 유가증권 신호는 **상대방별 연간 총액**뿐입니다 — 고시 §4③은 유가증권 거래의 해당 여부를 ' +
       '"동일 거래상대방과의 **동일 거래대상**에 대한 거래행위" 기준으로 판단하므로, 연간 총액이 ' +
       '기준금액 이상이어도 거래대상(종목)별로 나누면 개별 거래가 전부 기준 미만일 수 있습니다. ' +
@@ -1775,6 +1991,15 @@ export async function detectUndisclosedTransactions(
       '않습니다** (goods_services_not_judgeable, 품목 행은 items 로 동봉). 또한 기준은 "이루어질" ' +
       '거래(사전 의결 시점 예상액)인데 J004 는 사후 실적이라 간극이 있을 수 있습니다 — 다만 사후에 ' +
       '해당이 예상되는 경우의 사전 의결·공시 경로(§9의2③)도 있으므로 후보 검토 가치는 있습니다.',
+    '★ 상품·용역은 두 표를 함께 봅니다 — 판정의 주 원천인 (6) **주요** 상품ㆍ용역거래 내역은 ' +
+      '서식상 "거래한 금액이 **일정 규모 이상**인 경우"만 싣고 그 규모 기준은 우리가 계산하는 ' +
+      '기준금액과 다릅니다. 그래서 (5) 계열회사간 상품ㆍ용역거래 **총괄표**(전 쌍 수록)에서 ' +
+      '**(6)에 없는 (매출회사, 매입회사) 쌍만** 보완 신호로 냅니다(goods_services_matrix_signals, ' +
+      'source:"(5)총괄"). 중복은 정규화된 쌍 키로 제거하므로 같은 거래가 두 번 오르지 않습니다. ' +
+      '보완 신호는 연간 총액이 ≥ 4×기준금액일 때만 (6)과 같은 강도의 조건부 후보이고, 총액만 ' +
+      '기준 이상이면 candidate_aggregate_only(분기로 나누면 전부 미달일 수 있음)입니다. ' +
+      '또 총괄표에는 **품목이 없어** 배당·이자·임대차 분리를 적용하지 못하고, 국외 계열사 열도 ' +
+      '포함될 수 있습니다(counterparty_in_known_list 로 표시).',
     '자금 차입의 대규모내부거래 해당 여부는 고시 §4③에 따라 "동일 거래상대방과의 동일 거래대상" ' +
       '기준으로 판단합니다 — J004 로는 동일 거래대상(같은 약정) 여부를 알 수 없어, 개별 건이 기준 ' +
       '미달이어도 같은 상대방 연간 합산이 기준 이상이면 below_threshold 로 단정하지 않고 not_judged' +
@@ -1818,6 +2043,15 @@ export async function detectUndisclosedTransactions(
         '동일인이 법인인 집단이면 이 유형의 의무 자체가 없습니다.',
     );
   }
+  if (gmCandidates.length > 0 || gmAggregateOnly.length > 0) {
+    notes.push(
+      `⚠️ (5) 상품·용역 **총괄표 보완** 신호 — 조건부 후보 ${gmCandidates.length}건 · ` +
+        `총액 확인 대상 ${gmAggregateOnly.length}건. (6) 주요 내역에는 없고 (5) 총괄표에만 있는 ` +
+        '쌍입니다 ((6)은 일정 규모 이상만 싣습니다). 총괄표는 **연간 총액·품목 없음**이라 신호가 ' +
+        '한 단계 약합니다 — 각 신호의 caveat 와 status 를 그대로 전달하고, 분기별 거래액과 ' +
+        '상대방 지분 요건을 확인하세요.',
+    );
+  }
   if (secCandidates.length > 0) {
     notes.push(
       `⚠️ 유가증권 **총액 확인 대상** ${secCandidates.length}건 (candidate_aggregate_only) — 상대방별 ` +
@@ -1848,12 +2082,14 @@ export async function detectUndisclosedTransactions(
     undisclosed.length === 0 &&
     goodsCandidates.length === 0 &&
     secCandidates.length === 0 &&
-    lenderCandidates.length === 0
+    lenderCandidates.length === 0 &&
+    gmCandidates.length === 0 &&
+    gmAggregateOnly.length === 0
   ) {
     notes.push(
       'ℹ️ 미공시 후보 0건은 "미공시 없음"의 확인이 아닙니다 — 이 도구가 보는 유형(자금차입·자금대여·' +
-        '주요 상품·용역·유가증권 총괄)과 이 문서에 실린 거래의 범위 안에서 후보를 찾지 못했다는 ' +
-        '뜻입니다 (scope_caveats 참조).',
+        '상품·용역((6) 주요 내역 + (5) 총괄 보완)·유가증권 총괄)과 이 문서에 실린 거래의 범위 안에서 ' +
+        '후보를 찾지 못했다는 뜻입니다 (scope_caveats 참조).',
     );
   }
   if (windowOnly.length > 0) {
@@ -1923,6 +2159,13 @@ export async function detectUndisclosedTransactions(
         '하지 못했습니다 (goods_services_signals 중 status:"not_judged") — "후보 아님"이 아니라 확인하지 못한 것입니다.',
     );
   }
+  if (gmNotJudged.length > 0) {
+    notes.push(
+      `⚠️ (5) 총괄 보완 신호 ${gmNotJudged.length}건은 기준금액 미상(자본 미확인)·조인 실패·예산 초과· ` +
+        '수집 불완전으로 판정하지 못했습니다 (goods_services_matrix_signals 중 status:"not_judged") — ' +
+        '"후보 아님"이 아니라 확인하지 못한 것입니다.',
+    );
+  }
   if (partialLists) {
     notes.push(
       '⚠️ 일부 목록 수집이 불완전합니다 (측정 실패·절단·부분결과) — "공시 없음" 판정이 수집 누락일 수 ' +
@@ -1961,6 +2204,8 @@ export async function detectUndisclosedTransactions(
     goodsConditionalCandidates: goodsCandidates.length,
     securitiesPairs: securitiesMatrix.cells.length,
     securitiesCandidates: secCandidates.length,
+    goodsMatrixSupplemented: judgedGoodsMatrix.length,
+    goodsMatrixCandidates: gmCandidates.length + gmAggregateOnly.length,
     lenderCandidates: lenderCandidates.length,
     populationSource,
     listCalls,
@@ -1993,6 +2238,17 @@ export async function detectUndisclosedTransactions(
       goods_services_not_judged: goodsNotJudged.length,
       goods_services_not_judgeable: goodsUnjudgeable.length,
       goods_services_item_caveats: caveatRows.length,
+      /** (5) 총괄표에서 (6)에 없는 쌍만 뽑은 보완 신호 — 중복은 쌍 키로 제거했다 */
+      goods_services_matrix_pairs_extracted: goodsMatrixSeed.cells.length,
+      goods_services_matrix_pairs_supplemented: judgedGoodsMatrix.length,
+      goods_services_matrix_pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
+      /** 연간 총액 ≥ 4×기준금액(비둘기집 성립) + J001 부재 — (6) 경로와 같은 강도의 조건부 후보 */
+      goods_services_matrix_candidates_if_qualified: gmCandidates.length,
+      /** 총액만 기준 이상 — 분기로 나누면 전부 미달일 수 있어 "후보"가 아니라 확인 대상이다 */
+      goods_services_matrix_candidates_aggregate_only: gmAggregateOnly.length,
+      goods_services_matrix_filing_exists: gmFilingExists.length,
+      goods_services_matrix_below_threshold: gmBelow.length,
+      goods_services_matrix_not_judged: gmNotJudged.length,
       securities_pairs_extracted: securitiesMatrix.cells.length,
       /** 연간 총액이 기준금액 이상 + 유형 J001 부재 — "미공시 후보"가 아니라 확인 대상이다 */
       securities_candidates_aggregate_only: secCandidates.length,
@@ -2019,6 +2275,21 @@ export async function detectUndisclosedTransactions(
       : {}),
     ...(caveatRows.length ? { goods_services_item_caveats: caveatRows } : {}),
     /**
+     * 상품·용역 (5) **총괄표** 보완 — (6) 주요 내역에 없는 쌍만 담는다.
+     * 연간 총액 기반이고 품목이 없어 (6) 신호보다 한 단계 약하다 (각 항목의 caveat 참조).
+     */
+    ...(judgedGoodsMatrix.length
+      ? {
+          goods_services_matrix_signals: [
+            ...gmCandidates,
+            ...gmAggregateOnly,
+            ...gmFilingExists,
+            ...gmNotJudged,
+          ],
+          ...(gmBelow.length ? { goods_services_matrix_below_threshold: gmBelow } : {}),
+        }
+      : {}),
+    /**
      * 유가증권 — 상대방별 **연간 총액** 기반. 개별 거래로 분해되지 않는다는 점에서
      * 차입·상품용역보다 약한 신호다 (scope_caveats 의 §4③ 항목 참조).
      */
@@ -2033,12 +2304,11 @@ export async function detectUndisclosedTransactions(
       transaction_types_checked: [
         '자금 차입 — 차입회사 관점 (차입일 단위, 건별 근접 대조)',
         '자금 대여 — 대여회사(거래상대방) 관점 (같은 차입 건을 대여회사 자본 기준으로 재판정)',
-        '주요 상품·용역 (상대방별 연간 합산, 4×기준금액 이상만)',
+        '주요 상품·용역 (6) (상대방별 연간 합산, 4×기준금액 이상만)',
+        '상품·용역 총괄 (5) 매트릭스 — (6)에 없는 쌍만 보완 (상대방별 연간 총액)',
         '유가증권 총괄 매트릭스 (상대방별 연간 총액 — 개별 거래로 분해되지 않음)',
       ],
       undetectable: {
-        /** 아직 판정에 쓰지 않는 매트릭스 (파서는 있다) */
-        matrix_tables: ['상품·용역 매입/매출 총괄'],
         other_transaction_types: [
           '담보 제공·수취',
           '채무보증',
@@ -2079,6 +2349,25 @@ export async function detectUndisclosedTransactions(
       partial_results: partialLists,
       j001_window: { lookback_days: LOOKBACK_DAYS, to: 'today' },
       near_window: { before_days: NEAR_BEFORE_DAYS, after_days: NEAR_AFTER_DAYS },
+      /** (5) 상품·용역 총괄 매트릭스 — 파서 진단 + (6)과의 중복 제거 결과 */
+      goods_services_matrix: {
+        tables: goodsMatrixSeed.tables,
+        cells: goodsMatrixSeed.cells.length,
+        tables_unrecognized: goodsMatrixSeed.tablesUnrecognized,
+        tables_without_unit: goodsMatrixSeed.tablesWithoutUnit,
+        unit_inherited_tables: goodsMatrixSeed.unitInheritedTables,
+        duplicate_pairs: goodsMatrixSeed.duplicatePairs,
+        /** (6) 주요 내역에 이미 있어 보완하지 않은 쌍 수 (중복 방지가 실제로 동작한 횟수) */
+        pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
+        /** 회사 목록에서 확인되지 않은 매입회사 이름 (표기 흔들림·국외 계열사 등) */
+        counterparties_not_in_known_list: [
+          ...new Set(
+            judgedGoodsMatrix
+              .filter((m) => m.counterparty_in_known_list === false)
+              .map((m) => m.counterparty),
+          ),
+        ],
+      },
       securities_matrix: {
         tables: securitiesMatrix.tables,
         cells: securitiesMatrix.cells.length,
