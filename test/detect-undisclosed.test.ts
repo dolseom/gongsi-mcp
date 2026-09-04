@@ -1367,6 +1367,29 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(r['summary'].securities_not_judged).toBe(22);
   });
 
+  /**
+   * 상대방 관점(매입회사·매도회사) 분포 고정 — 판매·매입 쪽 판정은 위 테스트가 이미 고정한다.
+   * 조인 실패가 많은 것은 픽스처의 corps 스텁이 6개사뿐이기 때문이고, 그 자체가
+   * "확인하지 못한 것"으로 드러나야 하는 값이다 (0건이면 거짓 안심).
+   */
+  it('상대방 관점 분포를 고정한다 (국외 열에는 만들지 않는다)', async () => {
+    const r = await run();
+    expect(r['summary'].counterparty_side).toEqual({
+      candidate_if_counterparty_qualified: 1,
+      candidate_aggregate_only: 10,
+      j001_filing_exists: 0,
+      below_threshold: 12,
+      not_judged: 23,
+      counterparty_not_joined: 43,
+      counterparty_not_company: 0,
+    });
+    // (5) 62쌍 중 국외 9쌍은 제외 → 상대방 관점은 (6) 2 + 유가증권 36 + (5) 49 = 89건
+    const total = Object.values(
+      r['summary'].counterparty_side as Record<string, number>,
+    ).reduce((a, b) => a + b, 0);
+    expect(total).toBe(89);
+  });
+
   it('(5) 전 쌍을 읽고 (6)에 있는 쌍만 빼고 보완한다', async () => {
     const r = await run();
     expect(r['summary'].goods_services_matrix_pairs_extracted).toBe(62);
@@ -1856,5 +1879,171 @@ describe('동명 2건 법인등록번호 확정 (백로그 2)', () => {
     });
     expect(r['undisclosed_candidates'][0].lender_side.corp_code).toBe('00311030');
     expect(r['diagnostics'].jurir_disambiguation.resolved).toHaveLength(1);
+  });
+});
+
+/**
+ * 상품·용역 **매입회사** 관점 / 유가증권 **매도회사** 관점 (백로그 1).
+ *
+ * ★ 근거 — 공정위 공시 업무 매뉴얼(2026-04-27) lit26-001:
+ *   "거래규모가 거래당사자 **모두에게** 대규모내부거래에 해당되는 경우 이사회 의결 및
+ *    공시의무는 거래당사자 모두에게 있음. 만일 거래규모가 일방당사자에게만 해당되는
+ *    경우에는 해당되는 거래당사자에게만 있음."
+ *   → 기준금액을 **각자의 자본**으로 계산해 따로 판정한다 (차입의 lender_side 와 같은 원리).
+ *
+ * ★ 실측 J001 보고서명이 방향 중립이라 유형 필터를 그대로 쓴다 —
+ *   '특수관계인과의수익증권거래' · '계열금융회사의약관에의한금융거래-[유가증권-채권]' ·
+ *   '상품ㆍ용역거래'. 방향이 박힌 이름은 자금거래 쪽('…에대한자금대여'/'…으로부터자금차입')뿐이다.
+ */
+describe('상대방 관점 — 상품·용역 매입회사 / 유가증권 매도회사 (백로그 1)', () => {
+  const 백만 = 1_000_000;
+
+  /**
+   * 판매회사 기준금액 10억(자본총계 200억) / 매입회사 기준금액 5억(자본총계 40억).
+   * 거래 30억은 판매회사 4×(40억)에는 못 미치고 매입회사 4×(20억)은 넘는다 —
+   * **한쪽만 비둘기집이 서는** 상황이라 양쪽을 따로 봐야 하는 이유가 그대로 드러난다.
+   */
+  const MD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 비금융회사 | 판매회사(주) | 1,000 | 20,000 |',
+    '| 금융회사 | 매입회사(주) | 1,000 | 4,000 |',
+    '| 금융회사 | 제3사(주) | 1,000 | 4,000 |',
+    '## 7. 계열회사와 특수관계인간 거래현황',
+    '## (6) 계열회사간 주요 상품ㆍ용역거래 내역',
+    '나. 비상장회사와 그 계열회사간 주요 상품ㆍ용역거래 내역 (연1회)',
+    '| (단위 : 백만원) |',
+    '| --- |',
+    '| 소속회사명 |  | 거래상대방 | 업종 | 품목 | 대금지급조건 | 거래상대방 선정방식 | 매출액 |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| 비금융회사 | 판매회사(주) | 매입회사(주) | R9112 | 용역 | 현금 | 수의계약 | 3,000 |',
+  ].join('\n');
+
+  const CORPS = {
+    판매회사: [{ corpCode: '00111111', corpName: '판매회사' }],
+    매입회사: [{ corpCode: '00222222', corpName: '매입회사' }],
+    제3사: [{ corpCode: '00333333', corpName: '제3사' }],
+  };
+
+  async function run(over: Record<string, unknown> = {}): Promise<Record<string, any>> {
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: MD, corps: CORPS, j001: [], ...over }),
+    )) as Record<string, any>;
+  }
+
+  it('판매회사는 비둘기집이 안 서도 매입회사 기준으로는 조건부 후보가 된다', async () => {
+    const r = await run();
+    // 판매회사 쪽: 30억 < 4×10억 → 원리상 판정 불가 (종전 동작 그대로)
+    const seller = (r['goods_services_not_judgeable'] as Array<Record<string, any>>)[0]!;
+    expect(seller['company']).toBe('판매회사(주)');
+    expect(seller['quarterly_logic']).toBe('annual_below_4x_threshold');
+
+    // 매입회사 쪽: 30억 ≥ 4×5억 → 비둘기집이 선다
+    const buyer = seller['buyer_side'];
+    expect(buyer.company).toBe('매입회사(주)');
+    expect(buyer.corp_code).toBe('00222222');
+    expect(buyer.threshold.value).toBe(5 * 억);
+    expect(buyer.quarterly_logic).toBe('annual_geq_4x_threshold');
+    expect(buyer.status).toBe('candidate_if_counterparty_qualified');
+    // 상품·용역은 양쪽 다 상대방 지분 요건이 전제다 (고시 §4①4호)
+    expect(buyer.counterparty_qualification).toBe('not_verified');
+    expect(r['summary'].counterparty_side.candidate_if_counterparty_qualified).toBe(1);
+    expect((r['notes'] as string[]).some((n) => n.includes('상대방 쪽'))).toBe(true);
+  });
+
+  it('매입회사에 상품·용역 J001 이 있으면 filing_exists — 유형 필터는 방향 중립이다', async () => {
+    const r = await run({
+      j001: (corpCode: string) =>
+        corpCode === '00222222'
+          ? [
+              disc({
+                corp_code: '00222222',
+                report_nm: '대규모내부거래관련이사회의결및공시(상품ㆍ용역거래)',
+                rcept_no: '20250310000001',
+                rcept_dt: '20250310',
+              }),
+            ]
+          : [],
+    });
+    const buyer = (r['goods_services_not_judgeable'] as Array<Record<string, any>>)[0]!['buyer_side'];
+    expect(buyer.status).toBe('j001_filing_exists');
+    expect(buyer.matching_filings).toHaveLength(1);
+    expect(r['summary'].counterparty_side.j001_filing_exists).toBe(1);
+  });
+
+  it('매입회사 기준으로도 미달이면 below_threshold — 분기 합계는 연간 총액을 넘지 못한다', async () => {
+    // 거래 3억: 매입회사 기준 5억에도 미달
+    const md = MD.replace(
+      '| 비금융회사 | 판매회사(주) | 매입회사(주) | R9112 | 용역 | 현금 | 수의계약 | 3,000 |',
+      '| 비금융회사 | 판매회사(주) | 매입회사(주) | R9112 | 용역 | 현금 | 수의계약 | 300 |',
+    );
+    const r = await run({ markdown: md });
+    const buyer = (r['goods_services_not_judgeable'] as Array<Record<string, any>>)[0]!['buyer_side'];
+    expect(buyer.status).toBe('below_threshold');
+    expect(buyer.quarterly_logic).toBe('annual_below_threshold');
+    expect(r['summary'].counterparty_side.below_threshold).toBe(1);
+  });
+
+  it('매입회사를 조인하지 못하면 counterparty_not_joined — "공시 없음"이 아니다', async () => {
+    const r = await run({ corps: { 판매회사: CORPS.판매회사 } });
+    const buyer = (r['goods_services_not_judgeable'] as Array<Record<string, any>>)[0]!['buyer_side'];
+    expect(buyer.status).toBe('counterparty_not_joined');
+    expect(buyer.corp_code).toBeUndefined();
+    expect(String(buyer.reason)).toContain('확인하지 못한 것');
+    expect(r['summary'].counterparty_side.counterparty_not_joined).toBe(1);
+  });
+
+  /** 유가증권은 상대방 지분 요건이 없어 각자의 기준금액만 본다 (고시 §4①2호) */
+  const SEC_MD = [
+    MD,
+    '## (3) 계열회사간 유가증권거래 현황',
+    '| (단위 : 백만원) |',
+    '| --- |',
+    '| 매입회사 ＼ 매도회사 |  | 계열회사 |  |  |',
+    '| --- | --- | --- | --- | --- |',
+    '| (소속회사) |  | 매입회사(주) | 제3사(주) | 소계 |',
+    '| 비금융회사 | 판매회사(주) | 1,500 | 100 | 1,600 |',
+    '| 합 계 |  | 1,500 | 100 | 1,600 |',
+  ].join('\n');
+
+  it('유가증권은 매도회사 쪽도 각자의 기준금액으로 판정한다 (seller_side)', async () => {
+    const r = await run({ markdown: SEC_MD });
+    const sec = (r['securities_signals'] as Array<Record<string, any>>)[0]!;
+    // 매입회사(행) = 판매회사(주), 기준 10억. 15억 ≥ 10억 → 확인 대상
+    expect(sec['company']).toBe('판매회사(주)');
+    expect(sec['annual_amount']).toBe(15 * 억);
+    expect(sec['status']).toBe('candidate_aggregate_only');
+    // 매도회사(열) = 매입회사(주), 기준 5억 → 이 회사 기준으로도 초과
+    const seller = sec['seller_side'];
+    expect(seller.company).toBe('매입회사(주)');
+    expect(seller.threshold.value).toBe(5 * 억);
+    expect(seller.status).toBe('candidate_aggregate_only');
+    // 유가증권에는 상대방 지분 요건이 없다
+    expect(seller.counterparty_qualification).toBeUndefined();
+    expect(String(seller.reason)).toContain('동일 거래대상');
+  });
+
+  it('같은 회사가 판매·매입 양쪽에 걸려도 J001 조회는 1회뿐이다 (예산·캐시 공유)', async () => {
+    const calls: CallLog[] = [];
+    await run({ markdown: SEC_MD, calls });
+    // 판매회사·매입회사 각 1회 — 관점이 넷(상품 판매/매입, 유가증권 매입/매도)이어도 2회다
+    expect(calls.filter((c) => c.ty === 'J001')).toHaveLength(2);
+  });
+
+  it('국외 계열회사 열에는 상대방 관점을 만들지 않는다 (양쪽 다 의무가 없다)', async () => {
+    const MATRIX_MD = readFileSync(join(HERE, 'fixtures', 'j004-matrix.md'), 'utf8');
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: `${FIXTURE_MD}\n${MATRIX_MD}`, corps: YKD_CORPS, j001: [] }),
+    )) as Record<string, any>;
+    const foreign = r['goods_services_matrix_foreign_affiliate'] as Array<Record<string, any>>;
+    expect(foreign).toHaveLength(9);
+    expect(foreign.every((m) => m['buyer_side'] === undefined)).toBe(true);
   });
 });

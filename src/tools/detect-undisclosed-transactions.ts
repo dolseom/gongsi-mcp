@@ -443,6 +443,49 @@ interface LenderSide {
   other_j001_in_window?: number;
 }
 
+/**
+ * 거래 **상대방 쪽** 공시의무 대조 결과 — 상품·용역의 매입회사, 유가증권의 매도회사.
+ *
+ * ★ 근거 (공정위 공시 업무 매뉴얼 2026-04-27 lit26-001): "거래규모가 거래당사자 **모두에게**
+ * 대규모내부거래에 해당되는 경우 이사회 의결 및 공시의무는 **거래당사자 모두에게** 있음.
+ * 만일 거래규모가 일방당사자에게만 해당되는 경우에는 해당되는 거래당사자에게만 있음."
+ * → 기준금액을 **각자의 자본**으로 계산해 따로 판정한다 (차입의 lender_side 와 같은 원리).
+ *
+ * ⚠️ 상품·용역은 여기에 더해 **상대방 요건**이 걸린다 — 각 당사자의 의무는 *그 상대방*이
+ * 동일인·친족 20%↑ 출자 계열회사인지에 달렸다(고시 §4①4호, 매뉴얼 lit26-065·066 실례).
+ * 지분을 확인할 수 없으므로 양쪽 모두 candidate_if_counterparty_qualified 에 머문다.
+ *
+ * 날짜 개념이 없는 표(연간 총액)라 건별 근접 대조는 하지 않는다 — 존재 확인까지만 한다.
+ */
+interface CounterpartySide {
+  /** 이 관점의 공시의무자 = 원래 신호의 거래상대방 (매입회사 또는 매도회사) */
+  company: string;
+  corp_code?: string;
+  status:
+    | 'candidate_if_counterparty_qualified'
+    | 'candidate_aggregate_only'
+    | 'j001_filing_exists'
+    | 'below_threshold'
+    | 'not_judged'
+    /** 상대방을 DART corp_code 로 잇지 못했다 — 조회 자체가 불가능 */
+    | 'counterparty_not_joined'
+    /** 상대방이 자연인(동일인·친족)으로 **추정**된다 — 회사가 아니면 J001 의무자가 아니다 */
+    | 'counterparty_not_company';
+  reason?: string;
+  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  certainty?: Certainty;
+  /** 상품·용역 전용 — 연간 총액이 이 회사 기준금액의 4배 이상이면 비둘기집이 선다 */
+  quarterly_logic?: GoodsMatrixSignal['quarterly_logic'];
+  /** 상품·용역 전용 — 상대방(= 원래 신호의 판매회사) 지분 요건을 확인하지 못했다 */
+  counterparty_qualification?: 'not_verified';
+  j001_search?: { from: string; to: string; type_filter: string };
+  matching_filings?: FilingRef[];
+  matching_filings_total?: number;
+  cancellations_of_type_in_window?: number;
+  search_partial?: boolean;
+  other_j001_in_window?: number;
+}
+
 interface JudgedBorrowing {
   company: string;
   corp_code?: string;
@@ -526,6 +569,8 @@ interface GoodsSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
+  buyer_side?: CounterpartySide;
 }
 
 /**
@@ -572,6 +617,8 @@ interface SecuritySignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 매도회사 쪽 의무 — 유가증권은 상대방 지분 요건이 없어 각자의 기준금액만 본다 */
+  seller_side?: CounterpartySide;
 }
 
 /**
@@ -645,6 +692,8 @@ interface GoodsMatrixSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
+  buyer_side?: CounterpartySide;
 }
 
 /** 품목 성격상 미공시 후보 경로에서 제외한 행 — 합산에도 넣지 않는다 (배당이 합계를 부풀린다) */
@@ -1669,6 +1718,107 @@ export async function detectUndisclosedTransactions(
     });
   }
 
+  // ── ④-5. 거래 **상대방 쪽** 관점 (상품·용역 매입회사 / 유가증권 매도회사) ──
+  //
+  // ★ 근거: 매뉴얼 lit26-001 "거래규모가 거래당사자 **모두에게** 대규모내부거래에 해당되는
+  //   경우 이사회 의결 및 공시의무는 거래당사자 모두에게 있음" — 차입의 lender_side 와 같은
+  //   원리이고, 기준금액은 **각자의 자본**으로 계산한다.
+  // ★ 어휘·검색 예산·유형 필터를 전부 재사용한다. 실측 J001 보고서명이 방향 중립이라
+  //   (`특수관계인과의수익증권거래`·`계열금융회사의약관에의한금융거래-[유가증권-채권]`·
+  //   `상품ㆍ용역거래`) 매도/매입 어느 쪽이든 같은 필터로 찾는다.
+  /** 상대방 관점 판정 대상 — 상태는 ⑦에서 차입·판매 쪽과 같은 함수로 확정한다 */
+  const counterSides: Array<{
+    side: CounterpartySide;
+    kind: 'goods' | 'securities';
+    /** 검색 예산 우선순위용 거래금액 (연간 총액) */
+    amount: number;
+  }> = [];
+  /** 상대방 관점 때문에 새로 검색이 필요해진 회사 (정규화 이름 → 원문 이름) */
+  const counterRawNames = new Map<string, string>();
+
+  /**
+   * 상대방 쪽 1차 판정 — 조인·기준금액까지만 확정하고 J001 조회는 ⑤ 예산에 올린다.
+   * 판정 강도 규칙은 원래 신호와 **완전히 같다** (상품·용역 비둘기집 / 유가증권 총액 한계).
+   */
+  async function judgeCounterSide(
+    counterparty: string,
+    amount: number,
+    kind: 'goods' | 'securities',
+  ): Promise<CounterpartySide> {
+    const key = normalizeCompanyName(counterparty);
+    const side: CounterpartySide = { company: counterparty, status: 'not_judged' };
+    counterSides.push({ side, kind, amount });
+    if (kind === 'goods') side.counterparty_qualification = 'not_verified';
+
+    const joined = await joinCorpCode(counterparty);
+    if (!joined.code) {
+      // 차입 쪽과 같은 순서 — 조인 실패 + 소속 확인 실패 뒤에만 자연인 추정을 쓴다
+      if (!isConfirmedCompanyName(counterparty) && looksLikeNaturalPerson(counterparty)) {
+        side.status = 'counterparty_not_company';
+        side.reason =
+          'counterparty_looks_like_natural_person — 이름이 자연인(동일인·친족) 형태로 보입니다. ' +
+          '자연인은 J001 공시의무자가 아니므로 대조하지 않았습니다 — **이름 모양에 근거한 ' +
+          '추정**이니 실제로 법인이라면 그 회사의 공시를 직접 확인하세요';
+      } else {
+        side.status = 'counterparty_not_joined';
+        side.reason =
+          `counterparty_not_joined — 이 회사를 DART corp_code 로 잇지 못해 공시를 조회할 수 ` +
+          `없었습니다 (${joined.reason ?? '조인 실패'}) — "공시 없음"이 아니라 확인하지 못한 것입니다`;
+      }
+      return side;
+    }
+    side.corp_code = joined.code;
+    counterRawNames.set(key, counterparty);
+
+    const th = thresholds.get(key);
+    if (th) {
+      side.threshold = {
+        value: th.value,
+        value_display: fmtWon(th.value),
+        formula: th.formula,
+        source_row: th.source_row,
+      };
+    }
+    const j = judgeOverThreshold(amount, th);
+    if (j.certainty) side.certainty = j.certainty;
+    if (j.over === null) {
+      if (kind === 'goods') side.quarterly_logic = 'threshold_unknown';
+      side.reason =
+        'threshold_unknown — 재무현황 표에서 이 회사의 자본을 찾지 못했고 연간 총액이 100억원 ' +
+        '미만이라 기준금액 초과 여부를 판정할 수 없습니다';
+      return side;
+    }
+    if (j.over === false) {
+      // 분기 합계·개별 거래는 연간 총액을 넘지 못한다 — 이 방향만 확실하다
+      if (kind === 'goods') side.quarterly_logic = 'annual_below_threshold';
+      side.status = 'below_threshold';
+      side.reason =
+        'annual_total_below_threshold — 이 회사 기준으로도 연간 총액이 기준금액 미만이므로 ' +
+        '분기 합계·개별 거래도 전부 기준 미만입니다 (기준금액은 J004 자본 스냅샷 기반 근사치)';
+      return side;
+    }
+    if (kind === 'goods') {
+      side.quarterly_logic =
+        amount >= 4 * CAP_100 || (th !== undefined && amount >= 4 * th.value)
+          ? 'annual_geq_4x_threshold'
+          : 'annual_geq_threshold';
+    }
+    return side; // 기준 초과 — ⑤ 예산에 올려 ⑦에서 확정한다
+  }
+
+  for (const g of judgedGoods) {
+    g.buyer_side = await judgeCounterSide(g.counterparty, g.annual_amount_total, 'goods');
+  }
+  for (const sec of judgedSecurities) {
+    // 국외 계열회사는 양쪽 다 의무가 없다 (법 §26① 상대방 제외 + 국내 회사가 아니다)
+    if (sec.status === 'not_applicable_foreign_affiliate') continue;
+    sec.seller_side = await judgeCounterSide(sec.counterparty, sec.annual_amount, 'securities');
+  }
+  for (const m of judgedGoodsMatrix) {
+    if (m.status === 'not_applicable_foreign_affiliate') continue;
+    m.buyer_side = await judgeCounterSide(m.counterparty, m.annual_amount, 'goods');
+  }
+
   // ── ⑤ J001 대조 대상 회사 확정 (조인 + 예산) ──
   const needsSearch = new Map<string, { maxAmount: number; dates: string[] }>();
   const overBorrowings = judgedBorrowings.filter(
@@ -1712,6 +1862,16 @@ export async function detectUndisclosedTransactions(
     needsSearch.set(k, e);
   }
 
+  // 상대방 관점(매입회사·매도회사)도 같은 예산·같은 캐시를 쓴다 — 판매회사와 같은 회사면
+  // J001 조회는 1회뿐이다 (유형 필터가 방향 중립이라 한 번의 수집을 양쪽이 나눠 쓴다).
+  for (const { side, amount } of counterSides) {
+    if (side.status !== 'not_judged' || side.reason || !side.corp_code) continue;
+    const k = normalizeCompanyName(side.company);
+    const e = needsSearch.get(k) ?? { maxAmount: 0, dates: [] };
+    e.maxAmount = Math.max(e.maxAmount, amount);
+    needsSearch.set(k, e);
+  }
+
   // 대여회사도 같은 예산·같은 캐시를 쓴다 — 차입회사와 같은 회사면 J001 조회는 1회뿐이다
   // (유형 필터만 '자금대여'로 달리 적용한다).
   for (const [key, dates] of lenderNeedsSearch) {
@@ -1743,6 +1903,7 @@ export async function detectUndisclosedTransactions(
       signalSecurities.find((sec) => normalizeCompanyName(sec.company) === key)?.company ??
       signalGoodsMatrix.find((m) => normalizeCompanyName(m.company) === key)?.company ??
       lenderRawNames.get(key) ??
+      counterRawNames.get(key) ??
       key;
     const joined = await joinCorpCode(rawName);
     if (!joined.code) {
@@ -1881,7 +2042,13 @@ export async function detectUndisclosedTransactions(
 
   /** 존재/부재 공통 필드를 대상 객체에 옮겨 담는다 */
   function applyCommon(
-    target: JudgedBorrowing | GoodsSignal | GoodsMatrixSignal | SecuritySignal | LenderSide,
+    target:
+      | JudgedBorrowing
+      | GoodsSignal
+      | GoodsMatrixSignal
+      | SecuritySignal
+      | LenderSide
+      | CounterpartySide,
     chk: CompanyCheck,
   ): void {
     if (chk.corp_code) target.corp_code = chk.corp_code;
@@ -2084,6 +2251,54 @@ export async function detectUndisclosedTransactions(
     if (matching.length > 10) sec.matching_filings_total = matching.length;
   }
 
+  // ⑦-c. 상대방 관점 상태 확정 — 판매회사 쪽과 **같은 함수·같은 창·같은 유형 필터**를 쓴다.
+  //       날짜가 없는 신호라 존재 확인까지만 하고 근접 대조는 하지 않는다.
+  for (const { side, kind } of counterSides) {
+    if (side.status !== 'not_judged' || side.reason) continue; // 기준 초과 건만
+    const chk = checkCompany(
+      normalizeCompanyName(side.company),
+      kind === 'goods' ? isGoodsServicesReport : isSecuritiesReport,
+      kind === 'goods' ? '상품·용역' : '유가증권',
+    );
+    applyCommon(side, chk);
+    if (chk.outcome === 'not_judged') {
+      side.reason = chk.reason!;
+      if (chk.matching && chk.matching.length > 0) {
+        side.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
+      }
+      continue;
+    }
+    if (chk.outcome === 'none') {
+      if (kind === 'goods') {
+        // 상품·용역은 **상대방 요건**이 전제다 — 이 관점에서 상대방은 원래 신호의 판매회사다
+        side.status =
+          side.quarterly_logic === 'annual_geq_4x_threshold'
+            ? 'candidate_if_counterparty_qualified'
+            : 'candidate_aggregate_only';
+        side.reason =
+          side.quarterly_logic === 'annual_geq_4x_threshold'
+            ? 'j001_absent_but_qualification_unknown — 이 회사 기준으로도 연간 총액이 4×기준금액 ' +
+              '이상이라 어느 분기 하나는 반드시 기준 이상인데(비둘기집) 창 안에 상품·용역 유형 ' +
+              'J001 공시가 없습니다. 다만 이 회사의 의무는 **거래상대방**이 동일인·친족 20% 이상 ' +
+              '출자 계열회사일 때만 성립하는데(고시 §4①4호) 지분을 확인하지 못했습니다'
+            : 'j001_absent_for_annual_total — 이 회사 기준으로 연간 총액은 기준금액 이상이지만 ' +
+              '4×에는 못 미쳐 분기로 나누면 전부 미달일 수 있습니다. 상대방 지분 요건도 확인하지 ' +
+              '못했습니다 — 미공시로 볼 수 없는 **확인 대상**입니다';
+      } else {
+        side.status = 'candidate_aggregate_only';
+        side.reason =
+          'j001_absent_for_annual_total — 이 회사 기준으로도 연간 유가증권 거래 총액이 기준금액 ' +
+          '이상인데 창 안에 유가증권 유형 J001 공시가 없습니다. 다만 고시 §4③은 "동일 거래상대방과의 ' +
+          '**동일 거래대상**" 기준이라 종목별로 나누면 개별 거래가 전부 기준 미만일 수 있습니다';
+      }
+      continue;
+    }
+    side.status = 'j001_filing_exists';
+    const matching = chk.matching!;
+    side.matching_filings = matching.slice(0, 10).map(toFilingRef);
+    if (matching.length > 10) side.matching_filings_total = matching.length;
+  }
+
   // 품목 성격상 제외한 행 — 회사가 이미 검색됐으면 참고 정보만 동봉한다 (추가 콜 없음, S-9)
   for (const row of caveatRows) {
     const s = searches.get(normalizeCompanyName(row.company));
@@ -2157,6 +2372,23 @@ export async function detectUndisclosedTransactions(
   for (const s of lenderSides) lenderCounts[s.status]++;
   const lenderCandidates = lenderSides.filter((s) => s.status === 'undisclosed_candidate');
 
+  // 상대방 관점(상품·용역 매입회사 / 유가증권 매도회사) 집계 — 신호 단위다
+  const counterCounts: Record<CounterpartySide['status'], number> = {
+    candidate_if_counterparty_qualified: 0,
+    candidate_aggregate_only: 0,
+    j001_filing_exists: 0,
+    below_threshold: 0,
+    not_judged: 0,
+    counterparty_not_joined: 0,
+    counterparty_not_company: 0,
+  };
+  for (const { side } of counterSides) counterCounts[side.status]++;
+  const counterCandidates = counterSides.filter(
+    (c) =>
+      c.side.status === 'candidate_if_counterparty_qualified' ||
+      c.side.status === 'candidate_aggregate_only',
+  );
+
   const scopeCaveats: string[] = [
     '★ 모든 결과는 **후보**입니다. undisclosed_candidate 를 "미공시 확정"으로 읽으면 안 되는 구조적 이유: ' +
       `① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ` +
@@ -2193,8 +2425,16 @@ export async function detectUndisclosedTransactions(
       '자금대여" 공시(lender_side)를 **각자의 자본으로 계산한 기준금액**으로 따로 판정합니다. ' +
       '대여회사가 DART corp_code 로 조인되지 않으면 counterparty_not_joined, 이름이 자연인(동일인·' +
       '친족) 형태면 counterparty_not_company 로 남으며 둘 다 "의무 없음"이 아니라 **확인하지 못한 ' +
-      '것**입니다. 반면 상품·용역은 **판매회사(매출) 쪽**만, 유가증권은 **매입회사 쪽**만 봅니다 — ' +
-      '매입회사·매도회사의 공시의무는 확인하지 않습니다.',
+      '것**입니다.',
+    '★ 상품·용역과 유가증권도 **양쪽 관점**을 봅니다 — 공정위 매뉴얼(2026-04-27 lit26-001)은 ' +
+      '"거래규모가 거래당사자 **모두에게** 대규모내부거래에 해당되는 경우 이사회 의결 및 공시의무는 ' +
+      '거래당사자 모두에게 있음"이라고 합니다. 상품·용역은 판매회사(항목 본문)와 **매입회사**' +
+      '(buyer_side), 유가증권은 매입회사(항목 본문)와 **매도회사**(seller_side)를 각자의 자본으로 ' +
+      '계산한 기준금액으로 따로 판정합니다. 다만 **상품·용역은 양쪽 다 상대방 지분 요건이 전제**라 ' +
+      '(고시 §4①4호 — 각 당사자의 의무는 *그 상대방*이 동일인·친족 20%↑ 출자 계열회사인지에 ' +
+      '달렸습니다. 매뉴얼 lit26-065·066 이 그 비대칭 실례입니다) 어느 쪽도 후보로 단정하지 ' +
+      '않습니다. 상대방 쪽은 **날짜가 없는 연간 총액**이라 존재 확인까지만 하고 건별 근접 대조는 ' +
+      '하지 않습니다.',
     '★ 상품·용역의 공시의무는 **상대방 요건이 전제**입니다 — 법 §26①4호·령 §33②·고시 §4①4호는 ' +
       '상대방을 "자연인인 동일인이 단독으로 또는 친족과 합하여 20% 이상 출자한 계열회사 또는 그 ' +
       '상법 §342의2 자회사"로 한정합니다. 이 도구는 지분 데이터가 없어 요건을 확인하지 못하므로 ' +
@@ -2308,6 +2548,16 @@ export async function detectUndisclosedTransactions(
         '일괄공시 대상일 수 있습니다 — 개별 거래 내역을 먼저 확인하세요.',
     );
   }
+  if (counterCandidates.length > 0) {
+    const names = [...new Set(counterCandidates.map((c) => c.side.company))];
+    notes.push(
+      `⚠️ **상대방 쪽**(상품·용역 매입회사·유가증권 매도회사) 확인 대상 ${counterCandidates.length}건 ` +
+        `(${names.join(', ')}) — 공정위 매뉴얼(2026-04-27 lit26-001)은 "거래규모가 거래당사자 ` +
+        '**모두에게** 대규모내부거래에 해당되면 공시의무도 거래당사자 모두에게 있다"고 합니다. ' +
+        '기준금액은 그 회사 자신의 자본으로 계산했습니다 — buyer_side·seller_side 를 열어 ' +
+        'status·matching_filings 를 확인하고 scope_caveats 와 함께 전달하세요.',
+    );
+  }
   if (lenderCandidates.length > 0) {
     const names = [...new Set(lenderCandidates.map((s) => s.company))];
     notes.push(
@@ -2331,7 +2581,8 @@ export async function detectUndisclosedTransactions(
     secCandidates.length === 0 &&
     lenderCandidates.length === 0 &&
     gmCandidates.length === 0 &&
-    gmAggregateOnly.length === 0
+    gmAggregateOnly.length === 0 &&
+    counterCandidates.length === 0
   ) {
     notes.push(
       'ℹ️ 미공시 후보 0건은 "미공시 없음"의 확인이 아닙니다 — 이 도구가 보는 유형(자금차입·자금대여·' +
@@ -2515,6 +2766,11 @@ export async function detectUndisclosedTransactions(
        * 차입회사 쪽 판정과 독립적이다 (기준금액이 각자의 자본이라 한쪽만 초과일 수 있다).
        */
       lender_side: lenderCounts,
+      /**
+       * 거래 **상대방 쪽** 판정 (상품·용역 매입회사 / 유가증권 매도회사) — 신호 단위 집계다.
+       * 판매·매입 쪽 판정과 독립적이다 (기준금액이 각자의 자본이라 한쪽만 초과일 수 있다).
+       */
+      counterparty_side: counterCounts,
     },
     /** 자금 차입 — 차입일 단위 대조라 신뢰도가 가장 높다 */
     undisclosed_candidates: undisclosed,
@@ -2564,7 +2820,9 @@ export async function detectUndisclosedTransactions(
         '자금 대여 — 대여회사(거래상대방) 관점 (같은 차입 건을 대여회사 자본 기준으로 재판정)',
         '주요 상품·용역 (6) (상대방별 연간 합산, 4×기준금액 이상만)',
         '상품·용역 총괄 (5) 매트릭스 — (6)에 없는 쌍만 보완 (상대방별 연간 총액)',
+        '상품·용역 — 매입회사 관점 (buyer_side, 매입회사 자본 기준으로 재판정)',
         '유가증권 총괄 매트릭스 (상대방별 연간 총액 — 개별 거래로 분해되지 않음)',
+        '유가증권 — 매도회사 관점 (seller_side, 매도회사 자본 기준으로 재판정)',
       ],
       undetectable: {
         other_transaction_types: [
@@ -2572,8 +2830,6 @@ export async function detectUndisclosedTransactions(
           '채무보증',
           '부동산 임대차',
           '기타자산 거래',
-          '상품·용역 매입(상대방 관점)',
-          '유가증권 매도(상대방 관점)',
         ],
         /** "주요" 기준 미달로 J004 표에 실리지 않은 상품·용역 거래 */
         non_major_goods_services: true,
