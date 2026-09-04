@@ -1019,6 +1019,14 @@ export async function detectUndisclosedTransactions(
         '않으므로 그 거래는 **점검되지 않았습니다**. 원문(source_viewer_url)에서 해당 행을 직접 확인하세요.',
     );
   }
+  if (parseDiag.tables_with_ragged_rows > 0) {
+    notes.push(
+      `ℹ️ 헤더 폭과 열 수가 다른 데이터 행이 ${parseDiag.ragged_rows}건 ` +
+        `(${parseDiag.tables_with_ragged_rows}개 표에) 있습니다 — 병합 헤더 전개가 밀렸거나 ` +
+        '서식이 실측과 다를 수 있습니다. 값 열은 열 번호가 아니라 **"데이터가 전부 숫자인 열"** ' +
+        '규칙으로 잡으므로 밀림 자체가 곧 오판은 아니지만, 후보가 나온 표는 원문과 대조하세요.',
+    );
+  }
   if (parseDiag.rows_company_equals_counterparty > 0) {
     notes.push(
       `⚠️ 회사와 거래상대방이 같은 이름으로 읽힌 행이 ${parseDiag.rows_company_equals_counterparty}건 ` +
@@ -2961,6 +2969,8 @@ export async function detectUndisclosedTransactions(
         tables_without_unit: goodsMatrixSeed.tablesWithoutUnit,
         unit_inherited_tables: goodsMatrixSeed.unitInheritedTables,
         duplicate_pairs: goodsMatrixSeed.duplicatePairs,
+        header_promoted_rows: goodsMatrixSeed.headerPromotedRows,
+        ragged_rows: goodsMatrixSeed.raggedRows,
         /** (6) 주요 내역에 이미 있어 보완하지 않은 쌍 수 (중복 방지가 실제로 동작한 횟수) */
         pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
         /** 이름은 달랐지만 (6)에 같은 매출회사·같은 금액 행이 있어 중복 의심으로 표시한 쌍 수 */
@@ -2981,6 +2991,8 @@ export async function detectUndisclosedTransactions(
         tables_without_unit: securitiesMatrix.tablesWithoutUnit,
         unit_inherited_tables: securitiesMatrix.unitInheritedTables,
         duplicate_pairs: securitiesMatrix.duplicatePairs,
+        header_promoted_rows: securitiesMatrix.headerPromotedRows,
+        ragged_rows: securitiesMatrix.raggedRows,
         /** 회사 목록에서 확인되지 않은 거래상대방 이름 (표기 흔들림·국외 계열사 등) */
         counterparties_not_in_known_list: [
           ...new Set(

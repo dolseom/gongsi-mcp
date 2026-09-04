@@ -72,6 +72,10 @@ export interface MatrixResult {
   unitInheritedTables: number;
   /** 같은 (행,열) 쌍이 두 번 나온 수 — 첫 값을 쓴다. 0 이 아니면 표 구조를 의심할 것 */
   duplicatePairs: number;
+  /** 구분선 뒤 선두 행을 헤더로 승격시킨 횟수 (Codex S1) */
+  headerPromotedRows: number;
+  /** 헤더 폭과 열 수가 다른 데이터 행 수 — 병합 전개 밀림 신호 (Codex S1) */
+  raggedRows: number;
   /**
    * 회사명 목록(`knownCompanies`)에 없어서 버린 열 이름들.
    * 국외 계열사와 미처 못 거른 집계 열이 여기 모인다 — 조용히 버리지 않는다.
@@ -98,6 +102,8 @@ function emptyResult(): MatrixResult {
     tablesWithoutUnit: 0,
     unitInheritedTables: 0,
     duplicatePairs: 0,
+    headerPromotedRows: 0,
+    raggedRows: 0,
     droppedColumns: [],
   };
 }
@@ -276,6 +282,8 @@ export function extractMatrix(
     }
 
     res.tables++;
+    res.headerPromotedRows += t.headerPromotedRows;
+    res.raggedRows += t.raggedRows;
     if (!res.rowAxis) {
       res.rowAxis = axis.row;
       res.colAxis = axis.col;

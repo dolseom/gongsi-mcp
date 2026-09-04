@@ -36,6 +36,19 @@ export interface LabeledTable {
   unitCaption: string | null;
   header: string[][];
   rows: string[][];
+  /**
+   * 구분선 뒤 선두 행을 헤더로 **승격시킨 횟수** (Codex S1).
+   *
+   * 다층 헤더의 둘째 줄부터는 마크다운 구분선 뒤에 오므로 끌어올려야 열 이름을 찾는다.
+   * 다만 판별 기준이 "숫자·날짜가 하나도 없는 행"이라, **값이 전부 '-' 인 데이터 행**도
+   * 승격된다 (실측: 유가증권 총괄표의 `| 비금융사 | - | - | … |` 행이 실제로 승격된다).
+   * 금액이 없어 판정에는 영향이 없지만 조용히 일어나면 안 되므로 세어서 진단에 낸다.
+   */
+  headerPromotedRows: number;
+  /** 헤더 최대 열 수 — 값 열 판별의 기준 폭 */
+  width: number;
+  /** 헤더 폭과 열 수가 다른 데이터 행 수 (병합 전개 밀림·서식 변형 신호) */
+  raggedRows: number;
 }
 
 function splitRow(line: string): string[] {
@@ -107,6 +120,7 @@ export function readLabeledTables(sectionMarkdown: string): LabeledTable[] {
 
   const flush = () => {
     if (buf.length === 0 && header.length === 0) return;
+    let promoted = 0;
     // 다층 헤더의 둘째 줄부터는 마크다운 구분선 **뒤에** 온다 — 그대로 두면 데이터 행으로
     // 섞여 열 이름을 못 찾는다. 숫자가 하나도 없는 선두 행은 헤더 잔여로 보고 끌어올린다.
     // (데이터 행에는 반드시 금액·비율·날짜 같은 숫자가 있다 — 실측 표 전부에서 성립.)
@@ -115,16 +129,21 @@ export function readLabeledTables(sectionMarkdown: string): LabeledTable[] {
       if (first.some(looksLikeData)) break;
       header.push(first);
       buf.shift();
+      promoted++;
     }
     // 캡션만 있는 1열 표(단위·설명)는 데이터 표가 아니다
     const isCaption = header.length + buf.length <= 2 && (header[0]?.length ?? 0) <= 1;
     if (!isCaption) {
+      const width = Math.max(0, ...header.map((r) => r.length));
       out.push({
         label,
         unitFactor: unit?.factor ?? null,
         unitCaption: unit?.caption ?? null,
         header,
         rows: buf,
+        headerPromotedRows: promoted,
+        width,
+        raggedRows: width > 0 ? buf.filter((r) => r.length !== width).length : 0,
       });
     }
     buf = [];
@@ -444,6 +463,12 @@ export interface ParseDiagnostics {
   rows_amount_unparsable: number;
   /** 회사 = 거래상대방으로 읽혀 버린 행 수 — 열 배치 오인 신호 (교차검토 M-2) */
   rows_company_equals_counterparty: number;
+  /** 구분선 뒤 선두 행을 헤더로 승격시킨 횟수 (Codex S1 — 값이 전부 '-' 인 행도 승격된다) */
+  header_promoted_rows: number;
+  /** 헤더 폭과 열 수가 다른 데이터 행 수 — 병합 전개 밀림·서식 변형 신호 (Codex S1) */
+  ragged_rows: number;
+  /** 그런 행이 하나라도 있는 표 수 */
+  tables_with_ragged_rows: number;
   sections_found: string[];
   sections_missing: string[];
 }
@@ -457,6 +482,9 @@ export function diagnose(markdown: string): ParseDiagnostics {
   const found: string[] = [];
   const missing: string[] = [];
   let noUnit = 0;
+  let promoted = 0;
+  let ragged = 0;
+  let raggedTables = 0;
   for (const [label, keyword] of wanted) {
     const sec = sliceSection(markdown, keyword);
     if (!sec) {
@@ -466,6 +494,9 @@ export function diagnose(markdown: string): ParseDiagnostics {
     found.push(label);
     for (const t of readLabeledTables(sec)) {
       if (t.unitFactor === null && t.rows.length > 0) noUnit++;
+      promoted += t.headerPromotedRows;
+      ragged += t.raggedRows;
+      if (t.raggedRows > 0) raggedTables++;
     }
   }
   const stats = newExtractStats();
@@ -476,6 +507,9 @@ export function diagnose(markdown: string): ParseDiagnostics {
     tables_without_unit: noUnit,
     rows_amount_unparsable: stats.rowsAmountUnparsable,
     rows_company_equals_counterparty: stats.rowsCompanyEqualsCounterparty,
+    header_promoted_rows: promoted,
+    ragged_rows: ragged,
+    tables_with_ragged_rows: raggedTables,
     sections_found: found,
     sections_missing: missing,
   };
