@@ -24,6 +24,7 @@ import {
   itemLikelyNotGoodsService,
   type DetectDeps,
   parseAmbiguousFilingDoc,
+  classifyAmbiguousSubject,
 } from '../src/tools/detect-undisclosed-transactions.js';
 import { extractCapitals } from '../src/parsers/j004-transactions.js';
 import { normalizeCompanyName } from '../src/parsers/md-table.js';
@@ -2207,7 +2208,7 @@ describe('유형 미상 J001 — 원문 거래상대방 대조', () => {
         corps: YKD_CORPS,
         j001: [AMBIG],
         // 픽스처 차입 상대방은 '미래에셋컨설팅(주)' — 원문은 띄어쓰기·(주) 가 달라도 정규화로 잇는다
-        docs: { '20250220000111': doc80708('미래에셋 컨설팅 주식회사') },
+        docs: { '20250220000111': doc80708('미래에셋 컨설팅 주식회사', '차입금') },
         docCalls,
       }),
     )) as Record<string, any>;
@@ -2223,7 +2224,9 @@ describe('유형 미상 J001 — 원문 거래상대방 대조', () => {
     expect(ref.doc_read).toBe('ok');
     expect(ref.covers_this_counterparty).toBe(true);
     expect(ref.doc_counterparties).toEqual(['미래에셋 컨설팅 주식회사']);
-    expect(ref.doc_subjects).toEqual(['출자증권']);
+    expect(ref.doc_subjects).toEqual(['차입금']);
+    expect(ref.doc_subject_class).toBe('funds');
+    expect(ref.covers_this_transaction).toBe(true);
     expect(ref.doc_amount_text).toBe('1,600');
     // 같은 원문은 한 번만 연다 (차입 2건 + 대여회사 관점이 같은 접수번호를 본다)
     expect(docCalls.filter((n) => n === '20250220000111')).toHaveLength(1);
@@ -2234,6 +2237,52 @@ describe('유형 미상 J001 — 원문 거래상대방 대조', () => {
       read_errors: 0,
     });
     expect(res['diagnostics'].type_ambiguous_docs.resolved_to_exists).toBeGreaterThanOrEqual(1);
+  });
+
+  it('상대방은 맞아도 거래대상이 다른 유형이면 올리지 않는다 — 같은 쌍의 다른 유형 공시 (Codex ①)', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [AMBIG],
+        // 차입 판정인데 원문 거래대상은 출자증권 — 상대방만 같다
+        docs: { '20250220000111': doc80708('미래에셋컨설팅(주)', '출자증권') },
+      }),
+    )) as Record<string, any>;
+    expect(res['summary'].undisclosed_candidates).toBe(0);
+    expect(res['summary'].not_judged).toBe(2);
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(String(nj['reason'])).toContain('거래대상이 이 유형(자금차입, funds)으로 분류되지 않았습니다');
+    expect(nj['type_ambiguous_resolved_by_document']).toBeUndefined();
+    const ref = nj['type_ambiguous_filings'][0];
+    expect(ref.covers_this_counterparty).toBe(true);
+    expect(ref.doc_subject_class).toBe('securities');
+    expect(ref.covers_this_transaction).toBe(false);
+  });
+
+  it('정정본은 정정후 상대방만 대조한다 — 정정전 상대방으로 "일치"를 만들지 않는다 (Codex ②)', () => {
+    const corrected = [
+      '특수관계인과의내부거래',
+      '## 특수관계인과의 내부거래',
+      '',
+      '| 1. 거래상대방 | 상대방 정정 | 미래에셋컨설팅(주) | 미래에셋자산운용(주) | 회사와의 관계 | 계열회사 |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| 2. 거래내용 다. 거래대상 | 정정 | 차입금 | 대여금 |',
+    ].join('\n');
+    const f = parseAmbiguousFilingDoc(corrected);
+    expect(f.counterparties).toEqual(['미래에셋자산운용(주)']);
+    expect(f.superseded_counterparties).toEqual(['미래에셋컨설팅(주)']);
+    expect(f.subjects).toEqual(['대여금']);
+  });
+
+  it('classifyAmbiguousSubject — 한 유형만 걸릴 때만 분류하고 복합·공백은 unknown', () => {
+    expect(classifyAmbiguousSubject(['"미래에셋" 브랜드 사용'])).toBe('goods');
+    expect(classifyAmbiguousSubject(['미래에셋네이버아시아그로쓰사모투자합자회사의 지분'])).toBe('securities');
+    expect(classifyAmbiguousSubject(['출자증권'])).toBe('securities');
+    expect(classifyAmbiguousSubject(['차입금'])).toBe('funds');
+    expect(classifyAmbiguousSubject(['출자증권 매입 용역'])).toBe('unknown'); // securities + goods
+    expect(classifyAmbiguousSubject([])).toBe('unknown');
+    expect(classifyAmbiguousSubject(['기타'])).toBe('unknown');
   });
 
   it('원문 상대방이 다르면 "공시 없음"으로 내리지 않고 보류를 유지하되 원문 값을 보여 준다', async () => {
