@@ -34,7 +34,7 @@
 import { z } from 'zod';
 import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
-import { loadDocument, type DocMeta } from './read-disclosure.js';
+import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
 import {
   resolvePopulation,
   type Population,
@@ -142,11 +142,27 @@ const MAX_JURIR_LOOKUPS = 20;
 /** J001 검색을 수행할 회사 수 상한 — 회사당 측정 1 + 수집 1 콜이라 60초 벽 대비 */
 const MAX_COMPANIES_TO_SEARCH = 20;
 /**
- * 유형 미상 J001(`isTypeAmbiguousReport`) 원문을 열어 **거래상대방**을 대조하는 건수 상한(실행당,
- * 접수번호 기준 중복 제거). 원문은 캐시되므로 재실행은 콜 0회. 실측 미래에셋 20260819000341 은
- * 판정에 필요한 건이 15건이었다(검색된 회사 전체로는 20건) — 60초 벽 대비 콜드 1건 ≈ 0.3초.
+ * J001 원문을 **새로 내려받는** 건수 상한(실행당, 접수번호 기준 중복 제거) — 60초 벽 대비
+ * 콜드 1건 ≈ 0.3초.
+ *
+ * ★ **캐시에 이미 있는 원문은 이 예산을 쓰지 않는다**(`deps.isDocCached`). 그래서 같은 문서로
+ *   다시 실행하면 지난 실행이 받아 둔 만큼은 공짜로 대조되고, 예산은 **아직 못 본 원문**에만
+ *   쓰인다 — 실행을 거듭할수록 대조 범위가 넓어진다.
+ * ★ 유형 미상 공시(`isTypeAmbiguousReport`)와 **보고서명으로 유형이 확정된 공시**가 이 예산을
+ *   함께 쓴다. 후자도 상대방을 대조해야 "공시 존재"라 할 수 있기 때문이다 (Codex P0: 종전에는
+ *   회사 + 유형 + 검색창만 보고 exists 를 냈다 — 같은 유형의 **다른 상대방** 공시가 이 거래를
+ *   확인해 준 것처럼 보였다).
+ * ★ 실측(미래에셋 20260819000341): 유가증권 유형은 한 회사에 76·95건씩 매칭돼 **필요 원문이
+ *   305건**이었다. 그래서 판정마다 확인되는 즉시 멈추고(조기 종료), 남은 건은 '읽지 않음'으로
+ *   둔다 — 전부 여는 설계는 어떤 예산으로도 성립하지 않는다.
  */
-const MAX_AMBIGUOUS_DOC_READS = 20;
+const MAX_FILING_DOC_FETCHES = 40;
+/**
+ * 캐시 히트까지 포함한 **총 원문 파싱** 상한 — 콜은 없지만 파싱은 CPU를 쓴다.
+ * 조기 종료가 걸려 있어 실제로는 여기까지 가지 않는 것이 정상이고, 이 상한은 병리적 입력
+ * (한 회사에 수백 건 매칭 × 판정 수십 개)에서 도구가 멈추지 않게 하는 마지막 방어선이다.
+ */
+const MAX_FILING_DOC_READS_TOTAL = 400;
 /** 거래일 이전으로 여는 검색창 (달력일) — 한도성 이사회 의결이 거래보다 훨씬 앞설 수 있다 */
 const LOOKBACK_DAYS = 400;
 /**
@@ -174,6 +190,11 @@ export interface DetectDeps {
    * 동명 2건 이상이라 이름으로 못 고르는 회사를 포털 `jurirno` 와 대조해 확정하는 데 쓴다.
    */
   fetchJurirNo: (corpCode: string) => Promise<JurirNoFetch>;
+  /**
+   * 이 접수번호의 원문이 **이미 캐시에 있는가** — 원문 열기 예산을 콜이 실제로 나가는 건에만
+   * 쓰기 위한 사전 확인이다 (캐시 히트는 60초 벽과 무관하다).
+   */
+  isDocCached: (rceptNo: string) => boolean;
 }
 
 function realDeps(client: DartClient): DetectDeps {
@@ -199,6 +220,7 @@ function realDeps(client: DartClient): DetectDeps {
         .findCorpsByName(name)
         .map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
     fetchJurirNo: (corpCode) => fetchJurirNo(corpCode, client),
+    isDocCached: (rceptNo) => isDocumentCached(rceptNo),
   };
 }
 
@@ -337,20 +359,63 @@ export function isTypeAmbiguousReport(reportNm: string): boolean {
   );
 }
 
-/** 유형 미상 J001 원문에서 읽어 낸 사실 — 상대방 대조에 쓴다 (금액은 단위가 섞여 **문자열 그대로**) */
-export interface AmbiguousDocFacts {
+/** J001 원문에서 읽어 낸 사실 — 상대방 대조에 쓴다 (금액은 단위가 섞여 **문자열 그대로**) */
+export interface FilingDocFacts {
   /**
-   * 현재 유효한 거래상대방. 세로형(80708)은 '1. 거래상대방' 행의 **마지막** 비어 있지 않은 셀
-   * (정정본은 `정정사유 | 정정전 | 정정후` 순이라 정정후) 1건, 가로형(80757)은 표의 거래상대방 열 전부.
+   * 현재 유효한 거래상대방. 세로형(80708·80718·80719·80706·80732)은 라벨 행의 **마지막** 비어
+   * 있지 않은 셀(정정본은 `정정사유 | 정정전 | 정정후` 순이라 정정후) 1건, 가로형(80757·80702·
+   * 80754 계열)은 표의 상대방 열 전부(중복 제거).
    */
   counterparties: string[];
   /** 정정본에서 밀려난 정정전 상대방 — 대조에는 쓰지 않고 표시만 한다 (Codex ②) */
   superseded_counterparties?: string[];
-  /** '다. 거래대상' 또는 표의 거래목적물 열 — 유형 판단 참고용 */
+  /** '다. 거래대상' 또는 표의 거래목적물·채권종류(종목명) 열 — 유형 판단 참고용 */
   subjects: string[];
   /** '라. 거래금액' 원문 텍스트 — 80708 은 '217 억원'·'12,226'(백만원) 이 섞여 있어 숫자화하지 않는다 */
   amount_text?: string;
 }
+
+/** @deprecated 유형 미상 전용이던 시절의 이름 — 호환용 별칭이다 */
+export type AmbiguousDocFacts = FilingDocFacts;
+
+/**
+ * 세로형 서식에서 '거래상대방' 자리를 가리키는 라벨인가.
+ *
+ * ★ **정확 일치만 본다.** `4. 거래상대방과의 차입총계`(80718)·`다. 거래상대방 총잔액`(80719)·
+ *   `라. 출자상대방 총출자액`(80732)은 전부 **금액 라벨**이라 상대방 이름이 오지 않는다.
+ *   부분 일치로 잡으면 금액을 상대방으로 읽어 대조가 통째로 틀어진다.
+ */
+function isVerticalCounterpartyLabel(cell: string): boolean {
+  const c = cell.trim();
+  return (
+    /^(?:\d+\.\s*)?거래상대방$/.test(c) ||
+    /차입처$/.test(c) ||
+    /대여처$/.test(c) ||
+    /출자상대방$/.test(c) ||
+    /^상대방$/.test(c)
+  );
+}
+
+/**
+ * 세로형 라벨 행으로 인정할지 — 라벨 문자열만 보면 **가로형 표의 열 이름**을 값 행으로 오독한다.
+ *
+ * 실측 반례 2종: 80757 헤더 `| 거래상대방 | 거래예정기간 | 거래대상 | … |` (첫 칸이 라벨과 같다) /
+ * 80754 1단 헤더 `| 발행자 |  | 거래일자 | 거래상대방 |  | 거래금액 | … |` (넷째 칸이 라벨과 같다).
+ * 둘 다 그대로 읽으면 '거래목적'·'거래금액' 같은 **열 이름이 상대방으로** 올라간다.
+ *
+ * → 실측 세로형 6종(80708·80718·80719·80706·80732 + 정정본)은 예외 없이
+ *   ① 같은 행에 `회사와의 관계` 칸이 있거나 ② 라벨에 항목번호(`1.`·`나.`)가 붙는다.
+ *   둘 중 하나도 없으면 **읽지 않는다** — 미확인 서식은 no_counterparty_field 로 남기지
+ *   "공시 존재"로 올리지 않는 쪽이 이 도구의 기본 방향이다.
+ */
+function isVerticalLabelRow(cells: string[], labelIdx: number): boolean {
+  const hasRelation = cells.some((c) => /회사와의\s*관계/.test(c));
+  const numbered = /^(?:\d+|[가-힣])\.\s*\S/.test(cells[labelIdx] ?? '');
+  return hasRelation || numbered;
+}
+
+/** doc_subjects 로 실어 나르는 상한 — 80754 트랙 B 는 종목명이 수십 줄이라 표시가 터진다 */
+const MAX_DOC_SUBJECTS = 20;
 
 function mdCells(line: string): string[] {
   return line
@@ -362,20 +427,26 @@ function mdCells(line: string): string[] {
 }
 
 /**
- * 유형 미상 J001 원문(markdown)에서 **거래상대방·거래대상·거래금액**을 읽는다.
+ * J001 원문(markdown)에서 **거래상대방·거래대상·거래금액**을 읽는다.
  *
- * 실측 서식 2종 (2026-09-05):
- *  - ACODE 80708 `특수관계인과의 내부거래` — 세로형. `| 1. 거래상대방 | | | | 미래에셋자산운용(주) |
- *    회사와의 관계 | 계열회사 |`. 정정본은 `| 1. 거래상대방 | 정정사유 | 정정전 | 정정후 | 회사와의 관계 …`
- *    가 될 수 있어 라벨 뒤 ~ '회사와의 관계' 앞의 **비어 있지 않은 셀 전부**를 상대방 후보로 둔다.
- *  - ACODE 80757 `약관에 의한 금융거래시 계열금융회사의 거래상대방의 공시` — 가로형 표.
- *    헤더 첫 칸이 '거래상대방'이고 데이터 행 첫 칸이 상대방, 셋째 칸이 거래목적물(차입금 등).
- *    '총 계'·'이사회 의결일' 행은 제외한다.
+ * 실측 서식 (2026-09-05, 미래에셋·농협양곡 실물 7건):
+ *  - **세로형** — 라벨 행의 오른쪽에 상대방 이름이 온다. 라벨은 서식마다 다르다:
+ *    `1. 거래상대방`(80708 내부거래 / 80719 자금대여 / 80706 수익증권 / 80732 출자) ·
+ *    `나. 차입처`(80718 자금차입). 정정본은 `| 1. 거래상대방 | 정정사유 | 정정전 | 정정후 |
+ *    회사와의 관계 … |` 형태라 라벨 뒤 ~ '회사와의 관계' 앞의 비어 있지 않은 셀 중
+ *    **마지막**(= 정정후)만 현재 상대방으로 삼는다.
+ *  - **가로형 A** — 상대방이 표의 **첫 칸**. 헤더가 `거래상대방`(80757 약관 상대방 공시) 또는
+ *    `거래상대방(동일인 등 출자계열회사)`(80702 상품·용역 분기공시)이고, 후자는 다음 항목번호
+ *    행(`5. 상품ㆍ용역 거래내역`)에서 끝난다.
+ *  - **가로형 B** — 2단 헤더의 `상대방명` **열 번호**로 읽는다 (80754·80751·80752·80701 트랙 B
+ *    분기 일괄). 같은 표의 `발행자명` 열은 상대방이 아니다. 소계·총계 행은 그 칸이 비어 있어
+ *    자연히 빠진다.
  *
  * 어느 형식도 못 읽으면 counterparties 가 빈 배열 — 호출 쪽은 이를 **대조 불가**로 다뤄야 한다
- * (일치 없음과 다르다).
+ * (일치 없음과 다르다). 미확인 서식(담보 80734·80735, 유상증자참여 80733 등)이 여기 해당하고,
+ * 그 건은 "공시 존재"로 올리지 않는다.
  */
-export function parseAmbiguousFilingDoc(markdown: string): AmbiguousDocFacts {
+export function parseFilingCounterparties(markdown: string): FilingDocFacts {
   const lines = markdown.split('\n');
   const counterparties: string[] = [];
   const superseded: string[] = [];
@@ -385,15 +456,19 @@ export function parseAmbiguousFilingDoc(markdown: string): AmbiguousDocFacts {
   const pushUnique = (arr: string[], v: string) => {
     if (v && v !== '-' && !arr.includes(v)) arr.push(v);
   };
+  const pushSubject = (v: string) => {
+    if (subjects.length < MAX_DOC_SUBJECTS) pushUnique(subjects, v);
+  };
 
-  // ── 세로형 (80708) ──
+  // ── 세로형 ──
   for (const line of lines) {
     if (!line.trim().startsWith('|')) continue;
     const cells = mdCells(line);
     if (cells.length === 0 || cells.every(isSep)) continue;
     const label = cells.join(' ');
-    if (/^\s*1\.\s*거래상대방/.test(cells[0] ?? '')) {
-      const rest = cells.slice(1);
+    const labelIdx = cells.findIndex(isVerticalCounterpartyLabel);
+    if (labelIdx >= 0 && isVerticalLabelRow(cells, labelIdx)) {
+      const rest = cells.slice(labelIdx + 1);
       const stop = rest.findIndex((c) => c.includes('회사와의 관계') || c.includes('회사와의관계'));
       const cand = (stop >= 0 ? rest.slice(0, stop) : rest).filter((c) => c !== '');
       // ★ 정정본은 `정정사유 | 정정전 | 정정후` — 정정전 상대방으로 "일치"를 만들면 안 된다.
@@ -410,7 +485,7 @@ export function parseAmbiguousFilingDoc(markdown: string): AmbiguousDocFacts {
     if (/다\.\s*거래대상/.test(label)) {
       const idx = cells.findIndex((c) => /거래대상/.test(c));
       const cand = cells.slice(idx + 1).filter((c) => c !== '');
-      if (cand.length > 0) pushUnique(subjects, cand[cand.length - 1]!);
+      if (cand.length > 0) pushSubject(cand[cand.length - 1]!);
       continue;
     }
     if (/라\.\s*거래금액/.test(label) && amountText === undefined) {
@@ -428,30 +503,59 @@ export function parseAmbiguousFilingDoc(markdown: string): AmbiguousDocFacts {
     };
   }
 
-  // ── 가로형 (80757) — 헤더 첫 칸 '거래상대방' 인 표의 데이터 행 ──
-  let inTable = false;
-  let subjectCol = -1;
+  // ── 가로형 A(첫 칸) / B(상대방명 열) ──
+  // 헤더를 만나면 모드가 바뀌고, 표가 끝나거나 다음 항목번호 행을 만나면 모드가 풀린다.
+  type HMode =
+    | { kind: 'first_cell'; subjectCol: number }
+    | { kind: 'named_column'; cpCol: number; subjectCol: number }
+    | null;
+  let mode: HMode = null;
   for (const line of lines) {
     if (!line.trim().startsWith('|')) {
-      inTable = false;
+      mode = null;
       continue;
     }
     const cells = mdCells(line);
     if (cells.every(isSep)) continue;
-    if (cells[0] === '거래상대방') {
-      inTable = true;
-      const sc = cells.findIndex((c) => c === '거래목적물' || c === '거래대상');
-      if (sc >= 0) subjectCol = sc;
+    // 헤더 B — 2단 헤더의 '상대방명' 열. '발행자명' 열보다 이 열이 상대방이다.
+    const cpCol = cells.findIndex((c) => c === '상대방명');
+    if (cpCol >= 0) {
+      mode = {
+        kind: 'named_column',
+        cpCol,
+        subjectCol: cells.findIndex((c) => /종목명|채권종류/.test(c)),
+      };
       continue;
     }
-    if (!inTable) continue;
+    // 헤더 A — 첫 칸이 '거래상대방'(80757) 이거나 어느 칸이 '거래상대방(' 로 시작(80702)
+    if (cells[0] === '거래상대방' || cells.some((c) => c.startsWith('거래상대방('))) {
+      mode = {
+        kind: 'first_cell',
+        subjectCol: cells.findIndex((c) => c === '거래목적물' || c === '거래대상'),
+      };
+      continue;
+    }
+    if (!mode) continue;
     const first = cells[0] ?? '';
-    if (first === '' || /^(총\s*계|소\s*계|합\s*계|이사회\s*의결일)/.test(first)) continue;
-    pushUnique(counterparties, first);
-    if (subjectCol >= 0) pushUnique(subjects, cells[subjectCol] ?? '');
+    // 다음 항목번호(`5. 상품ㆍ용역 거래내역`) 행 = 상대방 표의 끝 (80702)
+    if (/^\d+\.\s*\S/.test(first)) {
+      mode = null;
+      continue;
+    }
+    if (/^(총\s*계|소\s*계|합\s*계|이사회\s*의결일)/.test(first)) continue;
+    if (mode.kind === 'first_cell') {
+      pushUnique(counterparties, first);
+      if (mode.subjectCol >= 0) pushSubject(cells[mode.subjectCol] ?? '');
+    } else {
+      pushUnique(counterparties, cells[mode.cpCol] ?? '');
+      if (mode.subjectCol >= 0) pushSubject(cells[mode.subjectCol] ?? '');
+    }
   }
   return { counterparties, subjects, amount_text: amountText };
 }
+
+/** @deprecated 유형 미상 전용이던 시절의 이름 — 호환용 별칭이다 */
+export const parseAmbiguousFilingDoc = parseFilingCounterparties;
 
 /** 유형 미상 원문의 거래대상을 우리 판정 유형으로 거칠게 분류한 값 */
 export type AmbiguousSubjectClass = 'funds' | 'securities' | 'goods' | 'unknown';
@@ -488,8 +592,8 @@ function expectedSubjectClass(typeLabel: string): Exclude<AmbiguousSubjectClass,
 }
 
 /** 원문 대조 결과 — FilingRef 에 실어 사용자에게도 그대로 보여 준다 */
-type AmbiguousDocRead =
-  | { read: 'ok'; facts: AmbiguousDocFacts; acode: string | null }
+type FilingDocRead =
+  | { read: 'ok'; facts: FilingDocFacts; acode: string | null }
   | { read: 'error'; error: string }
   | { read: 'budget_exceeded' };
 
@@ -558,7 +662,7 @@ interface FilingRef {
   rcept_dt: string;
   report_nm: string;
   viewer_url: string;
-  /** 유형 미상 공시의 원문을 열었는가 (type_ambiguous_filings 전용) */
+  /** 이 공시의 원문을 열었는가 (유형 미상 공시 + 보고서명으로 유형이 확정된 매칭 공시 공통) */
   doc_read?: 'ok' | 'error' | 'budget_exceeded' | 'no_counterparty_field';
   /** 원문 '거래상대방' (정정본은 정정전·정정후가 함께) — 이 거래의 상대방과 대조한 값 */
   doc_counterparties?: string[];
@@ -574,7 +678,11 @@ interface FilingRef {
   doc_superseded_counterparties?: string[];
   /** 원문 거래대상을 판정 유형으로 분류한 값 — 상대방 일치 + 이 분류 일치일 때만 "공시 존재" */
   doc_subject_class?: AmbiguousSubjectClass;
-  /** 상대방·거래대상 분류가 모두 이 거래와 맞아 "공시 존재"의 근거가 됐다 */
+  /**
+   * 이 공시가 이 거래를 커버한다고 볼 근거가 됐다.
+   * 유형 미상 경로는 **상대방 + 거래대상 분류**가 모두 맞을 때, 보고서명 경로는 유형이 이미
+   * 이름으로 확정돼 있어 **상대방**만 맞으면 true 다.
+   */
   covers_this_transaction?: boolean;
 }
 
@@ -650,6 +758,20 @@ interface LenderSide {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -697,6 +819,20 @@ interface CounterpartySide {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -738,6 +874,20 @@ interface JudgedBorrowing {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -790,6 +940,20 @@ interface GoodsSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -842,6 +1006,20 @@ interface SecuritySignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -921,6 +1099,20 @@ interface GoodsMatrixSignal {
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
   other_j001_in_window?: number;
+  /**
+   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
+   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
+   * 대조하라는 뜻으로 함께 낸다.
+   */
+  matching_filings_unconfirmed?: FilingRef[];
+  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
+  counterparty_confirmed_by_document?: true;
+  /**
+   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
+   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
+   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
+   */
+  matching_filings_not_examined_total?: number;
   /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
@@ -2194,7 +2386,7 @@ export async function detectUndisclosedTransactions(
   }
   const joinFailedKeys = new Set(joinFailures.map((f) => normalizeCompanyName(f.company)));
 
-  // ── ⑥-b 유형 미상 J001 원문 열기 — 상대방 대조용 (판정이 필요로 할 때만 연다) ──
+  // ── ⑥-b J001 원문 열기 — 상대방 대조용 (판정이 필요로 할 때만 연다) ──
   // 보고서명만으로 유형을 알 수 없는 공시(isTypeAmbiguousReport)는 종전에 판정을 통째로
   // 보류시켰다. 실물 확인(미래에셋 20260819000341, 보류 5건·유일 접수번호 11건) 결과 서식
   // 80708·80757 은 '거래상대방'이 구조화돼 있어 **원문 상대방 = 이 거래 상대방**이면 "공시
@@ -2203,38 +2395,84 @@ export async function detectUndisclosedTransactions(
   // vs J004 '미래에셋 파트너스 제구호'). 불일치를 "공시 없음 → 후보"로 내리면 오탐이 된다.
   // ★ 사전에 전부 열지 않는다 — 검색된 회사 전체의 유형 미상 공시(실측 20건)가 아니라 유형 필터에
   //   빠진 판정이 실제로 걸린 공시(실측 11건)만 열어야 예산(15건) 안에서 필요한 건이 잘리지 않는다.
-  const ambiguousDocReads = new Map<string, AmbiguousDocRead>();
-  let ambiguousDocReadCount = 0;
-  let ambiguousDocBudgetHits = 0;
-  async function readAmbiguousDoc(rceptNo: string): Promise<AmbiguousDocRead> {
-    const cached = ambiguousDocReads.get(rceptNo);
+  const filingDocReads = new Map<string, FilingDocRead>();
+  /** 새로 내려받은 건수 (예산 대상) */
+  let filingDocFetches = 0;
+  /** 캐시에 이미 있어 콜 없이 읽은 건수 */
+  let filingDocCachedReads = 0;
+  let filingDocBudgetHits = 0;
+  async function readFilingDoc(rceptNo: string): Promise<FilingDocRead> {
+    const cached = filingDocReads.get(rceptNo);
     if (cached) return cached;
-    let result: AmbiguousDocRead;
-    if (ambiguousDocReadCount >= MAX_AMBIGUOUS_DOC_READS) {
-      ambiguousDocBudgetHits++;
+    let result: FilingDocRead;
+    // ★ 캐시 여부를 **읽기 전에** 확인한다 — 읽고 나면 전부 캐시가 되어 구분이 사라진다.
+    const inCache = deps.isDocCached(rceptNo);
+    if (filingDocFetches + filingDocCachedReads >= MAX_FILING_DOC_READS_TOTAL) {
+      filingDocBudgetHits++;
+      result = { read: 'budget_exceeded' };
+    } else if (!inCache && filingDocFetches >= MAX_FILING_DOC_FETCHES) {
+      filingDocBudgetHits++;
       result = { read: 'budget_exceeded' };
     } else {
-      ambiguousDocReadCount++;
+      if (inCache) filingDocCachedReads++;
+      else filingDocFetches++;
       try {
         const doc = await deps.loadDoc(rceptNo);
-        result = { read: 'ok', facts: parseAmbiguousFilingDoc(doc.markdown), acode: doc.meta.acode };
+        result = {
+          read: 'ok',
+          facts: parseFilingCounterparties(doc.markdown),
+          acode: doc.meta.acode,
+        };
       } catch (err) {
         result = { read: 'error', error: err instanceof Error ? err.message : String(err) };
       }
     }
-    ambiguousDocReads.set(rceptNo, result);
+    filingDocReads.set(rceptNo, result);
     return result;
   }
   let ambiguousResolvedToExists = 0;
+  /** 보고서명 경로의 상대방 대조 결과 — 판정 단위 (한 공시가 여러 판정에 걸릴 수 있다) */
+  let typedConfirmed = 0;
+  let typedUnconfirmed = 0;
+  let typedUnread = 0;
 
-  /** 유형 미상 공시 한 건을 FilingRef 로 — 원문 대조 결과를 함께 싣는다 */
-  function toAmbiguousFilingRef(
+  /** 원문을 읽은 접수번호의 상대방이 이 거래 상대방과 정규화 일치하는가 (못 읽었으면 false) */
+  function docCoversCounterparty(rceptNo: string, counterpartyKey: string): boolean {
+    const rd = filingDocReads.get(rceptNo);
+    return (
+      rd?.read === 'ok' && rd.facts.counterparties.some((c) => normalizeCompanyName(c) === counterpartyKey)
+    );
+  }
+
+  /** 원문을 읽어 상대방을 실제로 대조했는가 (읽기 실패·예산 초과·상대방 필드 없음 = false) */
+  function docComparable(rceptNo: string): boolean {
+    const rd = filingDocReads.get(rceptNo);
+    return rd?.read === 'ok' && rd.facts.counterparties.length > 0;
+  }
+
+  /** 대조 못 한 사유를 FilingRef.doc_read 와 **같은 어휘**로 (사유가 어휘로 갈리는 것이 핵심이다) */
+  function docReadLabel(rceptNo: string): FilingRef['doc_read'] {
+    const rd = filingDocReads.get(rceptNo);
+    if (!rd) return 'budget_exceeded';
+    if (rd.read === 'ok') return rd.facts.counterparties.length > 0 ? 'ok' : 'no_counterparty_field';
+    return rd.read;
+  }
+
+  /**
+   * 공시 한 건을 FilingRef 로 — 원문 대조 결과를 함께 싣는다.
+   *
+   * `mode: 'ambiguous'` 는 보고서명으로 유형을 모르는 공시라 **상대방 + 거래대상 분류**가 모두
+   * 맞아야 covers_this_transaction 이 되고, `mode: 'typed'` 는 유형이 이미 보고서명으로 확정돼
+   * 있어 **상대방**만 본다 (거래대상 분류는 참고 표시로만 싣는다).
+   */
+  function toFilingRefWithDoc(
     d: Disclosure,
     counterpartyKey: string,
     expectedClass: Exclude<AmbiguousSubjectClass, 'unknown'>,
+    mode: 'ambiguous' | 'typed',
   ): FilingRef {
     const ref = toFilingRef(d);
-    const rd = ambiguousDocReads.get(d.rcept_no);
+    const rd = filingDocReads.get(d.rcept_no);
     if (!rd) return ref;
     if (rd.read === 'ok') {
       const cps = rd.facts.counterparties;
@@ -2249,7 +2487,9 @@ export async function detectUndisclosedTransactions(
       ref.covers_this_counterparty = cps.some((c) => normalizeCompanyName(c) === counterpartyKey);
       ref.doc_subject_class = classifyAmbiguousSubject(rd.facts.subjects);
       ref.covers_this_transaction =
-        ref.covers_this_counterparty && ref.doc_subject_class === expectedClass;
+        mode === 'typed'
+          ? ref.covers_this_counterparty
+          : ref.covers_this_counterparty && ref.doc_subject_class === expectedClass;
     } else if (rd.read === 'error') {
       ref.doc_read = 'error';
       ref.doc_error = rd.error;
@@ -2275,13 +2515,29 @@ export async function detectUndisclosedTransactions(
     type_ambiguous?: Disclosure[];
     /** 유형 미상 공시의 원문 상대방이 이 거래 상대방과 일치해 exists 로 올렸다 */
     resolved_by_document?: true;
+    /** matching 의 원문 거래상대방까지 이 거래 상대방과 일치함을 확인했다 */
+    counterparty_confirmed?: true;
+    /** 창 안의 같은 유형 매칭 공시 **총수** (matching 은 근거로 삼은 것만 담는다) */
+    matching_total?: number;
+    /** 확인이 먼저 끝나(또는 예산이 소진돼) **열지 않은** 매칭 공시 수 — 불일치가 아니다 */
+    matching_not_examined?: number;
+    /** 같은 유형·같은 창이지만 원문 상대방이 달랐던 공시 */
+    matching_unconfirmed?: Disclosure[];
+    /** 같은 유형·같은 창인데 원문을 읽지 못해(오류·예산·상대방 필드 없음) 대조 못 한 공시 */
+    matching_unread?: Disclosure[];
   }
   async function checkCompany(
     key: string,
     typeFilter: (nm: string) => boolean,
     typeLabel: string,
-    /** 이 거래의 상대방 원문 이름 — 유형 미상 공시의 원문 상대방과 대조한다 */
+    /** 이 거래의 상대방 원문 이름 — 공시 원문의 거래상대방과 대조한다 */
     counterparty: string,
+    /**
+     * 건별 근접 대조를 하는 판정(차입·대여)의 **거래일**. 주면 매칭 공시를 이 날짜에 가까운
+     * 순으로 열어, 조기 종료로 먼저 확인된 한 건이 곧 **최근접 확인 공시**가 되게 한다.
+     * 최신순으로 열면 더 가까운 공시를 두고 먼 공시를 근거로 삼아 near_date 판정이 뒤집힌다.
+     */
+    nearDate?: string,
   ): Promise<CompanyCheck> {
     const counterpartyKey = normalizeCompanyName(counterparty);
     if (overBudgetKeys.has(key)) {
@@ -2325,6 +2581,97 @@ export async function detectUndisclosedTransactions(
       ...(s.partial ? { search_partial: true } : {}),
       ...(cancelsOfType.length ? { cancelled_of_type: cancelsOfType.length } : {}),
     };
+    // ── 유형 미상 J001 원문 대조 (지연 실행) ───────────────────────────────────
+    // 보고서명 경로가 상대방을 확인하지 못했을 때도 **이어서** 본다 — 같은 창에 무관한 유형
+    // 공시가 한 건 있다는 이유로, 이 거래를 실제로 덮는 `특수관계인과의내부거래` 공시를 못 보고
+    // 보류로 끝나면 안 된다 (팀 리드 수정 3).
+    const ambiguous = s.rows.filter(
+      (r) => isTypeAmbiguousReport(r.report_nm) && !isCancellationReport(r.report_nm),
+    );
+    const expected = expectedSubjectClass(typeLabel);
+    /** 유형 미상 공시를 최신 접수순으로 한 건씩 열어 **커버하는 한 건**을 찾으면 멈춘다 */
+    async function scanAmbiguous(): Promise<{
+      examined: Disclosure[];
+      covering: Disclosure | undefined;
+      notExamined: number;
+      detail: string;
+    }> {
+      const byDateDesc = [...ambiguous].sort((a, b) => (a.rcept_dt < b.rcept_dt ? 1 : -1));
+      const examined: Disclosure[] = [];
+      let covering: Disclosure | undefined;
+      let stoppedByBudget = false;
+      for (const r of byDateDesc) {
+        const rd = await readFilingDoc(r.rcept_no);
+        examined.push(r);
+        if (rd.read === 'budget_exceeded') {
+          stoppedByBudget = true;
+          break;
+        }
+        // ★ 상대방 일치만으로는 부족하다 — 같은 쌍의 **다른 유형** 공시가 이 거래를 덮어 버린다
+        //   (Codex 검토 ①). 원문 거래대상이 이 판정 유형으로 분류될 때만 "공시 존재".
+        if (
+          docCoversCounterparty(r.rcept_no, counterpartyKey) &&
+          rd.read === 'ok' &&
+          classifyAmbiguousSubject(rd.facts.subjects) === expected
+        ) {
+          covering = r;
+          break;
+        }
+      }
+      const notExamined = ambiguous.length - examined.length;
+      if (covering) return { examined, covering, notExamined, detail: '' };
+      const cpMatched = examined.filter((r) => docCoversCounterparty(r.rcept_no, counterpartyKey));
+      const readable = examined.filter((r) => docComparable(r.rcept_no));
+      const docCps = [
+        ...new Set(
+          readable.flatMap((r) => {
+            const rd = filingDocReads.get(r.rcept_no);
+            return rd?.read === 'ok' ? rd.facts.counterparties : [];
+          }),
+        ),
+      ];
+      const cpOnly = cpMatched.map((r) => {
+        const rd = filingDocReads.get(r.rcept_no);
+        const subj = rd?.read === 'ok' ? rd.facts.subjects.join('/') : '';
+        const cls = rd?.read === 'ok' ? classifyAmbiguousSubject(rd.facts.subjects) : '?';
+        return `${r.rcept_no}(거래대상 '${subj}' → ${cls})`;
+      });
+      const tail = stoppedByBudget
+        ? ` 원문 열기 예산이 소진돼 ${notExamined + 1}건은 열지 못했습니다 — 원문은 캐시에 남으므로 ` +
+          '같은 문서로 이 도구를 다시 실행하면 나머지를 이어서 대조합니다'
+        : notExamined > 0
+        ? ` (나머지 ${notExamined}건은 열지 않았습니다)`
+        : '';
+      const detail =
+        (cpMatched.length > 0
+          ? `원문 상대방은 이 거래 상대방과 일치하지만 거래대상이 이 유형(${typeLabel}, ` +
+            `${expected})으로 분류되지 않았습니다: ${cpOnly.join(', ')}. 같은 회사 쌍의 다른 유형 ` +
+            '거래 공시일 수 있어 "공시 존재"로 올리지 않았습니다 — doc_subjects 를 이 거래와 직접 대조하세요'
+          : readable.length === ambiguous.length
+          ? `원문을 전부 열어 거래상대방을 읽었으나(${docCps.join(' / ')}) 이 거래의 상대방 ` +
+            `'${counterparty}' 과 정규화 일치하는 공시는 없었습니다. 표기 차이(예: 제9호 ↔ 제구호)일 수 ` +
+            '있어 "공시 없음"으로 내리지 않고 보류를 유지합니다 — doc_counterparties 를 이 거래 ' +
+            '상대방과 직접 대조하세요'
+          : `원문 ${readable.length}/${ambiguous.length}건에서 거래상대방을 읽었고` +
+            (docCps.length ? `(${docCps.join(' / ')}) ` : ' ') +
+            '일치하는 공시는 없었습니다. 나머지는 열지 못했거나(doc_read 참조) 상대방 필드가 없어 ' +
+            '대조하지 못했습니다 — 그 건을 read_disclosure 로 직접 확인하세요') + tail;
+      return { examined, covering: undefined, notExamined, detail };
+    }
+    /** 유형 미상 경로가 "공시 존재"를 만들었을 때의 CompanyCheck */
+    function ambiguousExists(covering: Disclosure): CompanyCheck {
+      ambiguousResolvedToExists++;
+      return {
+        ...common,
+        outcome: 'exists',
+        matching: [covering],
+        matching_total: ambiguous.length,
+        others,
+        type_ambiguous: ambiguous,
+        resolved_by_document: true,
+      };
+    }
+
     if (matching.length > 0) {
       // 취소 접수분이 매칭 공시 수 이상이면 남은 매칭 공시 전부가 취소된 원공시일 수 있다 —
       // 목록만으로는 취소↔원공시를 연결할 수 없으므로 "공시 존재"로 단정하지 않는다 (Codex 4차 M2)
@@ -2340,76 +2687,128 @@ export async function detectUndisclosedTransactions(
           others,
         };
       }
-      return { ...common, outcome: 'exists', matching, others };
+      // ★ 회사 + 유형 + 검색창만으로 "공시 존재"라 하면 **같은 유형의 다른 상대방 공시**가 이
+      //   거래를 확인해 준 것처럼 보인다 (Codex 검토 P0 — 거짓 안심). 유형 미상 경로와 같은
+      //   장치로 **원문 거래상대방**까지 대조한다. 보고서명 경로는 유형이 이미 이름으로 확정돼
+      //   있으므로 거래대상 분류는 요구하지 않는다 (상대방만).
+      //
+      // ★ **한 건씩 열고 확인되는 즉시 멈춘다** (팀 리드 수정 1). 실물에서 유가증권 유형은 한
+      //   회사에 76·95건씩 매칭돼 전부 여는 설계는 성립하지 않았다(예산 30 대비 필요 305건).
+      //   열지 않은 나머지는 **불일치가 아니라 '읽지 않음'**이라 unconfirmed 에 넣지 않고
+      //   건수만 남긴다.
+      // ★ 정렬 기준: 근접 대조를 하는 판정(차입·대여)은 **거래일에 가까운 순**으로 연다. 최신순으로
+      //   열면 먼저 확인된 한 건이 최근접 공시가 아닐 수 있어 near_date 판정이 뒤집힌다.
+      const ordered = [...matching].sort((a, b) => {
+        if (nearDate) {
+          const da = Math.abs(daysBetween(a.rcept_dt, nearDate));
+          const db = Math.abs(daysBetween(b.rcept_dt, nearDate));
+          if (da !== db) return da - db;
+        }
+        return a.rcept_dt < b.rcept_dt ? 1 : -1;
+      });
+      const examined: Disclosure[] = [];
+      let confirmed: Disclosure | undefined;
+      let stoppedByBudget = false;
+      for (const r of ordered) {
+        const rd = await readFilingDoc(r.rcept_no);
+        examined.push(r);
+        if (rd.read === 'budget_exceeded') {
+          stoppedByBudget = true;
+          break;
+        }
+        if (docCoversCounterparty(r.rcept_no, counterpartyKey)) {
+          confirmed = r;
+          break;
+        }
+      }
+      const notExamined = matching.length - examined.length;
+      // 확인 전에 열어 보고 **실제로 상대방이 달랐던** 건은 그대로 보여 준다 (열지 않은 건과 다르다)
+      const unconfirmedBefore = examined.filter(
+        (r) => r !== confirmed && !docCoversCounterparty(r.rcept_no, counterpartyKey),
+      );
+      if (confirmed) {
+        typedConfirmed++;
+        return {
+          ...common,
+          outcome: 'exists',
+          // ★ 근접 대조(차입일 ± 창)도 **확인된 공시만으로** 한다 — 다른 상대방 공시의 접수일이
+          //   가깝다는 이유로 j001_filing_near_date 가 되면 안 된다. 거래일 근접순으로 열었으므로
+          //   먼저 확인된 이 한 건이 곧 최근접 확인 공시다.
+          matching: [confirmed],
+          matching_total: matching.length,
+          ...(notExamined > 0 ? { matching_not_examined: notExamined } : {}),
+          ...(unconfirmedBefore.length ? { matching_unconfirmed: unconfirmedBefore } : {}),
+          others,
+          counterparty_confirmed: true,
+        };
+      }
+      // ★ 확인된 공시가 하나도 없다 — 그렇다고 "공시 없음 → 후보"로 내리지 않는다.
+      //   실측 반례: 원문 '미래에셋파트너스제9호' vs J004 '미래에셋 파트너스 제구호' (같은 법인인데
+      //   정규화로 못 잇는다). 양쪽 다 확정할 수 없으므로 **보류**한다.
+      //   ★ 단, 보류로 끝내기 전에 **유형 미상 경로를 이어서 본다** — 그쪽이 이 거래를 덮을 수 있다.
+      const amb = ambiguous.length > 0 ? await scanAmbiguous() : null;
+      if (amb?.covering) return ambiguousExists(amb.covering);
+
+      const unconfirmed = examined.filter(
+        (r) => !docCoversCounterparty(r.rcept_no, counterpartyKey) && docComparable(r.rcept_no),
+      );
+      const unread = examined.filter((r) => !docComparable(r.rcept_no));
+      if (unread.length > 0) typedUnread++;
+      else typedUnconfirmed++;
+      const docCps = [
+        ...new Set(
+          unconfirmed.flatMap((r) => {
+            const rd = filingDocReads.get(r.rcept_no);
+            return rd?.read === 'ok' ? rd.facts.counterparties : [];
+          }),
+        ),
+      ];
+      const unreadDetail = unread.length
+        ? ` 그중 ${unread.length}건은 원문을 대조하지 못했습니다(matching_filings 의 doc_read: ` +
+          `${[...new Set(unread.map((r) => docReadLabel(r.rcept_no)))].join('/')}) — ` +
+          'read_disclosure 로 직접 열어 확인하세요.'
+        : '';
+      const budgetDetail = stoppedByBudget
+        ? ` 원문 열기 예산이 소진돼 ${notExamined + 1}건은 열지 못했습니다 — 원문은 캐시에 남으므로 ` +
+          '같은 문서로 이 도구를 다시 실행하면 나머지를 이어서 대조합니다.'
+        : notExamined > 0
+        ? ` (매칭 ${matching.length}건 중 ${examined.length}건까지 열었습니다.)`
+        : '';
+      const ambDetail = amb
+        ? ` 보고서명으로 유형을 알 수 없는 공시 ${ambiguous.length}건도 이어서 대조했으나 이 거래를 ` +
+          `커버하지 않았습니다: ${amb.detail}`
+        : '';
+      return {
+        ...common,
+        outcome: 'not_judged',
+        reason:
+          `type_filing_present_counterparty_unconfirmed — 이 유형(${typeLabel}) 공시 ` +
+          `${matching.length}건이 창 안에 있으나 원문 거래상대방` +
+          (docCps.length ? `(${docCps.join(' / ')})` : '(목록)') +
+          `이 이 거래 상대방 '${counterparty}' 과 일치하지 않습니다. 같은 유형의 **다른 상대방** ` +
+          '거래 공시일 수 있어 공시 존재로 보지 않고, 표기 차이일 수 있어 공시 없음으로도 내리지 ' +
+          '않습니다 — matching_filings 의 doc_counterparties 를 대조하세요.' +
+          unreadDetail +
+          budgetDetail +
+          ambDetail,
+        matching: examined,
+        matching_total: matching.length,
+        ...(notExamined > 0 ? { matching_not_examined: notExamined } : {}),
+        others,
+        ...(unconfirmed.length ? { matching_unconfirmed: unconfirmed } : {}),
+        ...(unread.length ? { matching_unread: unread } : {}),
+        ...(amb ? { type_ambiguous: ambiguous } : {}),
+      };
     }
     // ★ 이름만으로 유형을 알 수 없는 공시가 창 안에 있으면 "공시 없음"이라 할 수 없다.
     //   실측: '특수관계인과의내부거래'(출자를 이 이름으로 공시한 실물 있음)·'약관에의한금융거래시
     //   계열금융회사의거래상대방의공시'(차입 415억을 이 이름으로 공시한 실물 있음).
     //   "공시 존재"로 삼으면 거짓 안심이므로 후보를 만들지 않고 **판정을 보류**한다.
-    const ambiguous = s.rows.filter(
-      (r) => isTypeAmbiguousReport(r.report_nm) && !isCancellationReport(r.report_nm),
-    );
     if (ambiguous.length > 0) {
-      // ★ 원문 상대방 대조 — 일치하는 공시가 하나라도 있으면 "공시 존재" (유형 대조보다 강한 근거:
-      //   같은 회사가 **같은 상대방**과의 거래를 창 안에 공시했다). 최신 접수분부터 연다.
-      const byDateDesc = [...ambiguous].sort((a, b) => (a.rcept_dt < b.rcept_dt ? 1 : -1));
-      for (const r of byDateDesc) await readAmbiguousDoc(r.rcept_no);
-      const expected = expectedSubjectClass(typeLabel);
-      const cpMatched = ambiguous.filter((r) => {
-        const rd = ambiguousDocReads.get(r.rcept_no);
-        return (
-          rd?.read === 'ok' &&
-          rd.facts.counterparties.some((c) => normalizeCompanyName(c) === counterpartyKey)
-        );
-      });
-      // ★ 상대방 일치만으로는 부족하다 — 같은 쌍의 **다른 유형** 공시가 이 거래를 덮어 버린다
-      //   (Codex 검토 ①). 원문 거래대상이 이 판정 유형으로 분류될 때만 "공시 존재".
-      const covering = cpMatched.filter((r) => {
-        const rd = ambiguousDocReads.get(r.rcept_no);
-        return rd?.read === 'ok' && classifyAmbiguousSubject(rd.facts.subjects) === expected;
-      });
-      if (covering.length > 0) {
-        ambiguousResolvedToExists++;
-        return {
-          ...common,
-          outcome: 'exists',
-          matching: covering,
-          others,
-          type_ambiguous: ambiguous,
-          resolved_by_document: true,
-        };
-      }
-      const readable = ambiguous.filter((r) => {
-        const rd = ambiguousDocReads.get(r.rcept_no);
-        return rd?.read === 'ok' && rd.facts.counterparties.length > 0;
-      });
-      const docCps = [
-        ...new Set(
-          readable.flatMap((r) => {
-            const rd = ambiguousDocReads.get(r.rcept_no);
-            return rd?.read === 'ok' ? rd.facts.counterparties : [];
-          }),
-        ),
-      ];
-      const cpOnly = cpMatched.map((r) => {
-        const rd = ambiguousDocReads.get(r.rcept_no);
-        const subj = rd?.read === 'ok' ? rd.facts.subjects.join('/') : '';
-        return `${r.rcept_no}(거래대상 '${subj}' → ${rd?.read === 'ok' ? classifyAmbiguousSubject(rd.facts.subjects) : '?'})`;
-      });
-      const detail =
-        cpMatched.length > 0
-          ? `원문 상대방은 이 거래 상대방과 일치하지만 거래대상이 이 유형(${typeLabel}, ` +
-            `${expected})으로 분류되지 않았습니다: ${cpOnly.join(', ')}. 같은 회사 쌍의 다른 유형 ` +
-            '거래 공시일 수 있어 "공시 존재"로 올리지 않았습니다 — doc_subjects 를 이 거래와 직접 대조하세요'
-          : readable.length === ambiguous.length
-          ? `원문을 전부 열어 거래상대방을 읽었으나(${docCps.join(' / ')}) 이 거래의 상대방 ` +
-            `'${counterparty}' 과 정규화 일치하는 공시는 없었습니다. 표기 차이(예: 제9호 ↔ 제구호)일 수 ` +
-            '있어 "공시 없음"으로 내리지 않고 보류를 유지합니다 — doc_counterparties 를 이 거래 ' +
-            '상대방과 직접 대조하세요'
-          : `원문 ${readable.length}/${ambiguous.length}건에서 거래상대방을 읽었고` +
-            (docCps.length ? `(${docCps.join(' / ')}) ` : ' ') +
-            '일치하는 공시는 없었습니다. 나머지는 열지 못했거나(doc_read 참조) 상대방 필드가 없어 ' +
-            '대조하지 못했습니다 — 그 건을 read_disclosure 로 직접 확인하세요';
+      // ★ 원문 상대방 대조 — 커버하는 공시가 하나라도 있으면 "공시 존재" (유형 대조보다 강한 근거:
+      //   같은 회사가 **같은 상대방**과의 거래를 창 안에 공시했다). 최신 접수분부터 한 건씩 연다.
+      const amb = await scanAmbiguous();
+      if (amb.covering) return ambiguousExists(amb.covering);
       return {
         ...common,
         outcome: 'not_judged',
@@ -2418,7 +2817,7 @@ export async function detectUndisclosedTransactions(
           `**보고서명만으로 거래유형을 알 수 없는** 공시가 ${ambiguous.length}건 있습니다 ` +
           `(${[...new Set(ambiguous.map((r) => normalizeReportNm(r.report_nm)))].join(', ')}). ` +
           '실측상 이 서식들에는 출자·차입·브랜드 사용료 같은 실제 유형이 담깁니다 — 이 거래를 ' +
-          `커버할 수 있으므로 미공시 후보로 올리지 않았습니다. ${detail} ` +
+          `커버할 수 있으므로 미공시 후보로 올리지 않았습니다. ${amb.detail} ` +
           '("공시 있음"으로 확인한 것이 아닙니다)',
         type_ambiguous: ambiguous,
         others,
@@ -2451,23 +2850,47 @@ export async function detectUndisclosedTransactions(
     counterparty: string,
     typeLabel: string,
   ): void {
+    const key = normalizeCompanyName(counterparty);
+    const expected = expectedSubjectClass(typeLabel);
     if (chk.corp_code) target.corp_code = chk.corp_code;
     if (chk.j001_search) target.j001_search = chk.j001_search;
     if (chk.search_partial) target.search_partial = true;
     if (chk.cancelled_of_type) target.cancellations_of_type_in_window = chk.cancelled_of_type;
     if (chk.others) target.other_j001_in_window = chk.others.length;
+    // 매칭 공시는 **원문 대조 결과와 함께** 낸다 — doc_counterparties 가 사용자가 직접 대조할
+    // 유일한 근거다. 유형 미상 경로로 풀린 건은 거래대상 분류까지 본 것이라 어휘를 구분한다.
+    if (chk.matching && chk.matching.length > 0) {
+      const mode = chk.resolved_by_document ? 'ambiguous' : 'typed';
+      target.matching_filings = chk.matching
+        .slice(0, 10)
+        .map((d) => toFilingRefWithDoc(d, key, expected, mode));
+      // 창 안의 같은 유형 공시 **총수** — matching_filings 는 근거로 삼은 것만 담으므로
+      // (조기 종료 시 1건) 총수를 따로 밝히지 않으면 "1건뿐"으로 읽힌다.
+      const total = chk.matching_total ?? chk.matching.length;
+      if (total > target.matching_filings.length) target.matching_filings_total = total;
+    }
+    if (chk.matching_not_examined) {
+      target.matching_filings_not_examined_total = chk.matching_not_examined;
+    }
+    if (chk.counterparty_confirmed) target.counterparty_confirmed_by_document = true;
+    // ★ 확인되지 않은 매칭 공시는 **버리지 않고 표시한다** — "이 거래의 공시가 아니다"가 아니라
+    //   "이 거래의 공시로 확인되지 않았다"는 뜻이고, 표기 차이면 사람이 즉시 뒤집을 수 있다.
+    const unconfirmed = [...(chk.matching_unconfirmed ?? []), ...(chk.matching_unread ?? [])];
+    if (unconfirmed.length > 0) {
+      target.matching_filings_unconfirmed = unconfirmed
+        .slice(0, 5)
+        .map((d) => toFilingRefWithDoc(d, key, expected, 'typed'));
+    }
     if (chk.type_ambiguous && chk.type_ambiguous.length > 0) {
-      const key = normalizeCompanyName(counterparty);
       // 일치한 공시를 앞에 두어 5건 절단에 잘리지 않게 한다
       const ordered = [...chk.type_ambiguous].sort((a, b) => {
         const ca = chk.matching?.includes(a) ? 0 : 1;
         const cb = chk.matching?.includes(b) ? 0 : 1;
         return ca - cb;
       });
-      const expected = expectedSubjectClass(typeLabel);
       target.type_ambiguous_filings = ordered
         .slice(0, 5)
-        .map((d) => toAmbiguousFilingRef(d, key, expected));
+        .map((d) => toFilingRefWithDoc(d, key, expected, 'ambiguous'));
       if (chk.resolved_by_document) target.type_ambiguous_resolved_by_document = true;
     }
   }
@@ -2479,15 +2902,12 @@ export async function detectUndisclosedTransactions(
       isBorrowingReport,
       '자금차입',
       b.counterparty,
+      b.date ?? undefined,
     );
     applyCommon(b, chk, b.counterparty, '자금차입');
     if (chk.outcome === 'not_judged') {
       b.status = 'not_judged';
       b.reason = chk.reason!;
-      // 취소로 판정을 보류한 경우엔 대조할 매칭 공시를 함께 준다
-      if (chk.matching && chk.matching.length > 0) {
-        b.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2499,8 +2919,6 @@ export async function detectUndisclosedTransactions(
     }
     // exists — 건별 차입일 근접도로 가른다 (교차검토 C-1)
     const matching = chk.matching!;
-    b.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) b.matching_filings_total = matching.length;
     if (!b.date) {
       b.status = 'j001_filing_in_window_only';
       b.reason =
@@ -2534,13 +2952,11 @@ export async function detectUndisclosedTransactions(
       isLendingReport,
       '자금대여',
       b.company,
+      b.date ?? undefined,
     );
     applyCommon(side, chk, b.company, '자금대여');
     if (chk.outcome === 'not_judged') {
       side.reason = chk.reason!;
-      if (chk.matching && chk.matching.length > 0) {
-        side.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2552,8 +2968,6 @@ export async function detectUndisclosedTransactions(
       continue;
     }
     const matching = chk.matching!;
-    side.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) side.matching_filings_total = matching.length;
     if (!b.date) {
       side.status = 'j001_filing_in_window_only';
       side.reason =
@@ -2589,9 +3003,6 @@ export async function detectUndisclosedTransactions(
     if (chk.outcome === 'not_judged') {
       g.status = 'not_judged';
       g.reason = chk.reason!;
-      if (chk.matching && chk.matching.length > 0) {
-        g.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2604,10 +3015,7 @@ export async function detectUndisclosedTransactions(
         '못했습니다. 요건을 충족하는 상대방일 때만 미공시 후보입니다 — 지분 구조를 먼저 확인하세요';
       continue;
     }
-    const matching = chk.matching!;
     g.status = 'j001_filing_exists';
-    g.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) g.matching_filings_total = matching.length;
   }
 
   // (5) 총괄 보완 신호 — (6) 경로와 **같은 유형 필터·같은 창**을 쓰고, 후보 어휘만
@@ -2625,9 +3033,6 @@ export async function detectUndisclosedTransactions(
     if (chk.outcome === 'not_judged') {
       m.status = 'not_judged';
       m.reason = chk.reason!;
-      if (chk.matching && chk.matching.length > 0) {
-        m.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2650,10 +3055,7 @@ export async function detectUndisclosedTransactions(
       }
       continue;
     }
-    const matching = chk.matching!;
     m.status = 'j001_filing_exists';
-    m.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) m.matching_filings_total = matching.length;
   }
 
   for (const sec of signalSecurities) {
@@ -2667,9 +3069,6 @@ export async function detectUndisclosedTransactions(
     if (chk.outcome === 'not_judged') {
       sec.status = 'not_judged';
       sec.reason = chk.reason!;
-      if (chk.matching && chk.matching.length > 0) {
-        sec.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2684,10 +3083,7 @@ export async function detectUndisclosedTransactions(
         '있습니다 — 이것만으로 미공시로 볼 수 없습니다. 개별 거래 내역을 확인하세요';
       continue;
     }
-    const matching = chk.matching!;
     sec.status = 'j001_filing_exists';
-    sec.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) sec.matching_filings_total = matching.length;
   }
 
   // ⑦-c. 상대방 관점 상태 확정 — 판매회사 쪽과 **같은 함수·같은 창·같은 유형 필터**를 쓴다.
@@ -2703,9 +3099,6 @@ export async function detectUndisclosedTransactions(
     applyCommon(side, chk, origin, kind === 'goods' ? '상품·용역' : '유가증권');
     if (chk.outcome === 'not_judged') {
       side.reason = chk.reason!;
-      if (chk.matching && chk.matching.length > 0) {
-        side.matching_filings = chk.matching.slice(0, 10).map(toFilingRef);
-      }
       continue;
     }
     if (chk.outcome === 'none') {
@@ -2734,9 +3127,6 @@ export async function detectUndisclosedTransactions(
       continue;
     }
     side.status = 'j001_filing_exists';
-    const matching = chk.matching!;
-    side.matching_filings = matching.slice(0, 10).map(toFilingRef);
-    if (matching.length > 10) side.matching_filings_total = matching.length;
   }
 
   // 품목 성격상 제외한 행 — 회사가 이미 검색됐으면 참고 정보만 동봉한다 (추가 콜 없음, S-9)
@@ -2829,11 +3219,27 @@ export async function detectUndisclosedTransactions(
       c.side.status === 'candidate_aggregate_only',
   );
 
-  if (ambiguousDocBudgetHits > 0) {
+  if (typedUnconfirmed + typedUnread > 0) {
     notes.push(
-      `유형 미상 J001 원문 열기 예산(${MAX_AMBIGUOUS_DOC_READS}건)을 넘어 ${ambiguousDocBudgetHits}건은 ` +
-        '상대방을 대조하지 못했습니다 — 그 건이 걸린 거래는 보류로 남습니다 (type_ambiguous_filings 의 ' +
-        'doc_read: budget_exceeded). 그 건은 read_disclosure 로 직접 열어 거래상대방을 대조하세요',
+      `⚠️ 같은 유형·같은 창의 J001 공시가 있는데도 **원문 거래상대방이 이 거래 상대방과 확인되지 ` +
+        `않아** 보류한 판정이 ${typedUnconfirmed + typedUnread}건입니다 ` +
+        `(불일치 ${typedUnconfirmed} / 원문 대조 실패 ${typedUnread}). 종전에는 이 건들이 ` +
+        '"공시 존재"로 나갔습니다 — 그중 상당수는 **표기 차이일 뿐 실제로 공시된 거래**일 수 ' +
+        '있으니, matching_filings·matching_filings_unconfirmed 의 doc_counterparties 를 이 거래 ' +
+        '상대방과 눈으로 대조해 주세요. 반대로 정말 다른 상대방 거래 공시였다면 이 거래는 ' +
+        '미공시일 수 있습니다 — 어느 쪽인지 도구는 판단하지 않았습니다',
+    );
+  }
+
+  if (filingDocBudgetHits > 0) {
+    notes.push(
+      `J001 원문 **새로 내려받기** 예산(${MAX_FILING_DOC_FETCHES}건)을 넘어 ` +
+        `${filingDocBudgetHits}건은 상대방을 대조하지 못했습니다 — 그 건이 걸린 거래는 보류로 ` +
+        '남습니다 (matching_filings·type_ambiguous_filings 의 doc_read: budget_exceeded). ' +
+        `★ **받아 둔 원문 ${filingDocFetches}건은 캐시에 남으므로, 같은 문서로 이 도구를 다시 ` +
+        '실행하면 그만큼은 예산을 쓰지 않고 대조되고 예산은 아직 못 본 원문에 쓰입니다** — ' +
+        '한 번 더 실행하면 보류가 줄어듭니다. 급하면 그 건을 read_disclosure 로 직접 열어 ' +
+        '거래상대방을 대조하세요',
     );
   }
 
@@ -2849,7 +3255,7 @@ export async function detectUndisclosedTransactions(
       '**벤처투자조합 출자**를(20260903000201), `약관에의한금융거래시계열금융회사의거래상대방의공시` ' +
       '433건은 실물에서 **차입금 415.2억**을(20260902000068) 이 이름으로 공시했습니다. 이런 공시가 ' +
       '창 안에 있으면 "유형 공시 없음 → 미공시 후보"로 단정하지 않습니다. 대신 그 **원문을 열어 ' +
-      `거래상대방을 읽고**(실행당 ${MAX_AMBIGUOUS_DOC_READS}건, 캐시) 이 거래의 상대방과 정규화 일치하면 ` +
+      '거래상대방을 읽고** 이 거래의 상대방과 정규화 일치하면 ' +
       '**그리고** 원문 거래대상이 이 판정 유형(자금/유가증권/상품·용역)으로 분류되면 ' +
       '"공시 존재"(type_ambiguous_resolved_by_document)로, 하나라도 어긋나거나 못 읽으면 **보류**' +
       '(not_judged, type_ambiguous_filing_present)로 둡니다. ⚠️ 불일치를 "공시 없음"으로 내리지 ' +
@@ -2863,12 +3269,32 @@ export async function detectUndisclosedTransactions(
       '취소는 별도 서식이 아니라 정정([기재정정] 1,496건)·변경 공시로 표현됩니다. ' +
       'cancellations_of_type_in_window 는 서식이 생길 때를 대비한 방어선이며 현재 판정에 관여하지 ' +
       '않습니다.',
-    `j001_filing_near_date 는 차입일 근방(−${NEAR_BEFORE_DAYS}~+${NEAR_AFTER_DAYS}일)에 같은 유형 ` +
-      '공시가 있다는 뜻이고, j001_filing_in_window_only 는 검색창 안 어딘가에만 있다는 뜻입니다 — ' +
-      '후자는 한도 의결이 커버하는 정상 케이스일 수도, **일부 차입만 공시한 부분 누락**일 수도 있습니다 ' +
-      '(nearest_filing_gap_days 참조). 어느 쪽이든 **그 공시가 이 거래를 실제로 커버함을 대조한 것이 ' +
-      '아닙니다** — matching_filings 를 read_disclosure 로 열어 거래상대방·금액·의결일을 확인해야 ' +
-      '"공시됨"이 확정됩니다.',
+    '★ **"공시 존재"(j001_filing_exists · j001_filing_near_date · j001_filing_in_window_only)는 ' +
+      '원문 거래상대방까지 이 거래 상대방과 일치함을 확인한 것입니다** — 회사·유형·검색창만 맞는 ' +
+      '공시는 근거로 삼지 않습니다. 매칭 공시의 원문을 **거래일에 가까운 순(날짜 없는 신호는 최신순)' +
+      `으로 한 건씩 열어** 상대방이 확인되는 즉시 멈춥니다 — 새로 내려받는 원문은 실행당 ` +
+      `${MAX_FILING_DOC_FETCHES}건까지이고(캐시된 원문은 예산을 쓰지 않습니다) 유형 미상 경로와 ` +
+      '예산을 공유합니다. 정규화 일치를 본 결과가 counterparty_confirmed_by_document 이고, ' +
+      '대조에 쓴 값은 matching_filings 의 doc_counterparties 로 동봉합니다. ' +
+      '⚠️ matching_filings_not_examined_total 은 **열어 보지 않은** 매칭 공시 수입니다 — ' +
+      '상대방이 다르다는 뜻이 아니라 확인이 먼저 끝났거나 예산이 소진됐다는 뜻입니다. ' +
+      '★ 원문은 캐시에 남으므로 **같은 문서로 다시 실행하면 예산이 아직 못 본 원문에 쓰여** ' +
+      '대조 범위가 넓어집니다 (실측: 유가증권 유형은 한 회사에 76·95건씩 매칭됩니다). ' +
+      '⚠️ **상대방까지만 대조한 것이지 금액·거래기간·거래대상이 이 거래와 같음을 대조한 것은 ' +
+      '아닙니다** — 그것까지 확인해야 "공시됨"이 확정됩니다. ' +
+      '★ 일치하는 공시가 하나도 없으면 후보로 내리지 않고 **보류**합니다 ' +
+      '(not_judged, type_filing_present_counterparty_unconfirmed). 이유는 양방향입니다: ' +
+      '같은 유형의 **다른 상대방** 공시는 이 거래의 공시가 아니고(그래서 존재로 보지 않고), ' +
+      "원문과 J004 의 상대방 표기가 다를 수 있습니다(실측 원문 '미래에셋파트너스제9호' vs " +
+      "J004 '미래에셋 파트너스 제구호' — 같은 법인인데 정규화로 못 잇는다). 그래서 없음으로도 " +
+      '내리지 않습니다. 그 건은 matching_filings_unconfirmed 의 doc_counterparties 를 직접 ' +
+      '대조하세요. 원문을 못 연 건(doc_read: error·budget_exceeded·no_counterparty_field)도 ' +
+      '같은 보류로 갑니다 — **확인하지 못한 것**이지 불일치가 아닙니다.',
+    `j001_filing_near_date 는 차입일 근방(−${NEAR_BEFORE_DAYS}~+${NEAR_AFTER_DAYS}일)에 상대방이 ` +
+      '확인된 같은 유형 공시가 있다는 뜻이고, j001_filing_in_window_only 는 검색창 안 어딘가에만 ' +
+      '있다는 뜻입니다 — 후자는 한도 의결이 커버하는 정상 케이스일 수도, **일부 차입만 공시한 부분 ' +
+      '누락**일 수도 있습니다 (nearest_filing_gap_days 참조). 근접 대조는 **상대방이 확인된 공시만** ' +
+      '으로 계산합니다 — 다른 상대방 공시의 접수일이 가깝다는 이유로 근접 판정이 되지 않습니다.',
     '기준금액은 **J004 재무현황(당해 사업연도말 자본) 기반 근사치**입니다. 고시 §2③의 정확한 기준은 ' +
       '자본총계=주주총회 승인된 최근 사업연도말 재무제표, 자본금=이사회 의결일 직전일 — 거래 시점에 ' +
       '유효한 자본총계는 통상 **그 전년도말** 것이라 이 근사는 양방향으로 어긋날 수 있습니다. ' +
@@ -3336,16 +3762,26 @@ export async function detectUndisclosedTransactions(
         resolved: jurirResolved,
       },
       /**
-       * 유형 미상 J001 원문 열기 — 접수번호 기준 유일 건수, 실제 읽은 건수, 예산, 읽기 오류,
-       * 원문 상대방 일치로 "공시 존재"가 된 판정 수 (판정 단위 — 한 공시가 여러 판정을 풀 수 있다)
+       * J001 원문 열기 — 유형 미상 경로와 보고서명 경로가 **같은 예산**을 쓴다.
+       * filings_needed = 접수번호 기준 유일 건수 / reads = 실제로 연 건수 /
+       * ambiguous_resolved_to_exists = 유형 미상 공시가 원문 대조로 "공시 존재"가 된 판정 수 /
+       * typed_* = 보고서명으로 유형이 확정된 매칭 공시의 상대방 대조 결과(판정 단위 — 한 공시가
+       * 여러 판정에 걸릴 수 있다).
        */
-      type_ambiguous_docs: {
-        filings_needed: ambiguousDocReads.size,
-        reads: ambiguousDocReadCount,
-        read_budget: MAX_AMBIGUOUS_DOC_READS,
-        over_budget: ambiguousDocBudgetHits,
-        read_errors: [...ambiguousDocReads.values()].filter((r) => r.read === 'error').length,
-        resolved_to_exists: ambiguousResolvedToExists,
+      filing_docs: {
+        filings_needed: filingDocReads.size,
+        /** 새로 내려받은 건수 — 예산을 쓰는 것은 이것뿐이다 */
+        fetches: filingDocFetches,
+        /** 캐시에 이미 있어 콜 없이 읽은 건수 */
+        cached_reads: filingDocCachedReads,
+        fetch_budget: MAX_FILING_DOC_FETCHES,
+        reads_total_budget: MAX_FILING_DOC_READS_TOTAL,
+        over_budget: filingDocBudgetHits,
+        read_errors: [...filingDocReads.values()].filter((r) => r.read === 'error').length,
+        ambiguous_resolved_to_exists: ambiguousResolvedToExists,
+        typed_confirmed: typedConfirmed,
+        typed_unconfirmed: typedUnconfirmed,
+        typed_unread: typedUnread,
       },
       companies_searched: searches.size,
       companies_over_budget: overBudgetKeys.size,

@@ -387,10 +387,18 @@ server.registerTool(
       '미만이면 개별 거래도 전부 미만이라 이 방향만 확실합니다\n' +
       '- 차입은 **대여회사 쪽 의무**(lender_side)도 각자 자본으로 따로 판정하고, 상품·용역은 (6)에 없는 ' +
       '쌍을 총괄표 (5)로 보완합니다(4×에 못 미치면 candidate_aggregate_only)\n' +
-      '- 조인 실패·검색 예산 초과·수집 불완전 건은 **not_judged** — "후보 아님"이 아니라 확인하지 못한 것\n\n' +
+      '- 조인 실패·검색 예산 초과·수집 불완전 건은 **not_judged** — "후보 아님"이 아니라 확인하지 못한 것\n' +
+      '- **"공시 존재"는 공시 원문의 거래상대방까지 이 거래 상대방과 일치할 때만** 냅니다 ' +
+      '(counterparty_confirmed_by_document, 근거는 matching_filings 의 doc_counterparties). 같은 유형 ' +
+      '공시가 창 안에 있어도 원문 상대방이 다르거나 원문을 못 열면 후보가 아니라 **not_judged** ' +
+      '(type_filing_present_counterparty_unconfirmed) — 표기 차이일 수 있어 "공시 없음"으로도 ' +
+      '내리지 않습니다. 원문은 **확인되는 즉시 멈추고** 열므로 matching_filings 는 근거 1건이고 ' +
+      'matching_filings_total 이 창 안의 총수, matching_filings_not_examined_total 은 ' +
+      '**열어 보지 않은** 수(상대방이 다르다는 뜻이 아닙니다)입니다. 원문 내려받기 예산을 넘긴 건은 ' +
+      '캐시가 남아 **같은 문서로 한 번 더 실행하면 이어서 대조**됩니다\n\n' +
       '⚠️ 한도성 이사회 의결, 계열 금융회사 약관특례(트랙 B), 보고서명 유형 분류 오차로 실제로는 공시된 ' +
-      '거래일 수 있습니다. near_date/in_window_only 도 "그 유형 공시가 있다"일 뿐 이 거래를 커버하는지는 ' +
-      '대조하지 않았습니다 — **scope_caveats** 참조. 미공시 과태료 기본금액 ' +
+      '거래일 수 있습니다. near_date/in_window_only 는 상대방까지 대조한 것이고 **금액·거래기간까지 ' +
+      '대조한 것은 아닙니다** — **scope_caveats** 참조. 미공시 과태료 기본금액 ' +
       '5,000만~7,000만원은 지연보다 무거워 오판의 대가가 큽니다.',
     inputSchema: detectUndisclosedTransactionsInput.shape,
   },
