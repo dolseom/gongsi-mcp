@@ -23,6 +23,7 @@ import {
   looksLikeNaturalPerson,
   itemLikelyNotGoodsService,
   type DetectDeps,
+  parseAmbiguousFilingDoc,
 } from '../src/tools/detect-undisclosed-transactions.js';
 import { extractCapitals } from '../src/parsers/j004-transactions.js';
 import { normalizeCompanyName } from '../src/parsers/md-table.js';
@@ -100,9 +101,19 @@ function makeDeps(opts: {
   jurir?: Record<string, JurirNoFetch>;
   /** fetchJurirNo 가 어떤 corp_code 로 몇 번 불렸는지 (호출 예산·캐시 검증용) */
   jurirCalls?: string[];
+  /** 접수번호별 원문 (유형 미상 J001 상대방 대조용). Error 를 주면 loadDoc 이 던진다 */
+  docs?: Record<string, string | Error>;
+  /** loadDoc 이 어떤 접수번호로 불렸는지 (원문 열기 예산 검증용) */
+  docCalls?: string[];
 }): DetectDeps {
   return {
-    loadDoc: async () => ({ markdown: opts.markdown ?? FIXTURE_MD, meta: META }),
+    loadDoc: async (rceptNo) => {
+      opts.docCalls?.push(rceptNo);
+      const d = opts.docs?.[rceptNo];
+      if (d instanceof Error) throw d;
+      if (typeof d === 'string') return { markdown: d, meta: { ...META, acode: '80708' } };
+      return { markdown: opts.markdown ?? FIXTURE_MD, meta: META };
+    },
     collectList: async (corpCode, detailTy, from, to) => {
       opts.calls?.push({ corpCode, ty: detailTy, from, to });
       if (detailTy === 'J004') return batch(opts.j004 ?? []);
@@ -2119,5 +2130,254 @@ describe('유형 미상 J001 이 있으면 판정을 보류한다', () => {
     )) as Record<string, any>;
     expect(res['summary'].undisclosed_candidates).toBe(2);
     expect(res['summary'].not_judged).toBe(0);
+  });
+});
+
+/**
+ * 유형 미상 J001 의 **원문 거래상대방**으로 보류를 판정으로 바꾼다.
+ *
+ * ★ 실물 근거 (미래에셋 20260819000341, 2026-09-05): 보류 5건의 원문 11건은 전부 ACODE 80708
+ *   (`특수관계인과의 내부거래`)이고 '1. 거래상대방'이 구조화돼 있었다. 상대방이 이 거래와 같은
+ *   3건은 "공시 존재"로, 다른 2건(브랜드 사용료 ↔ 보험판매 / 제9호 ↔ 제구호)은 보류로 남았다.
+ *   불일치를 "공시 없음"으로 내리지 않는 이유가 그 마지막 사례다 — 표기만 다른 같은 법인일 수 있다.
+ */
+describe('유형 미상 J001 — 원문 거래상대방 대조', () => {
+  const DOC_80708 = readFileSync(join(HERE, 'fixtures', 'j001-ambiguous-80708.md'), 'utf8');
+  const DOC_80708_CORR = readFileSync(
+    join(HERE, 'fixtures', 'j001-ambiguous-80708-correction.md'),
+    'utf8',
+  );
+  const DOC_80757 = readFileSync(join(HERE, 'fixtures', 'j001-ambiguous-80757.md'), 'utf8');
+
+  /** 80708 세로형 최소 원문 — 상대방만 바꿔 가며 쓴다 */
+  function doc80708(counterparty: string, subject = '출자증권', amount = '1,600'): string {
+    return [
+      '특수관계인과의내부거래',
+      '## 특수관계인과의 내부거래',
+      '',
+      `| 1. 거래상대방 |  |  |  | ${counterparty} | 회사와의 관계 | 계열회사 |`,
+      '| --- | --- | --- | --- | --- | --- | --- |',
+      '| 2. 거래내용 | 가. 거래일자 |  |  | 2025.02.19 |  |  |',
+      `| 2. 거래내용 | 다. 거래대상 |  |  | ${subject} |  |  |`,
+      `| 2. 거래내용 | 라. 거래금액 |  |  | ${amount} |  |  |`,
+      '| 4. 이사회 의결일 |  |  |  | 2025.02.19 |  |  |',
+    ].join('\n');
+  }
+
+  describe('parseAmbiguousFilingDoc — 실물 서식 2종', () => {
+    it('80708 세로형: 거래상대방·거래대상·거래금액(텍스트 그대로)', () => {
+      const f = parseAmbiguousFilingDoc(DOC_80708);
+      expect(f.counterparties).toEqual(['미래에셋네이버아시아그로쓰사모투자합자회사']);
+      expect(f.subjects).toEqual(['미래에셋네이버아시아그로쓰사모투자합자회사의 지분']);
+      // 억원 표기 — 숫자화하지 않는다 (같은 서식의 다른 실물은 백만원 단위 숫자만 적는다)
+      expect(f.amount_text).toBe('217 억원');
+    });
+
+    it('80708 정정본: 정정사유·정정전·정정후 열이 있어도 상대방을 읽는다', () => {
+      const f = parseAmbiguousFilingDoc(DOC_80708_CORR);
+      expect(f.counterparties).toEqual(['미래에셋자산운용(주)']);
+      expect(f.subjects).toContain('"미래에셋" 브랜드 사용');
+      expect(f.amount_text).toBe('약 65.8억 원');
+    });
+
+    it('80757 가로형(약관 상대방 공시): 거래상대방 열·거래목적물 열을 읽고 합계 행은 뺀다', () => {
+      const f = parseAmbiguousFilingDoc(DOC_80757);
+      expect(f.counterparties).toEqual(['농협은행 주식회사']);
+      expect(f.subjects).toEqual(['차입금']);
+    });
+
+    it('어느 서식도 아니면 빈 배열 — 대조 불가이지 불일치가 아니다', () => {
+      const f = parseAmbiguousFilingDoc(FIXTURE_MD);
+      expect(f.counterparties).toEqual([]);
+    });
+  });
+
+  const AMBIG = disc({
+    corp_code: '00222222',
+    report_nm: '특수관계인과의내부거래',
+    rcept_no: '20250220000111',
+    rcept_dt: '20250220',
+  });
+
+  it('원문 상대방이 이 거래 상대방과 일치하면 "공시 존재"로 올리고 근접 대조까지 한다', async () => {
+    const docCalls: string[] = [];
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [AMBIG],
+        // 픽스처 차입 상대방은 '미래에셋컨설팅(주)' — 원문은 띄어쓰기·(주) 가 달라도 정규화로 잇는다
+        docs: { '20250220000111': doc80708('미래에셋 컨설팅 주식회사') },
+        docCalls,
+      }),
+    )) as Record<string, any>;
+    // 차입 2건(02-19·06-30) 모두 exists → 02-19 건은 접수 02-20 으로 근접, 06-30 건은 창 안에만
+    expect(res['summary'].not_judged).toBe(0);
+    expect(res['summary'].undisclosed_candidates).toBe(0);
+    expect(res['summary'].j001_filing_near_date).toBe(1);
+    expect(res['summary'].j001_filing_in_window_only).toBe(1);
+    const near = (res['j001_filing_near_date'] as Array<Record<string, any>>)[0]!;
+    expect(near['type_ambiguous_resolved_by_document']).toBe(true);
+    expect(near['matching_filings'][0].rcept_no).toBe('20250220000111');
+    const ref = near['type_ambiguous_filings'][0];
+    expect(ref.doc_read).toBe('ok');
+    expect(ref.covers_this_counterparty).toBe(true);
+    expect(ref.doc_counterparties).toEqual(['미래에셋 컨설팅 주식회사']);
+    expect(ref.doc_subjects).toEqual(['출자증권']);
+    expect(ref.doc_amount_text).toBe('1,600');
+    // 같은 원문은 한 번만 연다 (차입 2건 + 대여회사 관점이 같은 접수번호를 본다)
+    expect(docCalls.filter((n) => n === '20250220000111')).toHaveLength(1);
+    expect(res['diagnostics'].type_ambiguous_docs).toMatchObject({
+      filings_needed: 1,
+      reads: 1,
+      over_budget: 0,
+      read_errors: 0,
+    });
+    expect(res['diagnostics'].type_ambiguous_docs.resolved_to_exists).toBeGreaterThanOrEqual(1);
+  });
+
+  it('원문 상대방이 다르면 "공시 없음"으로 내리지 않고 보류를 유지하되 원문 값을 보여 준다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [AMBIG],
+        docs: { '20250220000111': doc80708('미래에셋자산운용(주)', '"미래에셋" 브랜드 사용') },
+      }),
+    )) as Record<string, any>;
+    expect(res['summary'].undisclosed_candidates).toBe(0);
+    expect(res['summary'].not_judged).toBe(2);
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(String(nj['reason'])).toContain('type_ambiguous_filing_present');
+    expect(String(nj['reason'])).toContain('정규화 일치하는 공시는 없었습니다');
+    expect(String(nj['reason'])).toContain('미래에셋자산운용(주)');
+    expect(nj['type_ambiguous_resolved_by_document']).toBeUndefined();
+    const ref = nj['type_ambiguous_filings'][0];
+    expect(ref.doc_read).toBe('ok');
+    expect(ref.covers_this_counterparty).toBe(false);
+    expect(ref.doc_counterparties).toEqual(['미래에셋자산운용(주)']);
+    expect(ref.doc_subjects).toEqual(['"미래에셋" 브랜드 사용']);
+  });
+
+  it('원문을 못 열면(오류) 보류를 유지하고 doc_read: error 를 남긴다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        corps: YKD_CORPS,
+        j001: [AMBIG],
+        docs: { '20250220000111': new Error('DART 원문 다운로드 실패 (테스트 스텁)') },
+      }),
+    )) as Record<string, any>;
+    expect(res['summary'].undisclosed_candidates).toBe(0);
+    expect(res['summary'].not_judged).toBe(2);
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(String(nj['reason'])).toContain('원문 0/1건에서 거래상대방을 읽었고');
+    const ref = nj['type_ambiguous_filings'][0];
+    expect(ref.doc_read).toBe('error');
+    expect(ref.doc_error).toContain('테스트 스텁');
+    expect(res['diagnostics'].type_ambiguous_docs.read_errors).toBe(1);
+  });
+
+  it('상대방 필드가 없는 원문은 no_counterparty_field — 불일치와 구분한다', async () => {
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ corps: YKD_CORPS, j001: [AMBIG] }), // loadDoc 이 J004 픽스처를 돌려준다
+    )) as Record<string, any>;
+    expect(res['summary'].not_judged).toBe(2);
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(nj['type_ambiguous_filings'][0].doc_read).toBe('no_counterparty_field');
+    expect(nj['type_ambiguous_filings'][0].covers_this_counterparty).toBe(false);
+  });
+
+  it('원문 열기 예산(20건)을 넘으면 최신 접수분부터 열고 나머지는 budget_exceeded 로 보류한다', async () => {
+    const docs: Record<string, string> = {};
+    const filings: Disclosure[] = [];
+    for (let i = 0; i < 21; i++) {
+      const no = `202502${String(i + 1).padStart(2, '0')}000200`;
+      filings.push(
+        disc({
+          corp_code: '00222222',
+          report_nm: '특수관계인과의내부거래',
+          rcept_no: no,
+          rcept_dt: no.slice(0, 8),
+        }),
+      );
+      docs[no] = doc80708('미래에셋자산운용(주)'); // 전부 불일치 — 예산 경로만 본다
+    }
+    const docCalls: string[] = [];
+    const res = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ corps: YKD_CORPS, j001: filings, docs, docCalls }),
+    )) as Record<string, any>;
+    const ambiguousReads = docCalls.filter((n) => n !== '20260601001646'); // 원천 문서 로드 제외
+    expect(ambiguousReads).toHaveLength(20);
+    // 가장 오래된 접수분(02-01)이 잘린다
+    expect(ambiguousReads).not.toContain('20250201000200');
+    expect(res['diagnostics'].type_ambiguous_docs).toMatchObject({
+      filings_needed: 21,
+      reads: 20,
+      read_budget: 20,
+      over_budget: 1,
+    });
+    expect(res['summary'].not_judged).toBe(2);
+    expect((res['notes'] as string[]).some((n) => n.includes('원문 열기 예산(20건)을 넘어'))).toBe(
+      true,
+    );
+    const nj = (res['not_judged'] as Array<Record<string, any>>)[0]!;
+    expect(String(nj['reason'])).toContain('원문 20/21건에서 거래상대방을 읽었고');
+  });
+
+  it('대여회사 관점도 같은 규칙으로 풀린다 — 차입회사가 대조 상대방이다', async () => {
+    const md = [
+      '| 기업집단명 : | 테스트집단 |',
+      '| --- | --- |',
+      '## (2) 회사 재무현황',
+      '| (단위 : 백만원, %) |',
+      '| --- |',
+      '| 계열회사명 |  | 자본금 | 자본총계 |',
+      '| --- | --- | --- | --- |',
+      '| 비금융회사 | 차입회사(주) | 5,000 | 20,000 |',
+      '| 비금융회사 | 대여계열사(주) | 1,000 | 4,000 |',
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 차입회사(주) | 대여계열사(주) | 16,000 | 2025-02-19 |',
+    ].join('\n');
+    const corps = {
+      차입회사: [{ corpCode: '00222222', corpName: '차입회사' }],
+      대여계열사: [{ corpCode: '00333333', corpName: '대여계열사' }],
+    };
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({
+        markdown: md,
+        corps,
+        j001: (corpCode) =>
+          corpCode === '00333333'
+            ? [
+                disc({
+                  corp_code: '00333333',
+                  report_nm: '특수관계인과의내부거래', // 대여회사가 유형 미상 서식으로 냈다
+                  rcept_no: '20250214000777',
+                  rcept_dt: '20250214',
+                }),
+              ]
+            : [],
+        // 원문 상대방 = 차입회사 → 대여회사 관점에서 "공시 존재", 접수 02-14 는 차입일 02-19 의 5일 전
+        docs: { '20250214000777': doc80708('차입회사 주식회사', '대여금') },
+      }),
+    )) as Record<string, any>;
+    const side = r['undisclosed_candidates'][0].lender_side;
+    expect(side.status).toBe('j001_filing_near_date');
+    expect(side.nearest_filing_gap_days).toBe(-5);
+    expect(side.type_ambiguous_resolved_by_document).toBe(true);
+    expect(side.type_ambiguous_filings[0].covers_this_counterparty).toBe(true);
+    expect(side.type_ambiguous_filings[0].doc_subjects).toEqual(['대여금']);
+    // 차입회사 쪽은 자금차입 공시가 없어 여전히 후보 — 두 판정은 독립이다
+    expect(r['summary'].undisclosed_candidates).toBe(1);
+    expect(r['summary'].lender_side.j001_filing_near_date).toBe(1);
   });
 });
