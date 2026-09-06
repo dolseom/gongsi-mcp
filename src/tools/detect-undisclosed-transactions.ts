@@ -87,7 +87,7 @@ function foreignAffiliateReason(colGroup: string): string {
   );
 }
 import { normalizeCompanyName } from '../parsers/md-table.js';
-import { fetchJurirNo, type JurirNoFetch } from '../resolver/corp-index.js';
+import { ensureCorpIndex, fetchJurirNo, type JurirNoFetch } from '../resolver/corp-index.js';
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
@@ -138,6 +138,59 @@ const MAX_JURIR_CANDIDATES = 5;
  * 결과는 캐시에 남으므로 다음 실행은 상한을 쓰지 않고도 조인된다.
  */
 const MAX_JURIR_LOOKUPS = 20;
+/**
+ * **자동 워밍**의 기업개황 조회 상한 (실행당) — `MAX_JURIR_LOOKUPS` 와 **별도 카운터**다.
+ * 두 예산은 서로를 소모하지 않는다: 워밍은 실행 앞머리에서 모집단 전체를 한 번 훑는 준비 단계이고,
+ * `MAX_JURIR_LOOKUPS` 는 판정 도중 동명 후보를 좁히는 데 쓰는 예산이라 성격이 다르다.
+ *
+ * 결과는 `setJurirNo` 로 영속되므로 **다음 실행은 조회 없이 조인된다** — 예산을 넘겨 못 채운
+ * 이름도 다음 실행에서 이어서 채운다(30일 억제는 실제로 대조를 시도한 이름에만 걸린다).
+ */
+const MAX_WARM_LOOKUPS = 40;
+/**
+ * 워밍의 부분일치 검색이 받아 올 후보 상한. **결과가 이 수와 같으면** 이름 조각이 너무 흔해
+ * 목록이 잘렸다는 뜻이라, 그 안에 **정규화 완전일치가 정확히 1건**일 때만 그 1건을 후보로 삼고
+ * 아니면 대조하지 않는다 — 잘못 좁혀 엉뚱한 회사를 확정하느니 미조인이 낫다.
+ */
+const WARM_SEARCH_LIMIT = 5;
+/**
+ * 부분일치 조각을 **뒤에서 줄여 갈 때의 바닥**. 포털 이름이 DART 상호보다 길면
+ * (실측 '미래에셋 생명보험(주)' vs DART '미래에셋생명') 포함 방향이 반대라 원본 조각으로는
+ * 영영 못 찾는다. 다만 이보다 짧게 줄이면 조각이 너무 흔해져 후보만 늘어난다.
+ *
+ * ⚠️ **원본 조각에는 적용하지 않는다** — 이 값을 원본에도 걸었더니 '시니안(유)'(조각 3자)가
+ * 검색조차 되지 않아 조인되던 회사를 잃었다 (실측 회귀). 짧은 상호는 실재한다.
+ */
+const WARM_MIN_FRAGMENT = 4;
+/**
+ * ⚠️ 절단 **횟수 상한은 두지 않는다.** 로컬 `LIKE '%조각%'` 은 인덱스를 못 타 118,581행 전수
+ * 스캔(실측 약 10ms)이라 상한을 두고 싶어지지만, 실측에서 상한 10을 걸었더니
+ * '삼성에프엔위탁관리부동산투자회사(주)'(조각 16자)가 4자까지 내려가서야 찾히던 것을 놓쳤다.
+ * 절단은 **후보를 제안할 뿐** 확정은 법인등록번호가 하므로 깊이 내려가도 오조인 위험이 없고,
+ * 비용은 이름당 (조각길이 − 3)회로 이미 유계다 (실측: 67개사 151회 1.4초 / 24개사 53회 0.5초).
+ */
+/** 워밍 진단에 이름을 실어 줄 미조인 회사 수 상한 (넘치면 skipped_truncated 로 밝힌다) */
+const MAX_WARM_SKIPPED_LISTED = 20;
+/** 워밍 재시도 억제 기간 (일). 키는 표기가 흔들리는 이름이 아니라 **법인등록번호**로 잡는다. */
+const WARM_SUPPRESS_DAYS = 30;
+/**
+ * 억제 키에 박는 **후보 탐색 로직 버전**. `findCandidates` 의 규칙(완전일치 → 점진 절단 →
+ * 상한 목록 속 완전일치)을 바꿀 때마다 올린다.
+ *
+ * ★ 버전을 안 박으면 **개선이 기존 사용자에게 한 달간 도달하지 않는다** — 구버전 로직이
+ *   "후보 0건"으로 남긴 억제 기록이 신버전 탐색까지 막기 때문이다 (실측: 점진 절단으로
+ *   잡히는 '미래에셋 생명보험(주)' 가 구버전 기록에 막히는 상황). 사용자가 캐시를 손으로
+ *   지울 방법도 없다. 버전을 올리면 구버전 키는 자연히 조회되지 않아 마이그레이션이 필요 없다
+ *   (남은 옛 키는 kv 행 몇 개일 뿐이다).
+ *
+ * v2 = 점진 절단(WARM_MIN_FRAGMENT 까지) + 상한 목록 속 정규화 완전일치 1건 채택.
+ * v3 = 조각 원본은 길이와 무관하게 검색 (4자 하한은 절단에만 적용 — '시니안' 회귀).
+ */
+const WARM_LOGIC_VERSION = 3;
+/** 억제 키 — 법인등록번호 + 탐색 로직 버전 */
+function warmKey(jurirNo: string): string {
+  return `warm:v${WARM_LOGIC_VERSION}:${jurirNo}`;
+}
 
 /** J001 검색을 수행할 회사 수 상한 — 회사당 측정 1 + 수집 1 콜이라 60초 벽 대비 */
 const MAX_COMPANIES_TO_SEARCH = 20;
@@ -186,6 +239,14 @@ export interface DetectDeps {
   resolvePop: (input: PopulationInput) => Promise<Population>;
   findCorps: (name: string) => Array<{ corpCode: string; corpName: string }>;
   /**
+   * 상호 **부분일치** 검색 (상한 `WARM_SEARCH_LIMIT`건). 자동 워밍에서 완전일치가 0건인
+   * 이름의 후보를 찾는 데만 쓴다 — 로컬 인덱스 조회라 API 콜이 아니다.
+   *
+   * ★ 여기서 찾은 후보는 **후보일 뿐이다.** 조인 확정은 언제나 법인등록번호 1건 일치로만 한다
+   *   (이름 유사도로 고르면 합병 전 옛 법인을 잡는다 — `disambiguateByJurirNo` 주석 참조).
+   */
+  searchCorps: (fragment: string) => Array<{ corpCode: string; corpName: string }>;
+  /**
    * DART 기업개황으로 한 회사의 **법인등록번호**를 얻는다 (조회 1회 = API 콜 1회, 결과는 캐시).
    * 동명 2건 이상이라 이름으로 못 고르는 회사를 포털 `jurirno` 와 대조해 확정하는 데 쓴다.
    */
@@ -218,6 +279,10 @@ function realDeps(client: DartClient): DetectDeps {
     findCorps: (name) =>
       getStore()
         .findCorpsByName(name)
+        .map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
+    searchCorps: (fragment) =>
+      getStore()
+        .searchCorpsByName(fragment, WARM_SEARCH_LIMIT)
         .map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
     fetchJurirNo: (corpCode) => fetchJurirNo(corpCode, client),
     isDocCached: (rceptNo) => isDocumentCached(rceptNo),
@@ -1168,6 +1233,220 @@ export function itemLikelyNotGoodsService(item: string): string | null {
   return null;
 }
 
+/** 워밍에서 한 이름을 대조하지 못한 사유 */
+export type WarmSkipReason =
+  | 'no_portal_jurir'
+  | 'suppressed'
+  | 'no_candidates'
+  | 'too_many_candidates'
+  | 'over_budget';
+
+/**
+ * 자동 워밍 진단 — 시도했는데 못 채운 것을 **수치와 이름으로** 남긴다.
+ * 워밍이 조용히 아무것도 못 하면 "조인 0건"의 원인이 캐시인지 표기인지 알 수 없고,
+ * 어느 회사를 손으로 보충해야 하는지도 알 수 없다.
+ */
+export interface WarmingDiagnostics {
+  /** 법인등록번호 대조를 실제로 시도한(기업개황을 부른) 이름 수 */
+  attempted: number;
+  /** 법인등록번호 1건 일치로 새로 조인된 회사 수 */
+  joined: number;
+  /** 기업개황 조회 횟수 */
+  lookups: number;
+  budget: number;
+  /** 포털 목록에 법인등록번호가 없어 대조 기준 자체가 없던 이름 수 */
+  skipped_no_portal_jurir: number;
+  /** 최근 시도 기록이 있어 건너뛴 이름 수 (30일 억제) */
+  skipped_suppressed: number;
+  /** 후보가 너무 많아(이름 조각이 흔해) 대조하지 않은 이름 수 */
+  skipped_too_many_candidates: number;
+  /** 어떤 절단 길이에서도 후보가 없던 이름 수 */
+  no_candidates: number;
+  /** 기업개황 조회가 실패한 횟수 — 불일치와 구분한다 */
+  lookup_errors: number;
+  over_budget: boolean;
+  /** 이 실행에서 DART 법인 인덱스를 새로 적재했는가 */
+  corp_index_loaded: boolean;
+  /** 인덱스 적재를 시도했으나 실패한 사유 (있으면) */
+  corp_index_error?: string;
+  resolved: Array<{ company: string; corp_code: string; jurir_no: string; candidates: number }>;
+  /**
+   * 조인하지 못한 회사의 **이름과 사유** — 수치만으로는 어느 회사를 손으로 보충해야 하는지
+   * 알 수 없다. 많으면 `MAX_WARM_SKIPPED_LISTED` 건까지만 싣고 `skipped_truncated` 로 밝힌다.
+   */
+  skipped: Array<{ company: string; reason: WarmSkipReason; candidates?: number }>;
+  skipped_total: number;
+  skipped_truncated: boolean;
+}
+
+/**
+ * 첫 실행 **자동 워밍** — 포털 소속회사의 법인등록번호 캐시를 실행 중에 채워 조인한다.
+ *
+ * 이 프로젝트의 조인 설계는 법인등록번호 직접 조인인데(포털 한글 음차 vs DART 영문 약어라
+ * 이름으로는 못 잇는다), 그 번호는 DART 기업개황을 회사별로 불러야만 얻어진다. 종전에는 그 캐시를
+ * 사용자가 `resolve_entity(fetchJurirNo=true)` 로 손수 채워야 했고, 안 채우면 판정이 통째로
+ * "확인 못 함"으로 떨어졌다 (실측: 콜드 캐시에서 joined 0·unjoined 24, 유가증권 판정불가 8건 →
+ * 캐시를 채운 뒤 1건).
+ *
+ * ★ **확정 근거는 법인등록번호 정확히 1건 일치뿐이다.** 후보 탐색에 이름을 쓰지만 그것은 어디까지나
+ *   *후보*를 좁히는 용도이고, 이름 유사도로 조인을 확정하지 않는다 — 실측(미래에셋증권)에서
+ *   이름으로 골랐다면 절반의 확률로 2016년 합병으로 사라진 옛 법인을 잡았고, 폐지 법인의 공시를
+ *   "공시 존재" 근거로 삼는 것은 전형적인 거짓 안심이다.
+ *
+ * 2단계로 나눈다: ① 후보 탐색(로컬 인덱스만 — API 콜 0) ② **후보 수 오름차순**으로 예산 소진.
+ * 순서가 중요하다 — 후보 1건짜리(싸고 확실한 조인)를 먼저 소진해야 예산이 모자라도 확실한
+ * 조인부터 확보된다.
+ */
+async function warmJurirJoins(
+  deps: DetectDeps,
+  population: Population,
+  today: string,
+): Promise<WarmingDiagnostics> {
+  const warming: WarmingDiagnostics = {
+    attempted: 0,
+    joined: 0,
+    lookups: 0,
+    budget: MAX_WARM_LOOKUPS,
+    skipped_no_portal_jurir: 0,
+    skipped_suppressed: 0,
+    skipped_too_many_candidates: 0,
+    no_candidates: 0,
+    lookup_errors: 0,
+    over_budget: false,
+    corp_index_loaded: false,
+    resolved: [],
+    skipped: [],
+    skipped_total: 0,
+    skipped_truncated: false,
+  };
+  const store = getStore();
+  const suppressAfter = addDaysYmd(today, -WARM_SUPPRESS_DAYS);
+
+  function noteSkip(company: string, reason: WarmSkipReason, candidates?: number): void {
+    warming.skipped_total++;
+    if (warming.skipped.length < MAX_WARM_SKIPPED_LISTED) {
+      warming.skipped.push({ company, reason, ...(candidates !== undefined ? { candidates } : {}) });
+    } else {
+      warming.skipped_truncated = true;
+    }
+  }
+
+  const stripLegal = (n: string): string =>
+    n.replace(/\(주\)|\(유\)|㈜|주식회사|유한회사|유한책임회사|합자회사|합명회사/g, '').trim();
+
+  /**
+   * 이름 하나의 후보를 찾는다 — **전부 로컬 인덱스 조회라 API 콜이 0이다.**
+   *
+   * ★ 포털 이름이 DART 상호보다 **길 때** 부분일치는 무력하다 (실측: 포털 '미래에셋 생명보험(주)'
+   *   → 조각 '미래에셋생명보험' 으로는 DART 상호 '미래에셋생명' 을 못 찾는다 — 포함 방향이 반대다).
+   *   그래서 조각을 **뒤에서 한 글자씩 줄여가며** 다시 찾는다. 실측으로 두 글자만 줄이면 잡혔다.
+   *   `WARM_MIN_FRAGMENT` 자 미만으로는 줄이지 않는다 — 그 아래는 너무 흔해 엉뚱한 회사만 나온다.
+   * ★ 결과가 상한에 걸려도 **그 안에 정규화 완전일치가 정확히 1건**이면 그것만 후보로 삼는다
+   *   (실측: '미래에셋증권' 부분일치는 사모투자 회사들에 밀려 상한 5건이 되는데 정답이 그 안에
+   *   있었다). 후보를 **좁히는** 것이지 넓히는 것이 아니며, 확정은 여전히 법인등록번호 1건 일치다.
+   */
+  function findCandidates(
+    rawName: string,
+    nameKey: string,
+  ): { candidates: Array<{ corpCode: string; corpName: string }> } | { skip: WarmSkipReason; found?: number } {
+    const base = rawName.trim();
+    const exact = deps.findCorps(base);
+    if (exact.length > 0) {
+      return exact.length > MAX_JURIR_CANDIDATES
+        ? { skip: 'too_many_candidates', found: exact.length }
+        : { candidates: exact };
+    }
+    const fragment = stripLegal(base).replace(/[\s ]+/g, '');
+    if (!fragment) return { skip: 'no_candidates' }; // 법인격만 남은 이름 — 빈 조각으로 검색하지 않는다
+    // ★ **조각 원본은 길이와 무관하게 반드시 1회 검색한다.** 4자 하한은 *절단해 내려갈 때의*
+    //   바닥이지 원본에 거는 조건이 아니다 — 짧은 상호는 실재하고(실측 '시니안(유)' ↔ DART
+    //   '시니안', 주석의 '한샘' 사례) 그걸 건너뛰면 멀쩡히 조인되던 회사가 통째로 미조인이 된다.
+    //   짧은 조각이 후보를 많이 물어와도 상한 5건 규칙이 막고, 확정은 법인등록번호가 지킨다.
+    const floor = Math.min(fragment.length, WARM_MIN_FRAGMENT);
+    for (let len = fragment.length; len >= floor; len--) {
+      const hits = deps.searchCorps(fragment.slice(0, len));
+      if (hits.length === 0) continue; // 더 줄여 본다
+      if (hits.length < WARM_SEARCH_LIMIT) return { candidates: hits };
+      // 상한에 걸렸다 = 목록이 잘렸을 수 있다. 더 줄이면 더 흔해지기만 하므로 여기서 결론낸다.
+      const named = hits.filter((h) => normalizeCompanyName(h.corpName) === nameKey);
+      if (named.length === 1) return { candidates: named };
+      return { skip: 'too_many_candidates', found: hits.length };
+    }
+    return { skip: 'no_candidates' };
+  }
+
+  // ── ① 후보 탐색 (API 콜 0) ──
+  const planned: Array<{
+    company: string;
+    jurir: string;
+    candidates: Array<{ corpCode: string; corpName: string }>;
+  }> = [];
+  for (const rawName of population.unjoined) {
+    const nameKey = normalizeCompanyName(rawName);
+    const portalJurir = population.jurirNoByName?.get(nameKey);
+    if (!portalJurir) {
+      // 대조 기준이 없으면 무엇을 찾아내도 확정할 수 없다 — 후보 탐색조차 하지 않는다
+      warming.skipped_no_portal_jurir++;
+      noteSkip(rawName, 'no_portal_jurir');
+      continue;
+    }
+    const lastTry = store.get(warmKey(portalJurir));
+    if (lastTry && lastTry >= suppressAfter) {
+      warming.skipped_suppressed++;
+      noteSkip(rawName, 'suppressed');
+      continue;
+    }
+    const found = findCandidates(rawName, nameKey);
+    if ('skip' in found) {
+      if (found.skip === 'no_candidates') warming.no_candidates++;
+      else warming.skipped_too_many_candidates++;
+      noteSkip(rawName, found.skip, found.found);
+      continue;
+    }
+    planned.push({ company: rawName, jurir: portalJurir, candidates: found.candidates });
+  }
+
+  // ── ② 후보 수 오름차순으로 예산 소진 (동수는 포털 목록 순서 유지) ──
+  planned.sort((a, b) => a.candidates.length - b.candidates.length);
+  for (const p of planned) {
+    if (warming.lookups + p.candidates.length > MAX_WARM_LOOKUPS) {
+      // 예산을 반쯤 쓴 채 이름을 끊으면 어느 후보를 봤는지가 흐려진다 — 이름 단위로 끊는다.
+      // 시도하지 않았으므로 억제 기록도 남기지 않는다 → 다음 실행이 이어서 채운다.
+      warming.over_budget = true;
+      noteSkip(p.company, 'over_budget', p.candidates.length);
+      continue;
+    }
+
+    warming.attempted++;
+    const matched: Array<{ corpCode: string; corpName: string }> = [];
+    for (const c of p.candidates) {
+      warming.lookups++;
+      const r = await deps.fetchJurirNo(c.corpCode);
+      if (r.status === 'ok') {
+        if (r.jurirNo === p.jurir) matched.push(c);
+      } else if (r.status === 'error') {
+        // 조회 실패는 "다른 회사"가 아니다 — 불일치로 뭉개지 않고 따로 센다
+        warming.lookup_errors++;
+      }
+      // 'absent' = 확인된 부재 — 이 후보는 그 계열사가 아니다
+    }
+    // 시도했으면 성공·실패 무관하게 기록한다 (같은 이름으로 매 실행 조회를 반복하지 않도록)
+    store.set(warmKey(p.jurir), today);
+    if (matched.length === 1) {
+      warming.joined++;
+      warming.resolved.push({
+        company: p.company,
+        corp_code: matched[0]!.corpCode,
+        jurir_no: p.jurir,
+        candidates: p.candidates.length,
+      });
+    }
+    // 0건 = 후보 중에 그 계열사가 없다 / 2건 이상 = 같은 번호에 corp_code 가 여럿 —
+    // 어느 쪽도 고르지 않는다 (추측 금지)
+  }
+  return warming;
+}
+
 /** 회사 하나의 J001 검색 결과 (회사당 1회만 수집한다) */
 interface CompanySearch {
   corp_code: string;
@@ -1196,7 +1475,9 @@ export async function detectUndisclosedTransactions(
   }
 
   const today = input.today ?? toYMD(new Date());
-  const deps = depsOverride ?? realDeps(new DartClient());
+  // 워밍이 법인 인덱스를 적재할 때 같은 클라이언트를 쓴다 (테스트 주입 경로에는 클라이언트가 없다)
+  const client = depsOverride ? null : new DartClient();
+  const deps = depsOverride ?? realDeps(client!);
   const notes: string[] = [];
   let listCalls = 0;
   let partialLists = false;
@@ -1211,14 +1492,102 @@ export async function detectUndisclosedTransactions(
   let populationGroup: string | null = null;
   let populationYearMonth: string | null = null;
   let populationReason: string | null = null;
+  let warming: WarmingDiagnostics | null = null;
   let filingYear: number;
+
+  /**
+   * 모집단을 받은 직후 **조인을 쓰는 모든 코드보다 먼저** 부르는 준비 단계 —
+   * 법인등록번호 캐시를 자동으로 채우고, 새로 조인된 회사가 있으면 모집단을 다시 받는다.
+   *
+   * ★ group 경로의 대표회사 탐색보다 반드시 앞에 와야 한다. 조인 0건이면 대표회사도 못 찾아
+   *   거기서 예외가 나고, 그러면 워밍이 실행될 기회 자체가 사라진다.
+   */
+  async function prepareJoins(
+    pop: Population,
+    popInput: PopulationInput,
+  ): Promise<{ population: Population; warming: WarmingDiagnostics | null }> {
+    // 워밍은 포털이 법인등록번호를 준 미조인 이름에만 걸린다 — 대상이 없으면 저장소도 건드리지 않는다
+    const hasTarget = pop.unjoined.some((n) =>
+      pop.jurirNoByName?.has(normalizeCompanyName(n)),
+    );
+    if (!hasTarget) return { population: pop, warming: null };
+
+    let indexLoaded = false;
+    let indexError: string | undefined;
+    // 인덱스가 비어 있으면 findCorps·searchCorps 가 항상 0건이라 워밍이 무의미하다.
+    // 테스트 주입 경로(depsOverride)는 실제 HTTP 가 나가면 안 되므로 건너뛴다.
+    if (client && getStore().corpCount() === 0) {
+      try {
+        await ensureCorpIndex(client);
+        indexLoaded = true;
+      } catch (err) {
+        // 폴백 — 워밍은 그대로 진행하고(캐시가 부분적으로 있을 수 있다) 사유만 남긴다
+        indexError = err instanceof Error ? err.message.split('\n')[0] : String(err);
+        log.warn('법인 인덱스 자동 적재 실패 — 워밍은 기존 인덱스로 진행', { error: indexError });
+      }
+    }
+
+    let w: WarmingDiagnostics;
+    try {
+      w = await warmJurirJoins(deps, pop, today);
+    } catch (err) {
+      // 워밍은 조인 **품질**을 올리는 준비 단계다 — 여기서 던지면 rcept_no 경로의 상위 catch 가
+      // 이를 "포털 목록을 못 불러왔다"로 오해해 **모집단 전체를 버린다**(종전보다 나빠진다).
+      notes.push(
+        '⚠️ 법인등록번호 자동 워밍이 실패해 워밍 없이 진행했습니다 ' +
+          `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — ` +
+          '조인은 기존 캐시로만 이뤄져 미조인이 많을 수 있습니다.',
+      );
+      return { population: pop, warming: null };
+    }
+    w.corp_index_loaded = indexLoaded;
+    if (indexError) w.corp_index_error = indexError;
+
+    let result = pop;
+    if (w.joined > 0) {
+      // 포털 응답은 캐시 히트라 추가 API 콜이 없다. 재호출은 1회뿐이다.
+      try {
+        result = await deps.resolvePop(popInput);
+      } catch (err) {
+        notes.push(
+          `⚠️ 자동 워밍으로 ${w.joined}개사의 법인등록번호를 채웠으나 소속회사 목록 재조회에 ` +
+            `실패해 워밍 전 조인 상태로 판정했습니다 (${
+              err instanceof Error ? err.message.split('\n')[0] : String(err)
+            }) — 다시 실행하면 채워진 캐시로 조인됩니다.`,
+        );
+      }
+    }
+    if (w.joined > 0 || w.lookups > 0) {
+      notes.push(
+        `ℹ️ 자동 워밍: 미조인 계열사 ${w.attempted}개사의 법인등록번호를 DART 기업개황으로 ` +
+          `대조해(${w.lookups}회 조회) ${w.joined}개사를 조인했습니다 — 포털 법인등록번호와 ` +
+          '**정확히 1건 일치**한 회사만 확정합니다(이름 유사도로 고르지 않습니다). ' +
+          '결과는 캐시에 남으므로 다음 실행부터는 조회 없이 조인됩니다.' +
+          (w.over_budget
+            ? ` 조회 예산(${MAX_WARM_LOOKUPS}회)을 넘어 남은 회사는 대조하지 못했습니다 — ` +
+              '다시 실행하면 이어서 채웁니다.'
+            : ''),
+      );
+    }
+    return { population: result, warming: w };
+  }
 
   if (input.group) {
     const year = input.year ?? Number(today.slice(0, 4));
     filingYear = year;
     // 포털 스냅샷은 매년 5/1 기준 — 점검 연도의 5월로 맞춘다 (audit_periodic 과 같은 이유)
     populationYearMonth = `${year}05`;
-    population = await deps.resolvePop({ group: input.group, year_month: populationYearMonth });
+    // allowEmptyJoin — 조인 0건이어도 포털 명단·법인등록번호를 버리지 않는다. 그게 있어야
+    // 아래 워밍이 조인을 채울 수 있다 (audit 두 도구는 이 옵션을 쓰지 않는다: 빈 모집단으로
+    // 감사하면 "지연 0건"이 거짓 안심이 된다).
+    const popInput: PopulationInput = {
+      group: input.group,
+      year_month: populationYearMonth,
+      allowEmptyJoin: true,
+    };
+    const prepared = await prepareJoins(await deps.resolvePop(popInput), popInput);
+    population = prepared.population;
+    warming = prepared.warming;
     populationSource = 'portal';
     populationGroup = input.group;
 
@@ -1238,9 +1607,26 @@ export async function detectUndisclosedTransactions(
       throw new ToolError(
         'corp_not_found',
         `'${input.group}' 대표회사(${repName || '이름 미상'})의 DART corp_code 를 찾지 못했습니다 — ` +
+          (warming
+            ? `자동 워밍이 ${warming.attempted}개사를 대조해 ${warming.joined}개사를 조인했으나 ` +
+              '대표회사는 포함되지 않았습니다(diagnostics 는 예외에 실리지 않으니 ' +
+              'get_group_structure 로 조인 상태를 확인하세요). '
+            : '') +
           'resolve_entity(fetchJurirNo=true) 로 대표회사를 조회해 조인 캐시를 채우거나, ' +
           '대표회사 연1회 J004 의 rcept_no 를 직접 지정하세요.',
-        { representative_company: repName },
+        {
+          representative_company: repName,
+          ...(warming
+            ? {
+                warming: {
+                  attempted: warming.attempted,
+                  joined: warming.joined,
+                  lookups: warming.lookups,
+                  over_budget: warming.over_budget,
+                },
+              }
+            : {}),
+        },
       );
     }
 
@@ -1337,19 +1723,31 @@ export async function detectUndisclosedTransactions(
       // group 경로와 같은 규칙: 포털 스냅샷은 매년 5/1 기준이고 연1회 J004 기한은 5/31이라,
       // **그 문서가 제출된 해의 5월** 스냅샷이 문서 시점의 소속 상태에 가장 가깝다.
       populationYearMonth = `${filingYear}05`;
+      const popInput: PopulationInput = {
+        group: docGroup,
+        year_month: populationYearMonth,
+        allowEmptyJoin: true,
+      };
       try {
-        population = await deps.resolvePop({
-          group: docGroup,
-          year_month: populationYearMonth,
-        });
+        const prepared = await prepareJoins(await deps.resolvePop(popInput), popInput);
+        population = prepared.population;
+        warming = prepared.warming;
         populationSource = 'portal';
         populationGroup = docGroup;
       } catch (err) {
         population = null;
         populationYearMonth = null;
+        const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
+        // ★ 사유 코드와 실제 원인을 맞춘다. 종전에는 **조인 0건**(포털은 정상 응답, 캐시 히트인
+        //   경우까지)도 'portal_unavailable' 로 적혀 "포털을 못 불러왔다"는 오해를 낳았다.
+        //   allowEmptyJoin 을 켠 지금 이 갈래는 나오지 않아야 하지만, 다른 호출 경로나 회귀로
+        //   되살아날 수 있어 방어선으로 남긴다.
         populationReason =
-          `portal_unavailable — 문서의 기업집단명 '${docGroup}' 으로 포털 소속회사 목록을 ` +
-          `불러오지 못했습니다 (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`;
+          err instanceof ToolError && err.code === 'corp_not_found'
+            ? `join_empty — 포털 소속회사 목록은 응답했으나 DART corp_code 조인이 0건이라 ` +
+              `모집단을 쓰지 못했습니다 (${detail})`
+            : `portal_unavailable — 문서의 기업집단명 '${docGroup}' 으로 포털 소속회사 목록을 ` +
+              `불러오지 못했습니다 (${detail})`;
       }
     }
     if (populationSource === 'portal') {
@@ -3376,15 +3774,38 @@ export async function detectUndisclosedTransactions(
       '대조가 불가능합니다. 또한 **편입 전 체결 거래라도 편입 후 주요내용을 변경하면 의결·공시의무가 ' +
       '있습니다**(고시 §4④) — 이 도구는 변경 여부를 보지 못하므로 no_duty_before_joining 도 그 ' +
       '한도에서만 유효합니다.',
-    populationSource === 'portal'
-      ? `회사명 조인에 포털 소속회사 목록(${populationGroup}, ${populationYearMonth} 기준)을 썼습니다 — ` +
-        'DART 폴백 조인 결과가 집단 목록 어디에도 없으면 비계열 동명 회사일 수 있어 판정하지 ' +
-        '않습니다(dart_join_unverified). 포털 목록은 **연 1회(매년 5/1 기준) 스냅샷**이라 거래 시점의 ' +
-        '소속과 다를 수 있고, 목록에는 있으나 DART 법인등록번호 조인 캐시가 비어 있으면 여전히 ' +
-        '조인에 실패합니다(resolve_entity(fetchJurirNo=true) 로 채울 수 있습니다).'
-      : `포털 소속회사 목록 없이 DART 상호 완전일치만으로 조인했습니다 (${populationReason ?? '사유 미상'}) — ` +
+    // ★ "포털 목록이 아예 없다"와 "목록은 있는데 DART 조인이 0건"은 한계가 서로 다르다 —
+    //   같은 문구로 뭉치면 실제로 무엇을 못 했는지가 가려진다.
+    populationSource !== 'portal' || population === null
+      ? `포털 소속회사 목록 없이 DART 상호 완전일치만으로 조인했습니다 (${populationReason ?? '사유 미상'}) — ` +
         '동명 비계열 회사로 오조인되면 그 회사의 공시가 근거로 잘못 붙을 수 있고, 계열편입일 ' +
-        '대조(편입 전 거래 = 의무 없음)도 하지 못합니다.',
+        '대조(편입 전 거래 = 의무 없음)도 하지 못합니다.'
+      : population.corpCodes.size === 0
+        ? `포털 소속회사 목록(${populationGroup}, ${populationYearMonth} 기준, ${population.unjoined.length}개사)은 ` +
+          '불러왔으나 **DART corp_code 로 조인된 회사가 한 곳도 없습니다** — 계열사 **명단**이 있어 ' +
+          '거래상대방이 계열회사인지는 이름으로 확인하지만, 조회할 corp_code 가 없어 J001 "공시 존재" ' +
+          '확인이 **전혀 되지 않고**(대부분 counterparty_not_joined·not_judged 로 남습니다) ' +
+          '계열편입일 대조도 하지 못합니다(편입일은 조인된 회사에만 붙습니다). ' +
+          '조인 키는 법인등록번호입니다' +
+          (warming
+            ? ` — 이 실행의 자동 워밍은 ${warming.attempted}개사를 대조해(조회 ${warming.lookups}회) ` +
+              `${warming.joined}개사를 조인했습니다(diagnostics.population.warming 참조). ` +
+              (warming.over_budget
+                ? `조회 예산 ${MAX_WARM_LOOKUPS}회를 넘겨 중단했으니 다시 실행하면 이어서 채웁니다.`
+                : '남은 회사는 DART 상호 검색으로 후보를 찾지 못했거나 법인등록번호가 1건으로 ' +
+                  `확정되지 않은 것이라, **후보 탐색 규칙이 바뀌지 않는 한**(현 v${WARM_LOGIC_VERSION}) ` +
+                  `다시 실행해도 같습니다 — ${WARM_SUPPRESS_DAYS}일간은 재시도하지 않으며 ` +
+                  'diagnostics.population.warming.skipped 의 회사는 resolve_entity 로 직접 확인하세요.')
+            : '. resolve_entity(fetchJurirNo=true) 로 주요 회사를 조회하면 같은 캐시가 채워집니다.')
+        : `회사명 조인에 포털 소속회사 목록(${populationGroup}, ${populationYearMonth} 기준)을 썼습니다 — ` +
+          'DART 폴백 조인 결과가 집단 목록 어디에도 없으면 비계열 동명 회사일 수 있어 판정하지 ' +
+          '않습니다(dart_join_unverified). 포털 목록은 **연 1회(매년 5/1 기준) 스냅샷**이라 거래 시점의 ' +
+          '소속과 다를 수 있고, 목록에는 있으나 DART 법인등록번호 조인 캐시가 비어 있으면 여전히 ' +
+          '조인에 실패합니다' +
+          (warming && warming.over_budget
+            ? ` (자동 워밍이 조회 예산 ${MAX_WARM_LOOKUPS}회를 넘겨 중단됐습니다 — 다시 실행하면 ` +
+              '이어서 채웁니다).'
+            : '(resolve_entity(fetchJurirNo=true) 로 채울 수 있습니다).'),
   ];
 
   if (undisclosed.length > 0) {
@@ -3747,6 +4168,11 @@ export async function detectUndisclosedTransactions(
             }
           : {}),
         ...(populationReason ? { reason: populationReason } : {}),
+        /**
+         * 자동 워밍 — 미조인 계열사의 법인등록번호를 실행 중에 채워 조인한 결과.
+         * 대상(포털이 법인등록번호를 준 미조인 이름)이 없으면 아예 돌지 않아 이 키가 없다.
+         */
+        ...(warming ? { warming } : {}),
         /** 문서에서 집단명을 읽어 포털을 조회했는가 (rcept_no 경로 전용) */
         from_document: !input.group && populationSource === 'portal',
       },

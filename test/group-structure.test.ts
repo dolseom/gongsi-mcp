@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isGroupCode, toWon } from '../src/tools/get-group-structure.js';
 import { inferYearMonth } from '../src/tools/resolve-entity.js';
-import { EgroupClient, parsePortalXml } from '../src/clients/egroup.js';
+import { EgroupClient, describeFetchFailure, parsePortalXml } from '../src/clients/egroup.js';
 import { Store, __setStore } from '../src/lib/store.js';
 
 describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
@@ -140,5 +140,49 @@ describe('기업집단 구조 — 순수 로직', () => {
     expect(inferYearMonth(new Date('2026-07-31'))).toBe('202605');
     expect(inferYearMonth(new Date('2026-03-01'))).toBe('202505');
     expect(inferYearMonth(new Date('2026-05-01'))).toBe('202605');
+  });
+});
+
+/**
+ * fetch 실패 원인 보존 — `err.name` 만 남기면 "TypeError" 넉 자뿐이라 키 문제·방화벽·포털
+ * 장애를 가를 수 없다 (실측 2026-09-06: apis.data.go.kr 연결 불가 상태에서 원인 규명에 시간을 썼다).
+ */
+describe('포털 요청 실패 원인 (describeFetchFailure)', () => {
+  it('undici 의 cause.code 를 함께 담는다 — 연결 타임아웃을 구분할 수 있다', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = Object.assign(new Error('Connect Timeout Error'), {
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+    const r = describeFetchFailure(err);
+    expect(r.code).toBe('UND_ERR_CONNECT_TIMEOUT');
+    expect(r.text).toBe('TypeError: fetch failed — UND_ERR_CONNECT_TIMEOUT');
+  });
+
+  it('AbortSignal.timeout 의 TimeoutError 는 이름·메시지만으로 읽힌다', () => {
+    const err = new Error('The operation was aborted due to timeout');
+    err.name = 'TimeoutError';
+    const r = describeFetchFailure(err);
+    expect(r.code).toBeUndefined();
+    expect(r.text).toBe('TimeoutError: The operation was aborted due to timeout');
+  });
+
+  it('code 가 없는 cause 는 메시지를 쓴다', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = new Error('getaddrinfo ENOTFOUND apis.data.go.kr');
+    const r = describeFetchFailure(err);
+    expect(r.code).toBe('getaddrinfo ENOTFOUND apis.data.go.kr');
+  });
+
+  it('원인 문자열에 키가 섞여 있어도 마스킹한다 (이 프로젝트는 실제 키 유출을 겪었다)', () => {
+    const key = 'a'.repeat(40);
+    const err = new TypeError(`fetch failed serviceKey=${key}`);
+    (err as { cause?: unknown }).cause = new Error(`bad key ${key}`);
+    const r = describeFetchFailure(err);
+    expect(r.text).not.toContain(key);
+    expect(String(r.code)).not.toContain(key);
+  });
+
+  it('Error 가 아니면 단정하지 않는다', () => {
+    expect(describeFetchFailure('그냥 문자열')).toEqual({ text: '알 수 없는 오류' });
   });
 });

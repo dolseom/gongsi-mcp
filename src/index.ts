@@ -388,6 +388,10 @@ server.registerTool(
       '- 차입은 **대여회사 쪽 의무**(lender_side)도 각자 자본으로 따로 판정하고, 상품·용역은 (6)에 없는 ' +
       '쌍을 총괄표 (5)로 보완합니다(4×에 못 미치면 candidate_aggregate_only)\n' +
       '- 조인 실패·검색 예산 초과·수집 불완전 건은 **not_judged** — "후보 아님"이 아니라 확인하지 못한 것\n' +
+      '- 미조인 계열사는 실행 중에 **법인등록번호를 자동으로 채워 조인**합니다(포털 jurirno ↔ DART ' +
+      '기업개황이 **정확히 1건 일치**할 때만 확정 — 이름 유사도로 고르지 않습니다). 결과는 캐시에 ' +
+      '남아 다음 실행부터는 조회 없이 조인되고, 조회 예산을 넘긴 회사는 다시 실행하면 이어서 ' +
+      '채웁니다 — 결과·미조인 사유는 diagnostics.population.warming\n' +
       '- **"공시 존재"는 공시 원문의 거래상대방까지 이 거래 상대방과 일치할 때만** 냅니다 ' +
       '(counterparty_confirmed_by_document, 근거는 matching_filings 의 doc_counterparties). 같은 유형 ' +
       '공시가 창 안에 있어도 원문 상대방이 다르거나 원문을 못 열면 후보가 아니라 **not_judged** ' +

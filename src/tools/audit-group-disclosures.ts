@@ -175,6 +175,19 @@ export interface PopulationInput {
   group?: string;
   companies?: string[];
   year_month?: string;
+  /**
+   * DART corp_code 조인이 **0건이어도** 예외를 던지지 않고 모집단을 그대로 돌려준다
+   * (빈 `corpCodes` + `unjoined` + `jurirNoByName` + `joinedGroupAt`).
+   *
+   * ★ **detect_undisclosed_transactions 전용이다.** 그 도구는 조인 0건에서도 포털 소속회사
+   * 명단·법인등록번호가 있어야 자동 워밍으로 조인을 채울 수 있는데, 예외를 던지면 그 재료까지
+   * 통째로 버려진다.
+   *
+   * ⚠️ audit_group_disclosures·audit_periodic_disclosures 는 이 옵션을 **쓰지 않는다** —
+   * 빈 모집단으로 감사하면 "지연 0건"·"미제출 0건"이라는 거짓 안심이 나온다. group 경로 전용이며
+   * companies 경로에는 영향이 없다.
+   */
+  allowEmptyJoin?: boolean;
 }
 
 export async function resolvePopulation(input: PopulationInput): Promise<Population> {
@@ -213,7 +226,7 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
         if (/^\d{8}$/.test(joined)) joinedGroupAt.set(code, joined);
       } else unjoined.push(String(a['name']));
     }
-    if (corpCodes.size === 0) {
+    if (corpCodes.size === 0 && !input.allowEmptyJoin) {
       throw new ToolError(
         'corp_not_found',
         `'${input.group}' 소속회사 중 DART corp_code 가 조인된 회사가 없습니다. ` +
