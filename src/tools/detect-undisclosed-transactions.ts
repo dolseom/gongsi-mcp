@@ -3193,7 +3193,6 @@ export async function detectUndisclosedTransactions(
       });
       continue;
     }
-    newSearchesPerformed++;
     try {
       const r = await deps.collectList(joined.code, 'J001', from, to);
       listCalls++;
@@ -3202,6 +3201,7 @@ export async function detectUndisclosedTransactions(
       //   `complete:false` 인 채 `stalled:false` 가 영원히 계속된다 — 도구는 "다시 호출하세요"만
       //   반복하고 사용자는 끝나지 않는 루프에 갇힌다 (작업 5 검토에서 실측으로 잡았다:
       //   2·3회차의 카운터가 완전히 같았는데 stalled 이 false 였다).
+      newSearchesPerformed++;
       if (r.diagnostics.partial_results || r.diagnostics.truncated) partialLists = true;
       const result: CompanySearch = {
         corp_code: joined.code,

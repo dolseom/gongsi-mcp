@@ -4482,7 +4482,7 @@ describe('이어보기 — 여러 호출로 온전한 답 (작업 5)', () => {
     >;
     expect(r1['continuation'].complete).toBe(false);
     expect(r1['continuation'].stalled).toBeUndefined();
-    expect(r1['continuation'].progress.companies_searched_this_call).toBe(3);
+    expect(r1['continuation'].progress.companies_searched_this_call).toBe(2);
     expect(r1['continuation'].incomplete_reasons).toContain('company_search_failed_retryable');
     const token = r1['continuation'].token as string;
 
@@ -4494,7 +4494,7 @@ describe('이어보기 — 여러 호출로 온전한 답 (작업 5)', () => {
     )) as Record<string, any>;
 
     expect(j001Calls(calls2).map((x) => x.corpCode)).toEqual([CODE3.비사]); // 시도는 했다
-    expect(r2['continuation'].progress.companies_searched_this_call).toBe(1);
+    expect(r2['continuation'].progress.companies_searched_this_call).toBe(0); // 성공은 0
     expect(r2['continuation'].progress.companies_reused_from_token).toBe(2);
     expect(r2['continuation'].complete).toBe(false);
     expect(r2['continuation'].stalled).toBe(true);
