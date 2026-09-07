@@ -40,6 +40,7 @@ import {
 import {
   detectUndisclosedTransactions,
   detectUndisclosedTransactionsInput,
+  TIME_BUDGET_MS,
 } from './tools/detect-undisclosed-transactions.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
 import {
@@ -50,6 +51,17 @@ import { serverInfo, serverInfoInput } from './tools/server-info.js';
 
 loadDotEnv();
 const log = getLogger('server');
+
+/**
+ * detect 도구 설명에 쓸 시간 예산 "초" 표기.
+ * `GONGSI_TIME_BUDGET_MS` 로 예산을 낮췄으면 **설명도 낮춘 값을 말해야 한다** — 설명은
+ * 50초라는데 실제로 8초에 멈추면 부분 결과의 이유를 모델도 사용자도 재현하지 못한다.
+ */
+function detectBudgetSeconds(): string {
+  const ms = getConfig().detectTimeBudgetMs ?? TIME_BUDGET_MS;
+  const s = ms / 1000;
+  return Number.isInteger(s) ? String(s) : s.toFixed(1);
+}
 
 /**
  * 서버 수준 안내문 (initialize 응답의 instructions).
@@ -399,7 +411,13 @@ server.registerTool(
       '내리지 않습니다. 원문은 **확인되는 즉시 멈추고** 열므로 matching_filings 는 근거 1건이고 ' +
       'matching_filings_total 이 창 안의 총수, matching_filings_not_examined_total 은 ' +
       '**열어 보지 않은** 수(상대방이 다르다는 뜻이 아닙니다)입니다. 원문 내려받기 예산을 넘긴 건은 ' +
-      '캐시가 남아 **같은 문서로 한 번 더 실행하면 이어서 대조**됩니다\n\n' +
+      '캐시가 남아 **같은 문서로 한 번 더 실행하면 이어서 대조**됩니다\n' +
+      `- MCP 클라이언트가 약 60초에 호출을 끊으므로 이 도구는 **${detectBudgetSeconds()}초 안에 스스로 멈추고 그때까지의 ` +
+      '판정을 부분 결과로** 냅니다. 잘렸으면 summary.time_budget_truncated · ' +
+      'coverage.not_examined_due_to_time_budget · scope_caveats 맨 앞 · diagnostics.budget 에 ' +
+      '드러납니다 — **못 본 범위는 "후보 없음"이 아니라 not_judged(time_budget_exceeded)** 입니다. ' +
+      '다시 실행하면 원문·법인등록번호·법인 인덱스 캐시 덕에 더 멀리 가지만, **J001 공시 목록은 ' +
+      '캐시하지 않아** 검색은 매번 처음부터 합니다\n\n' +
       '⚠️ 한도성 이사회 의결, 계열 금융회사 약관특례(트랙 B), 보고서명 유형 분류 오차로 실제로는 공시된 ' +
       '거래일 수 있습니다. near_date/in_window_only 는 상대방까지 대조한 것이고 **금액·거래기간까지 ' +
       '대조한 것은 아닙니다** — **scope_caveats** 참조. 미공시 과태료 기본금액 ' +

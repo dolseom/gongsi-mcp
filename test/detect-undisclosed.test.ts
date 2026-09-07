@@ -139,8 +139,11 @@ function makeDeps(opts: {
    * 주지 않으면 `docs` 에 있는 접수번호를 캐시로 본다 (스텁 원문은 콜 없이 즉시 돌아오므로).
    */
   cachedDocs?: Set<string>;
+  /** 주입 시계 (시간 예산 테스트용) — 주지 않으면 도구가 Date.now 를 쓴다 */
+  now?: () => number;
 }): DetectDeps {
   return {
+    ...(opts.now ? { now: opts.now } : {}),
     isDocCached: (rceptNo) =>
       opts.cachedDocs ? opts.cachedDocs.has(rceptNo) : opts.docs?.[rceptNo] !== undefined,
     loadDoc: async (rceptNo) => {
@@ -3567,5 +3570,336 @@ describe('모집단 실패 사유 코드 (rcept_no 경로)', () => {
     const reason = String(r['diagnostics'].population.reason);
     expect(reason).toContain('portal_unavailable');
     expect(reason).toContain('UND_ERR_CONNECT_TIMEOUT');
+  });
+});
+
+describe('시간 예산 — 60초 벽 (작업 4)', () => {
+  /**
+   * J001 검색이 필요한 회사가 **셋**인 문서.
+   *  - 에이사(주) 차입 160억 / 비사(주) 차입 120억  (둘 다 100억 상한 이상 = 자본 무관 확실)
+   *  - 씨사(주) 는 그 둘의 **대여회사** — 자기 자본 기준으로 따로 판정하므로 검색이 하나 더 는다
+   *  - 디사(주) 차입 1억 = **기준 미달 확정** — 예산이 끊겨도 이 판정은 남아 있어야 한다
+   * 검색 순서는 금액 상위부터라 에이사(160) → 씨사(160) → 비사(120) 이다.
+   */
+  const MD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 비금융회사 | 에이사(주) | 1,000 | 20,000 |',
+    '| 비금융회사 | 비사(주) | 1,000 | 20,000 |',
+    '| 비금융회사 | 씨사(주) | 1,000 | 20,000 |',
+    '| 비금융회사 | 디사(주) | 1,000 | 20,000 |',
+    '## (1) 계열회사간 자금거래 현황',
+    '가. 일반 차입',
+    '| (단위 : 백만원) |',
+    '| --- |',
+    '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+    '| --- | --- | --- | --- | --- |',
+    '| 비금융회사 | 에이사(주) | 씨사(주) | 16,000 | 2025-02-19 |',
+    '| 비금융회사 | 비사(주) | 씨사(주) | 12,000 | 2025-06-30 |',
+    '| 비금융회사 | 디사(주) | 에이사(주) | 100 | 2025-03-05 |',
+  ].join('\n');
+
+  const CORPS = {
+    에이사: [{ corpCode: '00111111', corpName: '에이사' }],
+    비사: [{ corpCode: '00222222', corpName: '비사' }],
+    씨사: [{ corpCode: '00333333', corpName: '씨사' }],
+    디사: [{ corpCode: '00444444', corpName: '디사' }],
+  };
+
+  /** 손으로 굴리는 시계 — 실제 sleep 없이 예산을 소진시킨다 */
+  function fakeClock(): { now: () => number; advance: (ms: number) => void } {
+    let t = 1_700_000_000_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  }
+
+  it('★ 예산이 끊겨도 예외를 던지지 않고 부분 결과를 낸다 — 이미 만든 판정은 그대로 남는다', async () => {
+    const c = fakeClock();
+    const calls: CallLog[] = [];
+    const deps = makeDeps({ markdown: MD, corps: CORPS, j001: [], calls, now: c.now });
+    const inner = deps.collectList;
+    // 목록 수집 1회 = 25초 (예산 50초) → 두 번째 회사까지만 검색하고 세 번째는 시작하지 않는다
+    deps.collectList = async (...args) => {
+      c.advance(25_000);
+      return inner(...args);
+    };
+
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      deps,
+    )) as Record<string, any>;
+
+    // ① 예외가 아니라 결과가 돌아온다
+    expect(r['summary']).toBeDefined();
+    // ② 잘렸다는 사실이 최상위에 드러난다 (요약·coverage·caveat·notes 네 곳)
+    expect(r['summary'].time_budget_truncated).toBe(true);
+    expect(r['summary'].time_budget_skipped.companies_not_searched).toBe(1);
+    expect(r['coverage'].not_examined_due_to_time_budget).toBeDefined();
+    expect(String(r['scope_caveats'][0])).toContain('범위 자체가 잘렸습니다');
+    expect((r['notes'] as string[]).some((n) => n.includes('시간 예산으로 중단된 부분 결과'))).toBe(
+      true,
+    );
+
+    const b = r['diagnostics'].budget;
+    expect(b.expired).toBe(true);
+    expect(b.stopped_at).toBe('j001_search');
+    expect(b.truncated).toBe(true);
+    expect(b.budget_ms).toBe(50_000);
+    expect(b.elapsed_ms).toBe(50_000);
+    expect(b.stages.j001_search).toBe(50_000);
+
+    // ⑤ 남은 예산이 임계 미만이면 **새 상류 호출을 시작하지 않는다** — 3개사 중 2개사만 검색
+    expect(calls.filter((x) => x.ty === 'J001')).toHaveLength(2);
+
+    // ③ 이미 만든 판정은 보존된다 — 먼저 본 회사의 후보도, 검색이 필요 없던 기준 미달도
+    expect(r['summary'].undisclosed_candidates).toBe(1);
+    expect(r['undisclosed_candidates'][0].company).toBe('에이사(주)');
+    expect(r['summary'].below_threshold).toBe(1);
+    expect(r['below_threshold'][0].company).toBe('디사(주)');
+
+    // 못 본 회사는 "공시 없음"이 아니라 **미판정**이다
+    const notJudged = r['not_judged'] as Array<Record<string, any>>;
+    const skipped = notJudged.find((x) => x['company'] === '비사(주)')!;
+    expect(skipped['status']).toBe('not_judged');
+    expect(String(skipped['reason'])).toContain('time_budget_exceeded');
+    // 재실행 안내는 **참인 것만** 쓴다 — J001 목록은 캐시하지 않는다
+    expect(String(skipped['reason'])).toContain('J001 공시 목록은 캐시하지 않아');
+  });
+
+  it('예산 안에 완주하면 잘림 표시도 caveat 도 붙지 않는다 (불필요한 경고는 진짜 경고를 묻는다)', async () => {
+    const c = fakeClock();
+    const calls: CallLog[] = [];
+    const deps = makeDeps({ markdown: MD, corps: CORPS, j001: [], calls, now: c.now });
+    const inner = deps.collectList;
+    deps.collectList = async (...args) => {
+      c.advance(1_000); // 회사당 1초 — 3개사 전부 여유
+      return inner(...args);
+    };
+
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      deps,
+    )) as Record<string, any>;
+
+    expect(calls.filter((x) => x.ty === 'J001')).toHaveLength(3);
+    expect(r['summary'].time_budget_truncated).toBeUndefined();
+    expect(r['coverage'].not_examined_due_to_time_budget).toBeUndefined();
+    expect(r['diagnostics'].budget.expired).toBe(false);
+    expect(r['diagnostics'].budget.stopped_at).toBeNull();
+    expect(r['diagnostics'].budget.truncated).toBe(false);
+    expect((r['scope_caveats'] as string[]).some((x) => x.includes('범위 자체가 잘렸습니다'))).toBe(
+      false,
+    );
+    expect((r['notes'] as string[]).some((n) => n.includes('시간 예산'))).toBe(false);
+
+    // 계측 — 어느 구간이 예산을 먹는지 실물에서 보려면 단계가 전부 잡혀야 한다
+    expect(Object.keys(r['diagnostics'].budget.stages).sort()).toEqual([
+      'aggregate',
+      'j001_search',
+      'judge',
+      'parse',
+      'population',
+      'source_document',
+      'threshold_join',
+    ]);
+    // 이 실행에서 시간을 쓴 곳은 목록 수집(3개사 × 1초)뿐이다
+    expect(r['diagnostics'].budget.stages.j001_search).toBe(3_000);
+    expect(r['diagnostics'].budget.elapsed_ms).toBe(3_000);
+  });
+
+  it('예산이 끊기면 J001 원문을 새로 열지 않는다 — 보류로 남기고 사유를 시간으로 밝힌다', async () => {
+    const c = fakeClock();
+    const docCalls: string[] = [];
+    const deps = makeDeps({
+      markdown: MD,
+      corps: CORPS,
+      j001: (corpCode: string) =>
+        corpCode === '00111111'
+          ? [
+              disc({
+                corp_code: '00111111',
+                report_nm: '대규모내부거래관련이사회의결및공시(자금차입)',
+                rcept_no: '20250210000123',
+                rcept_dt: '20250210',
+              }),
+            ]
+          : [],
+      docs: { '20250210000123': doc80718('씨사(주)') },
+      // 캐시에 없는 원문이라 콜이 나간다 — 시간 예산 대상이다
+      cachedDocs: new Set<string>(),
+      docCalls,
+      now: c.now,
+    });
+    const inner = deps.collectList;
+    deps.collectList = async (...args) => {
+      c.advance(49_000); // 남은 1초 — 소형 호출 임계(1.5초)에도 못 미친다
+      return inner(...args);
+    };
+
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      deps,
+    )) as Record<string, any>;
+
+    // 원천 J004 는 예산이 넉넉할 때 읽었고, J001 원문은 열지 않았다
+    expect(docCalls).toContain('20260601001646');
+    expect(docCalls).not.toContain('20250210000123');
+    expect(r['diagnostics'].filing_docs.over_deadline).toBe(1);
+
+    const notJudged = r['not_judged'] as Array<Record<string, any>>;
+    const a = notJudged.find((x) => x['company'] === '에이사(주)')!;
+    expect(String(a['reason'])).toContain('type_filing_present_counterparty_unconfirmed');
+    expect(String(a['reason'])).toContain('시간 예산');
+    expect(a['matching_filings'][0].doc_read).toBe('deadline_exceeded');
+    // 상대방을 확인하지 못했으므로 "공시 존재"로 올리지 않는다 (거짓 안심 금지)
+    expect(r['summary'].j001_filing_near_date).toBe(0);
+  });
+
+  it('예산이 없으면 자동 워밍이 기업개황을 부르지 않는다 — 시도하지 않은 이름은 다음 실행이 채운다', async () => {
+    const c = fakeClock();
+    const jurirCalls: string[] = [];
+    const pop: Population = {
+      corpCodes: new Map([['00111111', '에이사(주)']]),
+      group: { representative_company: '에이사(주)' },
+      unjoined: ['씨사(주)'],
+      jurirNoByName: new Map([['씨사', '1101110033333']]),
+    };
+    const deps = makeDeps({
+      markdown: MD,
+      corps: CORPS,
+      pop,
+      j001: [],
+      jurir: { '00333333': { status: 'ok', jurirNo: '1101110033333' } },
+      jurirCalls,
+      now: c.now,
+    });
+    const innerDoc = deps.loadDoc;
+    // 원천 문서를 읽는 데 55초가 걸린 상황 — 워밍은 시작하지 않아야 한다
+    deps.loadDoc = async (rceptNo) => {
+      c.advance(55_000);
+      return innerDoc(rceptNo);
+    };
+
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      deps,
+    )) as Record<string, any>;
+
+    const warming = r['diagnostics'].population.warming;
+    expect(warming.over_deadline).toBe(true);
+    expect(warming.skipped_deadline).toBe(1);
+    expect(warming.lookups).toBe(0);
+    expect(jurirCalls).toHaveLength(0); // 기업개황 콜이 나가지 않았다
+    expect(warming.skipped[0].reason).toBe('deadline');
+    expect(r['diagnostics'].budget.stopped_at).toBe('warming');
+    expect((r['notes'] as string[]).some((n) => n.includes('법인등록번호를 대조하지 못했습니다'))).toBe(
+      true,
+    );
+  });
+});
+
+
+/**
+ * ★ 시간 예산 env override (`GONGSI_TIME_BUDGET_MS`)
+ *
+ * 도구 **입력**으로는 열지 않았다(60초 벽은 클라이언트의 성질이다). 대신 환경변수로
+ * **낮추는 것만** 허용해 "예산이 끊겼을 때 부분 결과가 정직하게 나오는가"를 실물에서
+ * 재현할 수 있게 했다. 여기서 보는 것은 **적용값이 그대로 진단·문구에 드러나는가**다 —
+ * 안내 문구가 "50초"라고 말하는데 실제는 8초였다면 사용자가 부분 결과를 재현할 수 없다.
+ */
+describe('시간 예산 env override — GONGSI_TIME_BUDGET_MS', () => {
+  const MD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 비금융회사 | 에이사(주) | 1,000 | 20,000 |',
+    '| 비금융회사 | 씨사(주) | 1,000 | 20,000 |',
+    '## (1) 계열회사간 자금거래 현황',
+    '가. 일반 차입',
+    '| (단위 : 백만원) |',
+    '| --- |',
+    '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+    '| --- | --- | --- | --- | --- |',
+    '| 비금융회사 | 에이사(주) | 씨사(주) | 16,000 | 2025-02-19 |',
+  ].join('\n');
+
+  const CORPS = {
+    에이사: [{ corpCode: '00111111', corpName: '에이사' }],
+    씨사: [{ corpCode: '00333333', corpName: '씨사' }],
+  };
+
+  function fakeClock(): { now: () => number; advance: (ms: number) => void } {
+    let t = 1_700_000_000_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  }
+
+  async function runWithBudgetEnv(value: string | undefined): Promise<Record<string, any>> {
+    if (value === undefined) delete process.env['GONGSI_TIME_BUDGET_MS'];
+    else process.env['GONGSI_TIME_BUDGET_MS'] = value;
+    __resetConfig();
+    const c = fakeClock();
+    const deps = makeDeps({ markdown: MD, corps: CORPS, j001: [], now: c.now });
+    const inner = deps.collectList;
+    // 목록 수집 1회 = 30초. 기본 50초이면 둘 다 보고, 8초로 낮추면 첫 건에서 끊긴다.
+    deps.collectList = async (...args) => {
+      c.advance(30_000);
+      return inner(...args);
+    };
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      deps,
+    )) as Record<string, any>;
+  }
+
+  afterEach(() => {
+    delete process.env['GONGSI_TIME_BUDGET_MS'];
+    __resetConfig();
+  });
+
+  it('env 없으면 기본 50초/준비 20초 · budget_source=default', async () => {
+    const b = (await runWithBudgetEnv(undefined))['diagnostics'].budget;
+    expect(b.budget_ms).toBe(50_000);
+    expect(b.prep_budget_ms).toBe(20_000);
+    expect(b.budget_source).toBe('default');
+  });
+
+  it('★ env=8000 이면 8초가 적용되고 준비 예산은 40% 비율을 유지한다 (3,200ms)', async () => {
+    const r = await runWithBudgetEnv('8000');
+    const b = r['diagnostics'].budget;
+    expect(b.budget_ms).toBe(8_000);
+    expect(b.prep_budget_ms).toBe(3_200);
+    expect(b.budget_source).toBe('env');
+    // 실제로 끊겼고, 부분 결과가 그 사실을 드러낸다
+    expect(b.expired).toBe(true);
+    expect(r['summary'].time_budget_truncated).toBe(true);
+  });
+
+  it('★ 안내 문구는 상수가 아니라 **실제 적용값**을 말한다 — "8초"이지 "50초"이 아니다', async () => {
+    const r = await runWithBudgetEnv('8000');
+    const all = [...(r['notes'] as string[]), ...(r['scope_caveats'] as string[])].join('\n');
+    expect(all).toContain('8초');
+    expect(all).not.toContain('50초');
+  });
+
+  it('env 값은 config 가 가두어 들어온다 — 90000 은 50초, 1000 은 5초', async () => {
+    expect((await runWithBudgetEnv('90000'))['diagnostics'].budget.budget_ms).toBe(50_000);
+    const low = (await runWithBudgetEnv('1000'))['diagnostics'].budget;
+    expect(low.budget_ms).toBe(5_000);
+    // 준비 예산 2,000ms ≥ MIN_SMALL_CALL_MS(1,500) — 하한을 5초로 잡은 이유다
+    expect(low.prep_budget_ms).toBe(2_000);
+  });
+
+  it('숨자가 아니면 기본값을 쓴다 (budget_source=default)', async () => {
+    const b = (await runWithBudgetEnv('abc'))['diagnostics'].budget;
+    expect(b.budget_ms).toBe(50_000);
+    expect(b.budget_source).toBe('default');
   });
 });

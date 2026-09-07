@@ -9,6 +9,7 @@
  */
 
 import { getConfig, USER_AGENT } from '../lib/config.js';
+import type { DeadlineLike } from '../lib/deadline.js';
 import { getLogger } from '../lib/logger.js';
 import { getStore, nextKstMidnightIso } from '../lib/store.js';
 import {
@@ -88,16 +89,37 @@ export interface CollectResult {
   calls: number;
 }
 
+export interface DartClientOptions {
+  /**
+   * 남은 시간 예산 — **주는 도구에만** 적용된다 (현재는 detect_undisclosed_transactions 뿐).
+   *
+   * 주면 두 가지가 달라진다: ① 요청 타임아웃이 `min(설정값, 남은 예산)` 으로 좁혀지고
+   * ② 남은 예산이 한 번의 요청도 감당하지 못하면 **아예 시작하지 않고** 즉시 실패한다.
+   * 주지 않으면 종전 동작 그대로다 — audit·search 등 다른 도구의 타임아웃·재시도를 바꾸면
+   * 회귀 범위가 이 작업의 목적(시간 관리)을 넘어선다.
+   */
+  deadline?: DeadlineLike;
+}
+
+/**
+ * 예산이 붙은 요청의 **최소 시도 시간**. 이보다 적게 남았으면 시작하지 않는다 —
+ * 남은 100ms 로 요청을 걸면 실패가 확정된 호출에 예산과 재시도만 쓴다.
+ * 근거: 목록 측정 호출 실측 0.4초(`search/batch.ts` SECONDS_PER_MEASURE)의 두 배 남짓.
+ */
+const MIN_REQUEST_MS = 1_000;
+
 export class DartClient {
   private readonly apiKey: string;
   private readonly store = getStore();
+  private readonly deadline: DeadlineLike | undefined;
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, opts?: DartClientOptions) {
     const key = apiKey ?? getConfig().dartApiKey;
     if (!key) {
       throw new MissingApiKeyError('DART_API_KEY', 'DART 전자공시 조회에 필요합니다.');
     }
     this.apiKey = key;
+    this.deadline = opts?.deadline;
   }
 
   /** 오늘 사용한 호출 수 */
@@ -136,6 +158,13 @@ export class DartClient {
    * 대상: 네트워크 오류 · 429 · 5xx. 백오프 min(2^n, 8)초, 최대 3회.
    *
    * ⚠️ 예외 메시지에 URL을 절대 넣지 않는다 — 쿼리스트링에 인증키가 들어 있다.
+   *
+   * ★ 시간 예산(`opts.deadline`)이 붙어 있으면 **타임아웃·백오프를 남은 예산 안으로 좁힌다.**
+   *   좁히지 않으면 타임아웃 100초 × 재시도 3회 + 백오프 7초 = 최악 307초라, 한 번의 상류
+   *   지연만으로 60초 벽을 그대로 넘긴다(Codex ③).
+   *   **진행 중인 요청은 `AbortSignal` 이 끊는다** — 이 클래스가 유일하게 진행 중인 일을
+   *   중단하는 지점이다. 예산이 끝난 뒤 도착하는 응답은 어차피 결과에 실리지 못하고,
+   *   붙잡고 있으면 뒤 단계가 시작조차 못 하기 때문이다.
    */
   private async request(
     path: string,
@@ -146,17 +175,35 @@ export class DartClient {
     let lastErrName = '';
 
     for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = this.deadline?.remainingMs();
+      if (remaining !== undefined && remaining < MIN_REQUEST_MS) {
+        throw new ToolError(
+          'deadline_exceeded',
+          `남은 시간 예산(${remaining}ms)으로는 DART 요청을 끝낼 수 없어 시작하지 않았습니다 ` +
+            `(60초 벽 대비 — 시도 ${attempt + 1}회차).`,
+          { path, remaining_ms: remaining },
+        );
+      }
+      const timeoutMs =
+        remaining === undefined ? cfg.readTimeoutMs : Math.min(cfg.readTimeoutMs, remaining);
       try {
         // NOTE: connect/read 타임아웃 분리는 undici Agent 가 필요하다.
         // 지금은 전체 타임아웃만 적용한다. (TODO: dispatcher 도입 시 분리)
         const res = await fetch(url, {
           headers: { 'User-Agent': USER_AGENT },
-          signal: AbortSignal.timeout(cfg.readTimeoutMs),
+          signal: AbortSignal.timeout(timeoutMs),
         });
 
         if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
           log.warn('재시도 가능한 상태코드', { path, status: res.status, attempt: attempt + 1 });
-          await sleep(Math.min(2 ** attempt, 8) * 1000);
+          if (!(await this.backoff(attempt))) {
+            throw new ToolError(
+              'deadline_exceeded',
+              `DART 가 재시도 가능한 상태코드(${res.status})를 줬으나 남은 시간 예산으로는 ` +
+                '재시도할 수 없어 중단했습니다.',
+              { path, status: res.status },
+            );
+          }
           continue;
         }
 
@@ -169,14 +216,35 @@ export class DartClient {
           bytes,
         };
       } catch (err) {
+        // 예산 때문에 우리가 던진 것은 재시도 대상이 아니다 — 그대로 올린다
+        if (err instanceof ToolError && err.code === 'deadline_exceeded') throw err;
         lastErrName = err instanceof Error ? err.name : 'UnknownError';
         log.warn('요청 실패', { path, error: lastErrName, attempt: attempt + 1 });
-        await sleep(Math.min(2 ** attempt, 8) * 1000);
+        if (!(await this.backoff(attempt))) {
+          throw new ToolError(
+            'deadline_exceeded',
+            `DART 요청이 실패했고(${lastErrName}) 남은 시간 예산으로는 재시도할 수 없어 중단했습니다.`,
+            { path },
+          );
+        }
       }
     }
     throw new ToolError('dart_api_error', `DART 요청이 3회 재시도 후에도 실패했습니다 (${lastErrName || 'HTTP 오류'}).`, {
       path,
     });
+  }
+
+  /**
+   * 재시도 백오프. 시간 예산이 붙어 있으면 **백오프 + 다음 시도 최소시간**이 남아 있을 때만
+   * 기다린다 — 남은 예산을 sleep 으로 다 태우고 나서 시작도 못 하는 것이 가장 나쁘다.
+   * @returns 재시도해도 되면 true, 예산이 모자라 포기해야 하면 false
+   */
+  private async backoff(attempt: number): Promise<boolean> {
+    const waitMs = Math.min(2 ** attempt, 8) * 1000;
+    const remaining = this.deadline?.remainingMs();
+    if (remaining !== undefined && remaining < waitMs + MIN_REQUEST_MS) return false;
+    await sleep(waitMs);
+    return true;
   }
 
   /** 응답 바이트 → JSON. 파싱 실패는 규격 에러로 바꾼다. */

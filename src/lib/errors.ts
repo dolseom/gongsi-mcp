@@ -23,6 +23,12 @@ export type ErrorCode =
   | 'egroup_api_error'
   | 'egroup_parse_error'
   | 'upstream_forbidden'
+  /**
+   * 도구의 시간 예산(60초 벽 대비)이 남지 않아 상류 호출을 시작하지 않았다.
+   * detect_undisclosed_transactions 내부에서는 대부분 잡혀 **부분 결과 + 미판정**이 되고,
+   * 이 코드가 응답으로 나가는 것은 원천 문서조차 못 받은 예외적 경우다.
+   */
+  | 'deadline_exceeded'
   | 'internal_error';
 
 export interface ErrorResponse {

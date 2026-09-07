@@ -91,6 +91,8 @@ import { ensureCorpIndex, fetchJurirNo, type JurirNoFetch } from '../resolver/co
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
+import { Deadline } from '../lib/deadline.js';
+import { getConfig } from '../lib/config.js';
 import { ToolError } from '../lib/errors.js';
 import { isValidYMD, toYMD } from '../rules/business-days.js';
 
@@ -127,6 +129,72 @@ export const detectUndisclosedTransactionsInput = z.object({
 export type DetectUndisclosedTransactionsInput = z.infer<
   typeof detectUndisclosedTransactionsInput
 >;
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 시간 예산 (60초 벽 — 함정 7)
+ *
+ * ★ **건수 예산(아래 MAX_*)은 시간 예산이 아니다.** 건수 상한을 곱한 최악 소요를 실측 단가로
+ *   계산하면 이미 60초를 넘는다. 단가는 전부 이 저장소에 기록된 실측이다:
+ *
+ *   | 항목                          | 단가   | 출처                                              |
+ *   |------------------------------|--------|---------------------------------------------------|
+ *   | 목록 수집 1콜                 | 1.7초  | search/batch.ts SECONDS_PER_CALL (16페이지 27.34초)|
+ *   | 목록 측정 1콜(page_count=1)   | 0.4초  | search/batch.ts SECONDS_PER_MEASURE               |
+ *   | J001 원문 콜드 1건            | 0.3초  | MAX_FILING_DOC_FETCHES 주석 실측                   |
+ *   | 기업개황(법인등록번호) 1콜    | 0.4초  | 직접 실측 없음 — 같은 크기의 측정 호출로 대신 잡음  |
+ *   | 법인 인덱스 적재(3.4MB ZIP)   | 3.8~7.8초 | 2026-09-07 실측 (MIN_CORP_INDEX_MS 주석)        |
+ *
+ *   구간별 최악 = 상한 × 단가:
+ *     자동 워밍 40회 × 0.4 = 16.0초 · 동명 판별 20회 × 0.4 = 8.0초
+ *     J001 검색 20개사 × (0.4 + 1.7) = 42.0초 (회사당 1페이지 가정 — 페이지가 늘면 더)
+ *     원문 열기 40건 × 0.3 = 12.0초 · 원천 J004(목록 1 + 원문 1) ≈ 2.0초
+ *     ─────────────────────────────────────────────── 합계 80.0초 > 60초 벽
+ *
+ *   게다가 단일 HTTP 요청 하나가 타임아웃 100초 × 재시도 3회 + 백오프 7초 = 최악 307초다
+ *   (dart.ts). 그래서 **시간**을 따로 재고, 끊길 것 같으면 다음 일을 시작하지 않는다.
+ *
+ * ★ 캐시가 실행 간에 남는 범위(재실행하면 빨라지는 것): J001 **원문**(store.storeBody) ·
+ *   법인등록번호(store.setJurirNo) · 법인 인덱스(corps 표) · 포털 소속회사 목록(연단위).
+ *   ⚠️ **J001 공시 목록은 캐시하지 않는다**(설계 불변식 "공시 목록 미캐시") — 검색을 못 마친
+ *   회사는 재실행해도 처음부터 조회한다. 안내 문구에서 이 둘을 뭉뚱그리지 말 것.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 도구 한 번의 **전체** 시간 예산.
+ *
+ * 60초 벽에서 10초를 뺀 값이다. 10초 여유의 근거: ① 마지막으로 시작한 상류 호출이 끝나는 시간
+ * (요청 타임아웃을 남은 예산으로 좁히므로 상한이 곧 남은 예산이다) ② 결과 JSON 직렬화·전송
+ * ③ 클라이언트 왕복. 이 예산을 넘기면 **결과가 통째로 사라지므로** 넉넉하게 잡는 쪽이 옳다.
+ */
+export const TIME_BUDGET_MS = 50_000;
+/**
+ * **준비 단계**(법인 인덱스 적재 + 자동 워밍)에 쓸 수 있는 시간 상한 — 전체 예산의 40%.
+ * 준비는 조인 품질을 올릴 뿐 그 자체로 판정을 만들지 않는다. 워밍 최악이 16초(40회 × 0.4)라
+ * 여기에 인덱스 적재까지 더하면 준비만으로 예산 절반을 넘길 수 있어, 판정 구간(검색 42초 ·
+ * 원문 12초 최악)에 최소 30초를 남긴다.
+ */
+export const PREP_BUDGET_MS = 20_000;
+/**
+ * 목록 수집(J001/J004)을 **새로 시작할** 최소 잔여 시간.
+ * 근거: 회사 1개사 = 측정 0.4초 + 수집 1.7초 ≈ 2.1초. 여유를 붙여 3초.
+ */
+const MIN_LIST_CALL_MS = 3_000;
+/**
+ * 단건 소형 호출(원문 1건 0.3초 · 기업개황 1콜 0.4초)을 새로 시작할 최소 잔여 시간.
+ * 목록보다 훨씬 싸므로 임계도 낮다 — 같은 임계를 쓰면 남은 2초로 열 수 있는 원문 대여섯 건을
+ * 통째로 버린다.
+ */
+const MIN_SMALL_CALL_MS = 1_500;
+/**
+ * 법인 인덱스(3.4MB ZIP → 28MB XML)를 적재할 최소 잔여 시간.
+ * 적재 도중 예산이 끊기면 워밍도 판정도 못 하므로, 확보하지 못하면 아예 시작하지 않는다.
+ *
+ * 실측 2026-09-07 (118,868건 ZIP 적재, 같은 날 2회): corp_index 7,755ms / 3,818ms.
+ * 15초는 느린 쪽의 약 2배 — 네트워크 편차(같은 날 2배 차이)를 감안한 여유.
+ * 같은 실행의 다른 구간: warming 2,699ms(27콜) · j001_search 3,182ms · judge 1,027ms,
+ * 전체 14,877ms / DART HTTP 53콜 (rcept_no 경로) · group 경로 7,430ms / 55콜.
+ */
+const MIN_CORP_INDEX_MS = 15_000;
 
 /**
  * 동명 1건을 확정하려고 기업개황을 조회할 **후보 수 상한**.
@@ -188,6 +256,16 @@ const WARM_SUPPRESS_DAYS = 30;
  */
 const WARM_LOGIC_VERSION = 3;
 /** 억제 키 — 법인등록번호 + 탐색 로직 버전 */
+/**
+ * 예산 ms 를 안내 문구용 "초" 표기로. 기본값 50,000ms 는 종전과 같은 `50` 이 되고,
+ * env override 로 들어온 8,500ms 같은 값은 `8.5` 가 된다 — 문구가 **실제 적용값**을 말해야
+ * 사용자가 부분 결과의 이유를 재현할 수 있다.
+ */
+function budgetSeconds(ms: number): string {
+  const s = ms / 1000;
+  return Number.isInteger(s) ? String(s) : s.toFixed(1);
+}
+
 function warmKey(jurirNo: string): string {
   return `warm:v${WARM_LOGIC_VERSION}:${jurirNo}`;
 }
@@ -256,9 +334,14 @@ export interface DetectDeps {
    * 쓰기 위한 사전 확인이다 (캐시 히트는 60초 벽과 무관하다).
    */
   isDocCached: (rceptNo: string) => boolean;
+  /**
+   * 시계 주입점 — **시간 예산 테스트를 실제 sleep 없이** 돌리기 위한 것이다 (기본 Date.now).
+   * 판정에는 쓰지 않는다 (판정 기준일은 `input.today`).
+   */
+  now?: () => number;
 }
 
-function realDeps(client: DartClient): DetectDeps {
+function realDeps(client: DartClient, budget: Deadline): DetectDeps {
   return {
     loadDoc: (rceptNo) => loadDocument(rceptNo, client),
     collectList: (corpCode, pblntfDetailTy, from, to) =>
@@ -274,6 +357,18 @@ function realDeps(client: DartClient): DetectDeps {
         },
         from,
         to,
+        {
+          // 청크 타임아웃을 남은 예산 안으로 좁힌다. ⚠️ 이 타임아웃은 `Promise.race` 라
+          // **진행 중인 수집을 취소하지 못하지만**(Codex ③), 그 요청 자체는 DartClient 가
+          // 같은 예산으로 abort 하므로 뒤에서 계속 도는 일은 없다.
+          perChunkTimeoutMs: Math.max(
+            MIN_LIST_CALL_MS,
+            Math.min(budget.budgetMs, budget.remainingMs()),
+          ),
+          // 60초 벽 사전 예측도 **남은 예산** 기준으로 한다 — 45초짜리 수집을 시작하면
+          // 한 회사가 예산을 통째로 먹어 나머지 회사가 전부 미판정이 된다.
+          maxToolSeconds: Math.max(1, Math.floor(budget.remainingMs() / 1000)),
+        },
       ),
     resolvePop: (input) => resolvePopulation(input),
     findCorps: (name) =>
@@ -660,7 +755,9 @@ function expectedSubjectClass(typeLabel: string): Exclude<AmbiguousSubjectClass,
 type FilingDocRead =
   | { read: 'ok'; facts: FilingDocFacts; acode: string | null }
   | { read: 'error'; error: string }
-  | { read: 'budget_exceeded' };
+  | { read: 'budget_exceeded' }
+  /** **건수**가 아니라 **시간** 예산(60초 벽)이 모자라 열지 않았다 — 둘은 대응이 다르다 */
+  | { read: 'deadline_exceeded' };
 
 /** 회사별 기준금액 (J004 재무현황 기반 근사치) */
 export interface ApproxThreshold {
@@ -728,7 +825,7 @@ interface FilingRef {
   report_nm: string;
   viewer_url: string;
   /** 이 공시의 원문을 열었는가 (유형 미상 공시 + 보고서명으로 유형이 확정된 매칭 공시 공통) */
-  doc_read?: 'ok' | 'error' | 'budget_exceeded' | 'no_counterparty_field';
+  doc_read?: 'ok' | 'error' | 'budget_exceeded' | 'deadline_exceeded' | 'no_counterparty_field';
   /** 원문 '거래상대방' (정정본은 정정전·정정후가 함께) — 이 거래의 상대방과 대조한 값 */
   doc_counterparties?: string[];
   /** 원문 '거래대상'/'거래목적물' — 유형 참고 */
@@ -1239,7 +1336,9 @@ export type WarmSkipReason =
   | 'suppressed'
   | 'no_candidates'
   | 'too_many_candidates'
-  | 'over_budget';
+  | 'over_budget'
+  /** 조회 **횟수**가 아니라 **시간** 예산이 모자라 대조하지 않았다 (60초 벽) */
+  | 'deadline';
 
 /**
  * 자동 워밍 진단 — 시도했는데 못 채운 것을 **수치와 이름으로** 남긴다.
@@ -1265,10 +1364,16 @@ export interface WarmingDiagnostics {
   /** 기업개황 조회가 실패한 횟수 — 불일치와 구분한다 */
   lookup_errors: number;
   over_budget: boolean;
+  /** **시간** 예산이 모자라 대조를 시작하지 못한 이름 수 (조회 횟수 예산과 별개다) */
+  skipped_deadline: number;
+  /** 시간 예산 때문에 워밍을 중간에 멈췄는가 */
+  over_deadline: boolean;
   /** 이 실행에서 DART 법인 인덱스를 새로 적재했는가 */
   corp_index_loaded: boolean;
   /** 인덱스 적재를 시도했으나 실패한 사유 (있으면) */
   corp_index_error?: string;
+  /** 시간 예산이 모자라 인덱스 적재를 **시작하지 않은** 사유 (실패와 구분한다) */
+  corp_index_skipped?: string;
   resolved: Array<{ company: string; corp_code: string; jurir_no: string; candidates: number }>;
   /**
    * 조인하지 못한 회사의 **이름과 사유** — 수치만으로는 어느 회사를 손으로 보충해야 하는지
@@ -1301,6 +1406,10 @@ async function warmJurirJoins(
   deps: DetectDeps,
   population: Population,
   today: string,
+  /** 전체 시간 예산 (60초 벽) */
+  budget: Deadline,
+  /** 준비 단계 자체 상한 — 워밍이 판정 구간의 시간을 먹지 않게 한다 */
+  prepBudget: Deadline,
 ): Promise<WarmingDiagnostics> {
   const warming: WarmingDiagnostics = {
     attempted: 0,
@@ -1313,12 +1422,17 @@ async function warmJurirJoins(
     no_candidates: 0,
     lookup_errors: 0,
     over_budget: false,
+    skipped_deadline: 0,
+    over_deadline: false,
     corp_index_loaded: false,
     resolved: [],
     skipped: [],
     skipped_total: 0,
     skipped_truncated: false,
   };
+  /** 워밍은 전체 예산과 준비 예산 **둘 다** 통과해야 계속한다 */
+  const canWarm = (): boolean =>
+    budget.canAfford(MIN_SMALL_CALL_MS) && prepBudget.canAfford(MIN_SMALL_CALL_MS);
   const store = getStore();
   const suppressAfter = addDaysYmd(today, -WARM_SUPPRESS_DAYS);
 
@@ -1382,6 +1496,15 @@ async function warmJurirJoins(
     candidates: Array<{ corpCode: string; corpName: string }>;
   }> = [];
   for (const rawName of population.unjoined) {
+    // 후보 탐색은 API 콜이 없지만 공짜도 아니다 — 로컬 LIKE 스캔은 인덱스를 못 타고
+    // 이름당 (조각길이 − 3)회 돈다 (실측 67개사 151회 1.4초). 예산이 끊기면 여기서도 멈춘다.
+    if (!canWarm()) {
+      warming.over_deadline = true;
+      warming.skipped_deadline++;
+      budget.markStopped('warming');
+      noteSkip(rawName, 'deadline');
+      continue;
+    }
     const nameKey = normalizeCompanyName(rawName);
     const portalJurir = population.jurirNoByName?.get(nameKey);
     if (!portalJurir) {
@@ -1409,6 +1532,15 @@ async function warmJurirJoins(
   // ── ② 후보 수 오름차순으로 예산 소진 (동수는 포털 목록 순서 유지) ──
   planned.sort((a, b) => a.candidates.length - b.candidates.length);
   for (const p of planned) {
+    // 시간 예산도 이름 단위로 끊는다 (아래 조회 횟수 예산과 같은 이유) — 시도하지 않았으므로
+    // 억제 기록도 남기지 않아 다음 실행이 이어서 채운다.
+    if (!canWarm()) {
+      warming.over_deadline = true;
+      warming.skipped_deadline++;
+      budget.markStopped('warming');
+      noteSkip(p.company, 'deadline', p.candidates.length);
+      continue;
+    }
     if (warming.lookups + p.candidates.length > MAX_WARM_LOOKUPS) {
       // 예산을 반쯤 쓴 채 이름을 끊으면 어느 후보를 봤는지가 흐려진다 — 이름 단위로 끊는다.
       // 시도하지 않았으므로 억제 기록도 남기지 않는다 → 다음 실행이 이어서 채운다.
@@ -1475,12 +1607,40 @@ export async function detectUndisclosedTransactions(
   }
 
   const today = input.today ?? toYMD(new Date());
+  /**
+   * ── 시간 예산 (60초 벽) ──
+   * `budget` 은 실행 전체, `prepBudget` 은 준비 단계(인덱스 적재 + 워밍)의 자체 상한이다.
+   * 둘 다 같은 시계로 같은 시점에 출발하므로 준비 구간은 두 조건을 모두 만족해야 진행된다.
+   *
+   * ★ 입력으로 열지 않았다: 60초 벽은 **MCP 클라이언트의 성질**이지 질문의 성질이 아니다.
+   *   올려도 클라이언트가 60초에 끊고, 내리면 결과만 더 부분적이 된다 — 올바른 값이 하나뿐인
+   *   손잡이는 만들지 않는다. 테스트는 `deps.now` 로 시계를 주입해 조정한다.
+   *
+   * ★ 다만 환경변수 `GONGSI_TIME_BUDGET_MS` 로 **낮추는 것만** 허용한다 (config.ts). 상수만
+   *   있으면 "예산이 끊겼을 때 부분 결과가 정직하게 나오는가"를 실물에서 재현할 방법이 없다.
+   *   올릴 수는 없다 — 클라이언트가 어차피 60초에 끊는다.
+   */
+  const nowFn = depsOverride?.now ?? Date.now;
+  const budgetOverrideMs = getConfig().detectTimeBudgetMs;
+  const budgetMs = budgetOverrideMs ?? TIME_BUDGET_MS;
+  const budgetSource: 'default' | 'env' = budgetOverrideMs === undefined ? 'default' : 'env';
+  /** 준비 단계 상한은 전체의 40% — 예산을 낮춰도 판정 구간에 60% 가 남도록 비율을 유지한다 */
+  const prepBudgetMs = Math.min(PREP_BUDGET_MS, Math.floor(budgetMs * 0.4));
+  const budget = new Deadline(budgetMs, nowFn);
+  const prepBudget = new Deadline(prepBudgetMs, nowFn);
+  budget.enter('source_document');
   // 워밍이 법인 인덱스를 적재할 때 같은 클라이언트를 쓴다 (테스트 주입 경로에는 클라이언트가 없다)
-  const client = depsOverride ? null : new DartClient();
-  const deps = depsOverride ?? realDeps(client!);
+  const client = depsOverride ? null : new DartClient(undefined, { deadline: budget });
+  const deps = depsOverride ?? realDeps(client!, budget);
+  /** 이 실행이 실제로 쓴 DART HTTP 콜 수 — `list_calls` 는 회사당 1 카운터라 콜 수가 아니다 */
+  const dartCallsBefore = client?.todayCalls() ?? null;
   const notes: string[] = [];
   let listCalls = 0;
   let partialLists = false;
+  /** 시간 예산으로 J001 검색을 **시작조차 못 한** 회사 (정규화 이름) */
+  const deadlineSkippedKeys = new Set<string>();
+  /** 시간 예산으로 법인등록번호 동명 대조를 건너뛴 이름 수 */
+  let jurirDeadlineSkips = 0;
 
   // ── ① 원천 문서 확정 ──
   let sourceRceptNo: string;
@@ -1514,22 +1674,34 @@ export async function detectUndisclosedTransactions(
 
     let indexLoaded = false;
     let indexError: string | undefined;
+    let indexSkipped: string | undefined;
     // 인덱스가 비어 있으면 findCorps·searchCorps 가 항상 0건이라 워밍이 무의미하다.
     // 테스트 주입 경로(depsOverride)는 실제 HTTP 가 나가면 안 되므로 건너뛴다.
     if (client && getStore().corpCount() === 0) {
-      try {
-        await ensureCorpIndex(client);
-        indexLoaded = true;
-      } catch (err) {
-        // 폴백 — 워밍은 그대로 진행하고(캐시가 부분적으로 있을 수 있다) 사유만 남긴다
-        indexError = err instanceof Error ? err.message.split('\n')[0] : String(err);
-        log.warn('법인 인덱스 자동 적재 실패 — 워밍은 기존 인덱스로 진행', { error: indexError });
+      if (!budget.canAfford(MIN_CORP_INDEX_MS) || !prepBudget.canAfford(MIN_CORP_INDEX_MS)) {
+        // 적재하다 예산이 끊기면 워밍도 판정도 못 한다 — 확보 못 하면 시작하지 않는다
+        indexSkipped =
+          `시간 예산 부족 — 남은 ${budget.remainingMs()}ms(준비 예산 ${prepBudget.remainingMs()}ms)로는 ` +
+          `법인 인덱스(3.4MB)를 적재하지 않았습니다. 인덱스는 한 번 적재하면 영구 보관되므로 ` +
+          `resolve_entity 를 한 번 호출하거나 이 도구를 다시 실행하면 채워집니다`;
+        budget.markStopped('corp_index');
+      } else {
+        try {
+          await budget.during('corp_index', () => ensureCorpIndex(client));
+          indexLoaded = true;
+        } catch (err) {
+          // 폴백 — 워밍은 그대로 진행하고(캐시가 부분적으로 있을 수 있다) 사유만 남긴다
+          indexError = err instanceof Error ? err.message.split('\n')[0] : String(err);
+          log.warn('법인 인덱스 자동 적재 실패 — 워밍은 기존 인덱스로 진행', { error: indexError });
+        }
       }
     }
 
     let w: WarmingDiagnostics;
     try {
-      w = await warmJurirJoins(deps, pop, today);
+      w = await budget.during('warming', () =>
+        warmJurirJoins(deps, pop, today, budget, prepBudget),
+      );
     } catch (err) {
       // 워밍은 조인 **품질**을 올리는 준비 단계다 — 여기서 던지면 rcept_no 경로의 상위 catch 가
       // 이를 "포털 목록을 못 불러왔다"로 오해해 **모집단 전체를 버린다**(종전보다 나빠진다).
@@ -1542,6 +1714,7 @@ export async function detectUndisclosedTransactions(
     }
     w.corp_index_loaded = indexLoaded;
     if (indexError) w.corp_index_error = indexError;
+    if (indexSkipped) w.corp_index_skipped = indexSkipped;
 
     let result = pop;
     if (w.joined > 0) {
@@ -1569,6 +1742,18 @@ export async function detectUndisclosedTransactions(
             : ''),
       );
     }
+    if (w.over_deadline) {
+      notes.push(
+        `⚠️ 시간 예산(준비 단계 ${budgetSeconds(prepBudgetMs)}초 / 전체 ${budgetSeconds(budgetMs)}초)이 ` +
+          `모자라 미조인 계열사 ${w.skipped_deadline}개사는 법인등록번호를 대조하지 못했습니다 ` +
+          '(warming.skipped 의 reason:"deadline") — 그 회사가 상대방인 거래는 ' +
+          'counterparty_not_joined 로 남습니다. 채워 둔 법인등록번호는 캐시에 영구 남으므로 ' +
+          '다시 실행하면 이어서 채웁니다.',
+      );
+    }
+    if (w.corp_index_skipped) {
+      notes.push(`⚠️ DART 법인 인덱스를 적재하지 않았습니다 — ${w.corp_index_skipped}.`);
+    }
     return { population: result, warming: w };
   }
 
@@ -1585,11 +1770,13 @@ export async function detectUndisclosedTransactions(
       year_month: populationYearMonth,
       allowEmptyJoin: true,
     };
+    budget.enter('population');
     const prepared = await prepareJoins(await deps.resolvePop(popInput), popInput);
     population = prepared.population;
     warming = prepared.warming;
     populationSource = 'portal';
     populationGroup = input.group;
+    budget.enter('source_document');
 
     // 대표회사 corp_code — 포털 대표회사명을 소속회사 목록과 정규화 이름으로 조인
     const repName = String(
@@ -1715,6 +1902,7 @@ export async function detectUndisclosedTransactions(
   // ★ 실패는 전부 폴백이다 — EGROUP 키가 없어도(README 약속: DART 키 하나면 동작) 집단명을
   //   못 읽어도 포털이 죽어도, 종전 동작(DART 상호 매칭)으로 조용히 되돌아가고 사유만 남긴다.
   if (!input.group) {
+    budget.enter('population');
     const docGroup = extractGroupName(markdown);
     if (!docGroup) {
       populationReason =
@@ -1766,6 +1954,7 @@ export async function detectUndisclosedTransactions(
   }
 
   // ── ② 파싱 ──
+  budget.enter('parse');
   const parseDiag = diagnose(markdown);
   const capitals = extractCapitals(markdown);
   const borrowings = extractFundBorrowings(markdown);
@@ -1818,6 +2007,8 @@ export async function detectUndisclosedTransactions(
   }
 
   // ── ③ 회사별 기준금액 (근사) ──
+  // 여기부터 조인·1차 판정 구간이다 — 순수 계산이지만 동명 판별이 기업개황을 부를 수 있다
+  budget.enter('threshold_join');
   const { map: thresholds, conflicts: thresholdConflicts } = buildThresholdMap(capitals);
   if (thresholdConflicts.length > 0) {
     notes.push(
@@ -1944,6 +2135,15 @@ export async function detectUndisclosedTransactions(
       return ambiguous(
         `법인등록번호 조회 예산(${MAX_JURIR_LOOKUPS}회)을 넘어 대조하지 않았습니다 — ` +
           'resolve_entity(fetchJurirNo=true) 로 미리 캐시를 채우면 대조합니다',
+      );
+    }
+    // 시간 예산(60초 벽) — 조회 횟수와 별개다. 이름 단위로 끊어 어느 후보를 봤는지 흐리지 않는다.
+    if (!budget.canAfford(MIN_SMALL_CALL_MS)) {
+      jurirDeadlineSkips++;
+      budget.markStopped();
+      return ambiguous(
+        `시간 예산(${budgetSeconds(budgetMs)}초)이 남지 않아 법인등록번호를 대조하지 않았습니다 — ` +
+          '조회 결과는 캐시에 영구 남으므로 다시 실행하면 대조합니다',
       );
     }
 
@@ -2728,8 +2928,18 @@ export async function detectUndisclosedTransactions(
   // 5~6월에 지연 공시(자진시정)한 건을 못 봐 "시정했는데 후보"를 만들었다 (교차검토 M-5).
   // corp_code 지정 검색은 장기 구간이 허용되므로(함정 10) 콜 수는 동일하다.
   const fyStart = `${fiscalYear}0101`;
+  budget.enter('j001_search');
   const searches = new Map<string, CompanySearch>(); // 정규화 이름 → 검색 결과
   for (const [key, info] of withinBudget) {
+    // ★ 시간 예산 — **진행 중인 것을 죽이지 않고 다음 것을 시작하지 않는다.** 금액 상위부터
+    //   돌고 있으므로 여기서 끊기면 남는 것은 금액이 작은 회사들이다.
+    //   ⚠️ 이 회사들은 다음 실행에서도 처음부터 검색해야 한다 — J001 **목록은 캐시하지 않는다**
+    //   (설계 불변식). 재실행이 빨라지는 것은 원문·법인등록번호·법인 인덱스 쪽이다.
+    if (!budget.canAfford(MIN_LIST_CALL_MS)) {
+      deadlineSkippedKeys.add(key);
+      budget.markStopped('j001_search');
+      continue;
+    }
     // 대표 원문 이름 하나를 찾는다 (조인 시도용)
     const rawName =
       overBorrowings.find((b) => normalizeCompanyName(b.company) === key)?.company ??
@@ -2772,13 +2982,22 @@ export async function detectUndisclosedTransactions(
         partial: r.diagnostics.partial_results || r.diagnostics.truncated,
       });
     } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      // 수집 전 예상 시간이 **남은 예산**을 넘어 거절된 경우다 (realDeps 가 maxToolSeconds 를
+      // 남은 예산으로 준다) — 기간이 커서가 아니라 시간이 없어서라는 점을 밝힌다.
+      const isDeadline =
+        err instanceof ToolError &&
+        (err.code === 'deadline_exceeded' || err.code === 'range_too_large');
       searches.set(key, {
         corp_code: joined.code,
         from,
         to,
         rows: [],
         partial: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: isDeadline
+          ? `${raw} (이 도구의 남은 시간 예산 ${budget.remainingMs()}ms 기준으로 판단했습니다 — ` +
+            '이 회사만 따로 search_disclosures 로 조회하면 예산 전부를 쓸 수 있습니다)'
+          : raw,
       });
     }
   }
@@ -2799,6 +3018,8 @@ export async function detectUndisclosedTransactions(
   /** 캐시에 이미 있어 콜 없이 읽은 건수 */
   let filingDocCachedReads = 0;
   let filingDocBudgetHits = 0;
+  /** 시간 예산으로 열지 못한 원문 수 (건수 예산 초과와 구분한다 — 대응이 다르다) */
+  let filingDocDeadlineHits = 0;
   async function readFilingDoc(rceptNo: string): Promise<FilingDocRead> {
     const cached = filingDocReads.get(rceptNo);
     if (cached) return cached;
@@ -2811,6 +3032,12 @@ export async function detectUndisclosedTransactions(
     } else if (!inCache && filingDocFetches >= MAX_FILING_DOC_FETCHES) {
       filingDocBudgetHits++;
       result = { read: 'budget_exceeded' };
+    } else if (budget.isExpired() || (!inCache && !budget.canAfford(MIN_SMALL_CALL_MS))) {
+      // 시간 예산 — 캐시 히트도 파싱 CPU 를 쓰므로 **완전히 소진되면** 캐시 건도 멈춘다.
+      // 아직 남아 있으면 캐시 건은 통과시킨다 (콜이 없어 60초 벽과 사실상 무관하다).
+      filingDocDeadlineHits++;
+      budget.markStopped('judge');
+      result = { read: 'deadline_exceeded' };
     } else {
       if (inCache) filingDocCachedReads++;
       else filingDocFetches++;
@@ -2892,7 +3119,7 @@ export async function detectUndisclosedTransactions(
       ref.doc_read = 'error';
       ref.doc_error = rd.error;
     } else {
-      ref.doc_read = 'budget_exceeded';
+      ref.doc_read = rd.read; // budget_exceeded | deadline_exceeded
     }
     return ref;
   }
@@ -2954,6 +3181,20 @@ export async function detectUndisclosedTransactions(
           '(join_failures 참조). resolve_entity 로 corp_code 를 확인하세요',
       };
     }
+    // ★ 시간 예산이 끊겨 **검색을 시작조차 못 한** 회사 — "공시 없음"이 아니라 확인 못 한 것이다.
+    //   (건수 예산 초과인 company_budget_exceeded 와 사유를 나눈다: 대응이 다르다.)
+    if (deadlineSkippedKeys.has(key)) {
+      return {
+        outcome: 'not_judged',
+        reason:
+          `time_budget_exceeded — 이 도구의 시간 예산(${budgetSeconds(budgetMs)}초, MCP 60초 벽 대비)이 ` +
+          '소진돼 이 회사의 J001 검색을 시작하지 못했습니다. 금액이 큰 회사부터 대조하므로 ' +
+          '남은 회사입니다 — ⚠️ **J001 공시 목록은 캐시하지 않아** 다시 실행해도 이 검색은 ' +
+          '처음부터 합니다. 다만 원문·법인등록번호·법인 인덱스는 캐시에 남아 앞 단계가 빨라지므로 ' +
+          '재실행이 여기까지 도달할 수 있습니다. 확실히 보려면 이 회사만 따로 ' +
+          'search_disclosures(pblntf_detail_ty:"J001") 로 확인하세요',
+      };
+    }
     const s = searches.get(key);
     if (!s) {
       return { outcome: 'not_judged', reason: 'internal — 검색 대상에 오르지 않았습니다' };
@@ -2998,11 +3239,13 @@ export async function detectUndisclosedTransactions(
       const examined: Disclosure[] = [];
       let covering: Disclosure | undefined;
       let stoppedByBudget = false;
+      let stoppedByDeadline = false;
       for (const r of byDateDesc) {
         const rd = await readFilingDoc(r.rcept_no);
         examined.push(r);
-        if (rd.read === 'budget_exceeded') {
-          stoppedByBudget = true;
+        if (rd.read === 'budget_exceeded' || rd.read === 'deadline_exceeded') {
+          if (rd.read === 'deadline_exceeded') stoppedByDeadline = true;
+          else stoppedByBudget = true;
           break;
         }
         // ★ 상대방 일치만으로는 부족하다 — 같은 쌍의 **다른 유형** 공시가 이 거래를 덮어 버린다
@@ -3034,7 +3277,11 @@ export async function detectUndisclosedTransactions(
         const cls = rd?.read === 'ok' ? classifyAmbiguousSubject(rd.facts.subjects) : '?';
         return `${r.rcept_no}(거래대상 '${subj}' → ${cls})`;
       });
-      const tail = stoppedByBudget
+      const tail = stoppedByDeadline
+        ? ` 시간 예산(${budgetSeconds(budgetMs)}초, 60초 벽 대비)이 소진돼 ${notExamined + 1}건은 ` +
+          '열지 못했습니다 — 원문은 캐시에 남으므로 같은 문서로 이 도구를 다시 실행하면 나머지를 ' +
+          '이어서 대조합니다'
+        : stoppedByBudget
         ? ` 원문 열기 예산이 소진돼 ${notExamined + 1}건은 열지 못했습니다 — 원문은 캐시에 남으므로 ` +
           '같은 문서로 이 도구를 다시 실행하면 나머지를 이어서 대조합니다'
         : notExamined > 0
@@ -3107,11 +3354,13 @@ export async function detectUndisclosedTransactions(
       const examined: Disclosure[] = [];
       let confirmed: Disclosure | undefined;
       let stoppedByBudget = false;
+      let stoppedByDeadline = false;
       for (const r of ordered) {
         const rd = await readFilingDoc(r.rcept_no);
         examined.push(r);
-        if (rd.read === 'budget_exceeded') {
-          stoppedByBudget = true;
+        if (rd.read === 'budget_exceeded' || rd.read === 'deadline_exceeded') {
+          if (rd.read === 'deadline_exceeded') stoppedByDeadline = true;
+          else stoppedByBudget = true;
           break;
         }
         if (docCoversCounterparty(r.rcept_no, counterpartyKey)) {
@@ -3166,7 +3415,11 @@ export async function detectUndisclosedTransactions(
           `${[...new Set(unread.map((r) => docReadLabel(r.rcept_no)))].join('/')}) — ` +
           'read_disclosure 로 직접 열어 확인하세요.'
         : '';
-      const budgetDetail = stoppedByBudget
+      const budgetDetail = stoppedByDeadline
+        ? ` 시간 예산(${budgetSeconds(budgetMs)}초, 60초 벽 대비)이 소진돼 ${notExamined + 1}건은 ` +
+          '열지 못했습니다 — 원문은 캐시에 남으므로 같은 문서로 이 도구를 다시 실행하면 나머지를 ' +
+          '이어서 대조합니다.'
+        : stoppedByBudget
         ? ` 원문 열기 예산이 소진돼 ${notExamined + 1}건은 열지 못했습니다 — 원문은 캐시에 남으므로 ` +
           '같은 문서로 이 도구를 다시 실행하면 나머지를 이어서 대조합니다.'
         : notExamined > 0
@@ -3292,6 +3545,9 @@ export async function detectUndisclosedTransactions(
       if (chk.resolved_by_document) target.type_ambiguous_resolved_by_document = true;
     }
   }
+
+  // 여기부터 상태 확정 구간 — 남은 상류 비용은 J001 **원문 열기**뿐이다 (검색은 끝났다).
+  budget.enter('judge');
 
   for (const b of judgedBorrowings) {
     if (b.status !== 'not_judged' || b.reason) continue; // over 만 남아 있다
@@ -3541,6 +3797,7 @@ export async function detectUndisclosedTransactions(
   }
 
   // ── ⑧ 집계·정직성 장치 ──
+  budget.enter('aggregate');
   const undisclosed = judgedBorrowings.filter((b) => b.status === 'undisclosed_candidate');
   const nearDate = judgedBorrowings.filter((b) => b.status === 'j001_filing_near_date');
   const windowOnly = judgedBorrowings.filter((b) => b.status === 'j001_filing_in_window_only');
@@ -3629,6 +3886,47 @@ export async function detectUndisclosedTransactions(
     );
   }
 
+  /**
+   * ── 시간 예산 결산 ──
+   * ★ **중단된 상태를 "후보 없음"으로 내보내면 안 된다.** 예산이 끊겨 보지 못한 범위는 판정이
+   *   아니라 미판정이므로, 잘렸다는 사실이 summary·coverage·scope_caveats·notes 네 곳 모두에
+   *   드러나야 한다. 반대로 완주했으면 아무것도 붙이지 않는다 — 불필요한 경고는 진짜 경고를 묻는다.
+   */
+  const budgetSkipped = {
+    /** 시간 예산으로 J001 검색을 시작하지 못한 회사 수 */
+    companies_not_searched: deadlineSkippedKeys.size,
+    /** 시간 예산으로 열지 못한 J001 원문 수 */
+    filing_docs_not_read: filingDocDeadlineHits,
+    /** 시간 예산으로 법인등록번호를 대조하지 못한 미조인 계열사 수 (자동 워밍) */
+    warming_names_not_matched: warming?.skipped_deadline ?? 0,
+    /** 시간 예산으로 동명 판별을 하지 못한 이름 수 */
+    jurir_disambiguations_skipped: jurirDeadlineSkips,
+    /** 시간 예산으로 DART 법인 인덱스를 적재하지 않았는가 */
+    corp_index_not_loaded: warming?.corp_index_skipped !== undefined,
+  };
+  const budgetTruncated =
+    budgetSkipped.companies_not_searched > 0 ||
+    budgetSkipped.filing_docs_not_read > 0 ||
+    budgetSkipped.warming_names_not_matched > 0 ||
+    budgetSkipped.jurir_disambiguations_skipped > 0 ||
+    budgetSkipped.corp_index_not_loaded;
+
+  if (budgetTruncated) {
+    notes.push(
+      `⚠️ **이 결과는 시간 예산으로 중단된 부분 결과입니다.** MCP 클라이언트가 약 60초에 호출을 ` +
+        `끊으므로 이 도구는 ${budgetSeconds(budgetMs)}초를 넘기지 않고 **그때까지 만든 판정을 그대로 ` +
+        '돌려줍니다** — 못 본 범위는 "후보 없음"이 아니라 **미판정**입니다. ' +
+        `못 본 것: J001 검색 미시작 ${budgetSkipped.companies_not_searched}개사 · ` +
+        `원문 미대조 ${budgetSkipped.filing_docs_not_read}건 · ` +
+        `법인등록번호 미대조 ${budgetSkipped.warming_names_not_matched + budgetSkipped.jurir_disambiguations_skipped}건` +
+        (budgetSkipped.corp_index_not_loaded ? ' · 법인 인덱스 미적재' : '') +
+        ` (diagnostics.budget 참조. 소진 지점: ${budget.stoppedAt ?? '미상'}). ` +
+        '★ 다시 실행하면 **원문·법인등록번호·법인 인덱스는 캐시에 남아** 앞 단계가 빨라지므로 ' +
+        '더 멀리 갑니다. ⚠️ 다만 **J001 공시 목록은 캐시하지 않으므로** 검색은 매번 처음부터 ' +
+        '합니다 — 검색을 못 한 회사는 rcept_no 없이 개별 확인이 더 확실합니다.',
+    );
+  }
+
   if (filingDocBudgetHits > 0) {
     notes.push(
       `J001 원문 **새로 내려받기** 예산(${MAX_FILING_DOC_FETCHES}건)을 넘어 ` +
@@ -3642,6 +3940,20 @@ export async function detectUndisclosedTransactions(
   }
 
   const scopeCaveats: string[] = [
+    // 예산으로 잘렸으면 **맨 앞에** 온다 — 아래 caveat 들은 전부 "다 봤을 때의 한계"를 말하는데,
+    // 다 보지 못한 실행에서는 그보다 먼저 알아야 할 사실이다.
+    ...(budgetTruncated
+      ? [
+          `★ **이 실행은 시간 예산(${budgetSeconds(budgetMs)}초, MCP 60초 벽 대비)으로 중단된 ` +
+            '부분 결과입니다.** 아래의 다른 한계들은 "본 범위 안에서의 한계"이고, 이 실행은 ' +
+            `**범위 자체가 잘렸습니다** — J001 검색 미시작 ${budgetSkipped.companies_not_searched}개사 · ` +
+            `원문 미대조 ${budgetSkipped.filing_docs_not_read}건 · 법인등록번호 미대조 ` +
+            `${budgetSkipped.warming_names_not_matched + budgetSkipped.jurir_disambiguations_skipped}건` +
+            (budgetSkipped.corp_index_not_loaded ? ' · 법인 인덱스 미적재' : '') +
+            '. 그 범위의 거래는 not_judged(사유 time_budget_exceeded) 로 남아 있으며 ' +
+            '**"후보 없음"이 아닙니다.** 요약 카운터만 보고 "0건이니 문제 없음"으로 읽지 마세요.',
+        ]
+      : []),
     '★ 모든 결과는 **후보**입니다. undisclosed_candidate 를 "미공시 확정"으로 읽으면 안 되는 구조적 이유: ' +
       `① 이사회 의결은 **한도**로 미리 해 둘 수 있어(연초 한도 의결 → 연중 분할 인출) 그 공시가 ` +
       `검색창(거래일 이전 ${LOOKBACK_DAYS}일 ~ 오늘)보다 앞설 수 있습니다 ② 상대방이 계열 금융회사면 ` +
@@ -4035,6 +4347,11 @@ export async function detectUndisclosedTransactions(
       judged_at: today,
     },
     summary: {
+      /**
+       * ★ 시간 예산으로 **범위가 잘린 실행**이다 — 완주한 실행에는 이 키가 없다.
+       * 아래 카운터들은 "본 범위 안의" 집계이고, 못 본 범위는 not_judged 에 있다.
+       */
+      ...(budgetTruncated ? { time_budget_truncated: true, time_budget_skipped: budgetSkipped } : {}),
       capitals_extracted: capitals.length,
       borrowings_extracted: borrowings.length,
       goods_services_extracted: goods.length,
@@ -4150,11 +4467,54 @@ export async function detectUndisclosedTransactions(
         /** J004 에 기재 자체가 누락된 거래 — 이 도구의 원천이 J004 하나뿐이다 */
         transactions_missing_from_j004: true,
       },
+      /**
+       * 시간 예산(60초 벽)이 끊겨 **이번 실행에서 보지 못한 범위**. 완주하면 이 키가 없다.
+       * 여기 잡힌 것은 "이상 없음"이 아니라 확인하지 못한 것이다.
+       */
+      ...(budgetTruncated
+        ? {
+            not_examined_due_to_time_budget: {
+              ...budgetSkipped,
+              budget_ms: budget.budgetMs,
+              elapsed_ms: budget.elapsedMs(),
+              stopped_at: budget.stoppedAt,
+              /** 재실행이 이어서 보는 범위 — 목록은 여기 없다 (캐시하지 않는다) */
+              resumable_on_rerun: ['J001 원문', '법인등록번호(기업개황)', 'DART 법인 인덱스'],
+              not_resumable_on_rerun: ['J001 공시 목록 검색 (캐시하지 않아 매번 처음부터)'],
+            },
+          }
+        : {}),
     },
     scope_caveats: scopeCaveats,
     notes,
     diagnostics: {
       parse: parseDiag,
+      /**
+       * 시간 예산 (60초 벽 — 함정 7). `stages` 는 **계측값**이다: 어느 구간이 예산을 먹는지
+       * 실물 실행에서 확인해 상수를 좁히는 근거로 쓴다 (특히 `corp_index` 는 실측이 없다).
+       *
+       * ⚠️ `list_calls` 는 회사당 1 카운터라 HTTP 콜 수가 아니다 — 실제 콜 수는 `dart_http_calls`
+       * (일일 카운터 차분, 본문까지 받은 성공 호출만 셈)를 보라.
+       */
+      budget: {
+        budget_ms: budget.budgetMs,
+        prep_budget_ms: prepBudget.budgetMs,
+        /** 기본 상수인가, 환경변수(`GONGSI_TIME_BUDGET_MS`)로 낮춘 값인가 */
+        budget_source: budgetSource,
+        elapsed_ms: budget.elapsedMs(),
+        expired: budget.isExpired(),
+        /** 예산이 **처음** 모자랐던 단계 (없으면 끝까지 여유가 있었다) */
+        stopped_at: budget.stoppedAt,
+        truncated: budgetTruncated,
+        skipped: budgetSkipped,
+        /** 단계별 소요 (ms) — 순차 실행이라 합이 elapsed_ms 에 가깝다 */
+        stages: budget.stages(),
+        /** 새 상류 호출을 시작할 최소 잔여 시간 (실측 단가 근거는 상수 주석) */
+        min_start_ms: { list_call: MIN_LIST_CALL_MS, small_call: MIN_SMALL_CALL_MS, corp_index: MIN_CORP_INDEX_MS },
+        ...(dartCallsBefore !== null && client
+          ? { dart_http_calls: client.todayCalls() - dartCallsBefore }
+          : {}),
+      },
       /** 포털 소속회사 목록을 실제로 썼는가 — 'none' 이면 DART 상호 완전일치만으로 조인했다 */
       population_source: populationSource,
       population: {
@@ -4203,6 +4563,8 @@ export async function detectUndisclosedTransactions(
         fetch_budget: MAX_FILING_DOC_FETCHES,
         reads_total_budget: MAX_FILING_DOC_READS_TOTAL,
         over_budget: filingDocBudgetHits,
+        /** **시간** 예산으로 열지 못한 건수 — 건수 예산 초과(over_budget)와 대응이 다르다 */
+        over_deadline: filingDocDeadlineHits,
         read_errors: [...filingDocReads.values()].filter((r) => r.read === 'error').length,
         ambiguous_resolved_to_exists: ambiguousResolvedToExists,
         typed_confirmed: typedConfirmed,

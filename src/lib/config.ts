@@ -104,7 +104,30 @@ const KNOWN = [
   'GONGSI_BODY_FETCH_LIMIT',
   'GONGSI_CACHE_DB',
   'GONGSI_LOG_LEVEL',
+  'GONGSI_TIME_BUDGET_MS',
 ] as const;
+
+/**
+ * `detect_undisclosed_transactions` 시간 예산의 **상한**.
+ *
+ * 같은 값이 detect 쪽 `TIME_BUDGET_MS` 에도 있다 (그쪽이 근거 주석의 원본이다). detect 가
+ * 이 모듈을 import 하므로 반대 방향 import 는 순환이라 값을 한 벌 더 둔다 —
+ * 대신 두 값이 어긋나면 테스트가 실패한다 (`test/config-time-budget.test.ts`).
+ */
+const DETECT_TIME_BUDGET_CEILING_MS = 50_000;
+/**
+ * 같은 예산의 **하한**.
+ *
+ * 5초 = 원천 문서(≈0.1초) + 목록 수집 최소 시작 시간 3초(detect `MIN_LIST_CALL_MS`)
+ * + 준비 예산 2초(전체의 40%)가 소형 호출 1.5초(`MIN_SMALL_CALL_MS`)를 감당하는 최소값이다.
+ *
+ * ⚠️ 3초로는 **실측상 검색을 한 건도 시작하지 못했다** (2026-09-07, 웜 DB): 73ms 만에 끝나고
+ * J001 검색 미시작 13개사 · 워밍 미대조 1건. 3,000 = `MIN_LIST_CALL_MS` 라 목록 수집이
+ * 임계에 걸리고, 준비 예산 1,200 < 1,500 이라 워밍도 못 한다. "원천 문서는 받는다"는
+ * 하한이 실제로는 아무 판정도 만들지 못하는 값이었다.
+ * (참고 실측: 4,000 이면 6개사 검색 후 5개사 미시작으로 정상 절단 — 1.1초)
+ */
+const DETECT_TIME_BUDGET_FLOOR_MS = 5_000;
 
 /** 인식 못 한 GONGSI_* 변수명 목록. 기동 시 경고용. */
 export function unknownEnvVars(): string[] {
@@ -119,6 +142,30 @@ function envInt(name: string, fallback: number): number {
   if (raw === undefined || raw === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+/**
+ * `GONGSI_TIME_BUDGET_MS` — detect 시간 예산을 **낮추기만** 하는 검증·운영용 손잡이.
+ *
+ * 없거나 숫자가 아니면 `undefined`(= 기본값 사용). 값이 있으면
+ * `min(50_000, max(5_000, 값))` 으로 가둔다.
+ * - **올릴 수 없다**: 60초 벽은 MCP 클라이언트의 성질이라 예산을 올려도 클라이언트가 끊는다.
+ *   끊기면 결과가 통째로 사라지므로 올리는 방향은 손해만 있다.
+ * - **5초 미만은 5초**: 그 아래로는 J001 검색을 한 건도 시작하지 못해 "부분 결과"조차
+ *   만들지 못한다 (근거는 `DETECT_TIME_BUDGET_FLOOR_MS` 주석의 실측).
+ *
+ * 도구 **입력**으로는 일부러 열지 않았다 — 60초 벽은 질문의 성질이 아니라 클라이언트의
+ * 성질이라 질문마다 다른 값을 줄 이유가 없다 (detect 의 `TIME_BUDGET_MS` 주석 참조).
+ */
+function envTimeBudgetMs(): number | undefined {
+  const raw = process.env['GONGSI_TIME_BUDGET_MS'];
+  if (raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(
+    DETECT_TIME_BUDGET_CEILING_MS,
+    Math.max(DETECT_TIME_BUDGET_FLOOR_MS, Math.trunc(n)),
+  );
 }
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -165,6 +212,12 @@ export interface Config {
   bodyFetchLimit: number;
   cacheDbPath: string;
   logLevel: string;
+
+  /**
+   * `detect_undisclosed_transactions` 의 전체 시간 예산 override (ms).
+   * `undefined` 면 도구 기본값(50초)을 쓴다. 자세한 규칙은 `envTimeBudgetMs()` 주석.
+   */
+  detectTimeBudgetMs: number | undefined;
 }
 
 let cached: Config | null = null;
@@ -205,6 +258,8 @@ export function getConfig(): Config {
     bodyFetchLimit: Math.max(1, envInt('GONGSI_BODY_FETCH_LIMIT', 50)),
     cacheDbPath: process.env['GONGSI_CACHE_DB'] || join(PROJECT_ROOT, 'data', 'cache.db'),
     logLevel: (process.env['GONGSI_LOG_LEVEL'] || 'INFO').toUpperCase(),
+
+    detectTimeBudgetMs: envTimeBudgetMs(),
   };
   return cached;
 }
