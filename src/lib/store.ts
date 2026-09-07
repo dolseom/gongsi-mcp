@@ -349,6 +349,24 @@ export class Store {
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
       .run(key, value);
   }
+
+  /**
+   * 접두사가 같은 kv 행을 전부 지운다 — 지운 행 수를 돌려준다.
+   *
+   * 이어보기(continuation) 캐시처럼 **한 실행에 딸린 키 묶음**을 그 실행이 끝날 때 통째로
+   * 거두기 위한 것이다. 키 하나씩 지우려면 무엇을 썼는지 목록을 따로 들고 있어야 하는데,
+   * 그 목록 자체가 또 하나의 상태가 된다.
+   *
+   * ⚠️ LIKE 의 와일드카드(`%` `_`)는 이스케이프한다 — 접두사에 그 글자가 들어오면
+   * 의도보다 넓은 범위가 지워진다.
+   */
+  deletePrefix(prefix: string): number {
+    const escaped = prefix.replace(/[\\%_]/g, '\\$&');
+    const r = this.db
+      .prepare(`DELETE FROM kv WHERE key LIKE ? ESCAPE '\\'`)
+      .run(`${escaped}%`);
+    return Number(r.changes ?? 0);
+  }
 }
 
 function toCorp(row: unknown): CorpRecord {

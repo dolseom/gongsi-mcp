@@ -41,6 +41,7 @@ import {
   detectUndisclosedTransactions,
   detectUndisclosedTransactionsInput,
   TIME_BUDGET_MS,
+  MAX_COMPANIES_TO_SEARCH,
 } from './tools/detect-undisclosed-transactions.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
 import {
@@ -415,9 +416,16 @@ server.registerTool(
       `- MCP 클라이언트가 약 60초에 호출을 끊으므로 이 도구는 **${detectBudgetSeconds()}초 안에 스스로 멈추고 그때까지의 ` +
       '판정을 부분 결과로** 냅니다. 잘렸으면 summary.time_budget_truncated · ' +
       'coverage.not_examined_due_to_time_budget · scope_caveats 맨 앞 · diagnostics.budget 에 ' +
-      '드러납니다 — **못 본 범위는 "후보 없음"이 아니라 not_judged(time_budget_exceeded)** 입니다. ' +
-      '다시 실행하면 원문·법인등록번호·법인 인덱스 캐시 덕에 더 멀리 가지만, **J001 공시 목록은 ' +
-      '캐시하지 않아** 검색은 매번 처음부터 합니다\n\n' +
+      '드러납니다 — **못 본 범위는 "후보 없음"이 아니라 not_judged(time_budget_exceeded)** 입니다\n' +
+      '- ★ **한 번에 끝나지 않으면 이어서 부른다.** 결과의 `continuation.complete` 가 false 면 ' +
+      '`continuation.token` 이 함께 옵니다 — **같은 인자에 `continuation_token` 을 넣어 ' +
+      'complete:true 가 나올 때까지 다시 호출하세요.** 호출마다 안 본 회사부터 이어서 보고, ' +
+      '앞 호출이 받아 둔 J001 목록은 다시 받지 않습니다(회사 수 상한 ' +
+      `${MAX_COMPANIES_TO_SEARCH}개사는 **한 호출당** 상한이라 대형 집단도 몇 번 부르면 온전해집니다). ` +
+      '**마지막 호출의 결과가 온전한 답이고, 그 전 호출의 결과를 사용자에게 최종으로 제시하지 ' +
+      '마세요** — 진행 상황(`continuation.progress`)은 중간에 알려도 됩니다. 토큰 수명은 6시간이고, ' +
+      '만료·다른 인자면 continuation_invalid 로 거절합니다(그때는 토큰 없이 처음부터). ' +
+      '`continuation.stalled` 가 true 면 더 불러도 제자리이니 남은 회사를 개별 조회하세요\n\n' +
       '⚠️ 한도성 이사회 의결, 계열 금융회사 약관특례(트랙 B), 보고서명 유형 분류 오차로 실제로는 공시된 ' +
       '거래일 수 있습니다. near_date/in_window_only 는 상대방까지 대조한 것이고 **금액·거래기간까지 ' +
       '대조한 것은 아닙니다** — **scope_caveats** 참조. 미공시 과태료 기본금액 ' +

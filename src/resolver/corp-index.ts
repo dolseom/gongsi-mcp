@@ -233,7 +233,12 @@ export async function resolveCorp(
 
 /** fetchJurirNo 결과 — 실패(error)를 부재(absent)로 뭉개면 재시도 안내가 거짓말이 된다 (P2-라 13) */
 export type JurirNoFetch =
-  | { status: 'ok'; jurirNo: string }
+  /**
+   * `cached: true` = **콜 없이** 저장소에서 나왔다. 호출부의 조회 **횟수** 예산은 이 건을 세면
+   * 안 된다 — 캐시 히트까지 예산을 먹으면, 다시 실행해도 같은 이름들이 같은 예산을 다시 먹어
+   * 뒤쪽 이름은 영원히 대조되지 않는다 (원문 예산이 `isDocCached` 로 푼 것과 같은 문제다).
+   */
+  | { status: 'ok'; jurirNo: string; cached?: boolean }
   | { status: 'absent' } // 응답은 정상인데 법인등록번호 필드가 빈 경우 — 확인된 부재
   | { status: 'error'; message: string }; // 조회 실패 — 부재로 단정하면 안 된다
 
@@ -244,7 +249,7 @@ export type JurirNoFetch =
 export async function fetchJurirNo(corpCode: string, client: DartClient): Promise<JurirNoFetch> {
   const store = getStore();
   const cached = store.getCorpByCode(corpCode);
-  if (cached?.jurirNo) return { status: 'ok', jurirNo: cached.jurirNo };
+  if (cached?.jurirNo) return { status: 'ok', jurirNo: cached.jurirNo, cached: true };
 
   try {
     const profile = await client.companyProfile(corpCode);

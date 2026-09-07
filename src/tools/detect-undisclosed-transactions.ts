@@ -86,6 +86,7 @@ function foreignAffiliateReason(colGroup: string): string {
     '또한 열 그룹은 병합 헤더를 왼쪽부터 이어받아 읽은 것이라 분류가 틀릴 수 있습니다'
   );
 }
+import { randomBytes } from 'node:crypto';
 import { normalizeCompanyName } from '../parsers/md-table.js';
 import { ensureCorpIndex, fetchJurirNo, type JurirNoFetch } from '../resolver/corp-index.js';
 import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
@@ -124,6 +125,15 @@ export const detectUndisclosedTransactionsInput = z.object({
       '**대표회사 연1회 서식**이어야 한다 — 분기 개별 서식에는 거래내역이 없다',
   ),
   today: YMD.optional().describe('오늘 날짜 (기본: 시스템 날짜). J001 검색창 상한'),
+  continuation_token: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/, '이어보기 토큰은 32자리 16진수입니다')
+    .optional()
+    .describe(
+      '이전 호출이 continuation.complete:false 와 함께 돌려준 토큰. **같은 인자**(rcept_no 또는 ' +
+        'group)와 함께 주면 안 본 회사부터 이어서 본다 — 앞 호출이 이미 받아 둔 J001 목록은 ' +
+        '다시 받지 않는다. complete:true 가 나올 때까지 반복하면 그 마지막 결과가 온전한 답이다',
+    ),
 });
 
 export type DetectUndisclosedTransactionsInput = z.infer<
@@ -270,8 +280,28 @@ function warmKey(jurirNo: string): string {
   return `warm:v${WARM_LOGIC_VERSION}:${jurirNo}`;
 }
 
-/** J001 검색을 수행할 회사 수 상한 — 회사당 측정 1 + 수집 1 콜이라 60초 벽 대비 */
-const MAX_COMPANIES_TO_SEARCH = 20;
+/**
+ * **한 번의 호출**에서 J001 검색을 새로 수행할 회사 수 상한 — 회사당 측정 1 + 수집 1 콜이라
+ * 60초 벽 대비.
+ *
+ * ★ 이 상한은 이제 "이 도구가 볼 수 있는 회사 수"가 아니라 **"한 호출에서 새로 볼 회사 수"**다.
+ *   넘치는 회사는 이어보기 토큰(`continuation_token`)으로 다음 호출이 이어서 본다 — 앞 호출이
+ *   받아 둔 목록은 토큰 캐시에서 나오므로 콜도 상한도 쓰지 않는다. 대형 집단(151개사)도 몇 번
+ *   부르면 온전한 답에 이른다.
+ */
+export const MAX_COMPANIES_TO_SEARCH = 20;
+/**
+ * 이어보기 캐시의 수명 (6시간).
+ *
+ * 짧으면 실무자가 잠깐 다른 일을 하고 돌아왔을 때 처음부터 다시 시작해야 하고, 길면 그 사이에
+ * 접수된 새 공시가 앞 호출의 옛 목록에 가려 보이지 않는다 ("공시 목록 미캐시" 불변식이 지키는
+ * 것이 바로 그 신선도다). 한 번의 점검을 마치기에 충분하고 하루를 넘기지 않는 값으로 6시간을 둔다.
+ */
+const CONTINUATION_TTL_MS = 6 * 60 * 60 * 1000;
+/** 이어보기 kv 키 접두사 — 이 토큰에 딸린 모든 키가 이 접두사를 공유한다 (완주 시 통째로 삭제) */
+function contPrefix(token: string): string {
+  return `cont:${token}:`;
+}
 /**
  * J001 원문을 **새로 내려받는** 건수 상한(실행당, 접수번호 기준 중복 제거) — 60초 벽 대비
  * 콜드 1건 ≈ 0.3초.
@@ -335,10 +365,33 @@ export interface DetectDeps {
    */
   isDocCached: (rceptNo: string) => boolean;
   /**
+   * 이 법인의 법인등록번호가 **이미 저장소에 있는가** — 조회 **횟수** 예산(`MAX_JURIR_LOOKUPS`·
+   * `MAX_WARM_LOOKUPS`)을 콜이 실제로 나가는 건에만 쓰기 위한 사전 확인이다.
+   *
+   * ★ 없으면 "전부 비캐시"로 본다(종전 동작). 주입 테스트는 이 값을 주지 않으므로 카운터
+   *   기대값이 그대로 유지된다.
+   * ⚠️ 이 확인이 없으면 **이어보기가 제자리를 돈다**: 캐시 히트가 예산을 먹으므로 다시
+   *   호출해도 같은 이름들이 같은 예산을 다시 먹고, 뒤쪽 이름은 영원히 대조되지 않는다.
+   */
+  isJurirCached?: (corpCode: string) => boolean;
+  /**
    * 시계 주입점 — **시간 예산 테스트를 실제 sleep 없이** 돌리기 위한 것이다 (기본 Date.now).
    * 판정에는 쓰지 않는다 (판정 기준일은 `input.today`).
    */
   now?: () => number;
+  /**
+   * ── 이어보기(continuation) 저장소 3종 ──
+   *
+   * ★ **이 저장소는 토큰이 있는 호출에서만 읽는다.** "공시 목록은 캐시하지 않는다"는 설계
+   *   불변식은 신규 호출에 그대로 성립한다 — 토큰 없이 부르면 목록은 언제나 새로 받는다.
+   *   이어보기 캐시는 **한 논리적 실행 안에서만** 쓰는 예외다: 같은 실행의 이어보기에서
+   *   앞 호출이 이미 받은 목록을 또 받으면 예산만 쓰고 진전이 없다 (이어보기 자체가 성립하지
+   *   않는다). 수명은 `CONTINUATION_TTL_MS`(6시간)로 끊는다.
+   */
+  kvGet: (key: string) => string | null;
+  kvSet: (key: string, value: string) => void;
+  /** 접두사가 같은 키를 통째로 지운다 (완주·만료한 토큰의 뒷정리) */
+  kvDeletePrefix: (prefix: string) => void;
 }
 
 function realDeps(client: DartClient, budget: Deadline): DetectDeps {
@@ -381,6 +434,10 @@ function realDeps(client: DartClient, budget: Deadline): DetectDeps {
         .map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
     fetchJurirNo: (corpCode) => fetchJurirNo(corpCode, client),
     isDocCached: (rceptNo) => isDocumentCached(rceptNo),
+    isJurirCached: (corpCode) => Boolean(getStore().getCorpByCode(corpCode)?.jurirNo),
+    kvGet: (key) => getStore().get(key),
+    kvSet: (key, value) => getStore().set(key, value),
+    kvDeletePrefix: (prefix) => void getStore().deletePrefix(prefix),
   };
 }
 
@@ -1541,7 +1598,12 @@ async function warmJurirJoins(
       noteSkip(p.company, 'deadline', p.candidates.length);
       continue;
     }
-    if (warming.lookups + p.candidates.length > MAX_WARM_LOOKUPS) {
+    // 예산은 **콜이 실제로 나가는 후보**만 센다 (동명 판별과 같은 규칙 — 캐시 히트까지 세면
+    // 재실행이 같은 예산을 다시 먹어 뒤쪽 이름에 예산이 돌아가지 않는다).
+    const uncachedCandidates = deps.isJurirCached
+      ? p.candidates.filter((c) => !deps.isJurirCached!(c.corpCode))
+      : p.candidates;
+    if (warming.lookups + uncachedCandidates.length > MAX_WARM_LOOKUPS) {
       // 예산을 반쯤 쓴 채 이름을 끊으면 어느 후보를 봤는지가 흐려진다 — 이름 단위로 끊는다.
       // 시도하지 않았으므로 억제 기록도 남기지 않는다 → 다음 실행이 이어서 채운다.
       warming.over_budget = true;
@@ -1552,8 +1614,9 @@ async function warmJurirJoins(
     warming.attempted++;
     const matched: Array<{ corpCode: string; corpName: string }> = [];
     for (const c of p.candidates) {
-      warming.lookups++;
       const r = await deps.fetchJurirNo(c.corpCode);
+      // 캐시에서 나온 건은 콜이 없었으므로 예산을 쓰지 않는다
+      if (!(r.status === 'ok' && r.cached)) warming.lookups++;
       if (r.status === 'ok') {
         if (r.jurirNo === p.jurir) matched.push(c);
       } else if (r.status === 'error') {
@@ -1589,6 +1652,49 @@ interface CompanySearch {
   error?: string;
 }
 
+/**
+ * 이어보기 토큰의 메타 — `cont:<token>:meta` 에 JSON 으로 저장한다.
+ *
+ * ★ **토큰에는 판정 결과를 싣지 않는다.** 토큰은 불투명한 실행 ID 하나이고, 결과는 서버
+ *   저장소에만 있다. 클라이언트가 토큰을 손으로 고쳐도 남의 실행을 들여다볼 수 없고
+ *   (32바이트 난수), 인자가 어긋나면 아래 검증이 거절한다.
+ */
+interface ContinuationMeta {
+  /** 이 실행이 읽은 **원천 J004 접수번호** — 다른 문서의 캐시를 섞어 쓰지 않게 하는 열쇠다 */
+  rcept_no: string;
+  /**
+   * 앞 호출의 판정 기준일. 이어보기 호출이 `today` 를 생략하면 **이 값을 쓴다** —
+   * 검색창 상한이 호출마다 밀리면 앞 호출과 창이 달라져 한 실행의 결과가 아니게 된다.
+   */
+  today: string;
+  fiscal_year: number;
+  /** ISO — TTL 검사 기준 */
+  created_at: string;
+  /** 이 토큰으로 몇 번 불렸는지 (1부터) */
+  calls: number;
+}
+
+/** 이 실행에서 재호출로 풀리는 미완주 사유 — 하나라도 있으면 `complete:false` */
+type IncompleteReason =
+  | 'companies_over_count_budget'
+  | 'companies_over_time_budget'
+  | 'company_search_failed_retryable'
+  | 'filing_docs_over_fetch_budget'
+  | 'filing_docs_over_time_budget'
+  | 'warming_over_budget'
+  | 'corp_index_not_loaded'
+  | 'jurir_disambiguation_skipped';
+
+function continuationInvalid(why: string): ToolError {
+  return new ToolError(
+    'continuation_invalid',
+    `이어보기 토큰을 쓸 수 없습니다 — ${why}. ` +
+      'continuation_token 없이 처음부터 다시 실행하세요 (앞 호출의 부분 결과는 버려집니다). ' +
+      '이어보기는 앞 호출과 **같은 인자**(rcept_no 또는 group, today)로만 성립하고 ' +
+      `수명은 ${CONTINUATION_TTL_MS / 3_600_000}시간입니다.`,
+  );
+}
+
 export async function detectUndisclosedTransactions(
   input: DetectUndisclosedTransactionsInput,
   depsOverride?: DetectDeps,
@@ -1606,7 +1712,12 @@ export async function detectUndisclosedTransactions(
     );
   }
 
-  const today = input.today ?? toYMD(new Date());
+  /**
+   * ── 이어보기 토큰 검증 ──
+   * 저장소 접근은 `deps` 를 거쳐야 하는데 `deps` 는 시계(`now`)까지 들고 있어 예산보다 먼저
+   * 만들어야 한다. 그래서 검증은 예산을 세운 **직후**에 하고, 여기서는 시계만 먼저 꺼낸다.
+   */
+  const nowFn = depsOverride?.now ?? Date.now;
   /**
    * ── 시간 예산 (60초 벽) ──
    * `budget` 은 실행 전체, `prepBudget` 은 준비 단계(인덱스 적재 + 워밍)의 자체 상한이다.
@@ -1620,7 +1731,6 @@ export async function detectUndisclosedTransactions(
    *   있으면 "예산이 끊겼을 때 부분 결과가 정직하게 나오는가"를 실물에서 재현할 방법이 없다.
    *   올릴 수는 없다 — 클라이언트가 어차피 60초에 끊는다.
    */
-  const nowFn = depsOverride?.now ?? Date.now;
   const budgetOverrideMs = getConfig().detectTimeBudgetMs;
   const budgetMs = budgetOverrideMs ?? TIME_BUDGET_MS;
   const budgetSource: 'default' | 'env' = budgetOverrideMs === undefined ? 'default' : 'env';
@@ -1632,6 +1742,62 @@ export async function detectUndisclosedTransactions(
   // 워밍이 법인 인덱스를 적재할 때 같은 클라이언트를 쓴다 (테스트 주입 경로에는 클라이언트가 없다)
   const client = depsOverride ? null : new DartClient(undefined, { deadline: budget });
   const deps = depsOverride ?? realDeps(client!, budget);
+
+  /* ── 이어보기 토큰 검증 ──────────────────────────────────────────────────────
+   * ★ **토큰이 없으면 이 블록이 통째로 건너뛰어진다** — 저장소를 읽지도, 쓰지도 않는다.
+   *   토큰 없는 호출이 종전과 완전히 같아야 하는 이유는 "공시 목록 미캐시" 불변식이다:
+   *   신규 점검은 언제나 방금 접수된 공시까지 본다.
+   * ⚠️ 어긋난 토큰을 **관대하게 무시하고 새로 시작하지 않는다.** 그러면 사용자는 이어보고
+   *   있다고 믿는데 실제로는 매번 1번 회사부터 도는 상태가 되어 영원히 끝나지 않는다.
+   */
+  const contToken = input.continuation_token ?? null;
+  let contMeta: ContinuationMeta | null = null;
+  if (contToken) {
+    const raw = deps.kvGet(`${contPrefix(contToken)}meta`);
+    if (!raw) {
+      throw continuationInvalid(
+        '그런 토큰이 없습니다 (수명이 지나 지워졌거나, 앞 호출이 완주해 이미 정리됐습니다)',
+      );
+    }
+    let parsed: ContinuationMeta | null = null;
+    try {
+      parsed = JSON.parse(raw) as ContinuationMeta;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || typeof parsed.rcept_no !== 'string' || typeof parsed.today !== 'string') {
+      deps.kvDeletePrefix(contPrefix(contToken));
+      throw continuationInvalid('토큰 기록이 손상됐습니다');
+    }
+    const age = nowFn() - Date.parse(parsed.created_at);
+    if (!Number.isFinite(age) || age >= CONTINUATION_TTL_MS) {
+      // 만료 토큰은 만난 김에 거둔다 — 버려진 실행의 키는 남지만(아래 주석) 이건 확실히 죽었다
+      deps.kvDeletePrefix(contPrefix(contToken));
+      throw continuationInvalid(
+        `수명 ${CONTINUATION_TTL_MS / 3_600_000}시간이 지났습니다 (발급 ${parsed.created_at})`,
+      );
+    }
+    if (input.rcept_no && parsed.rcept_no !== input.rcept_no) {
+      throw continuationInvalid(
+        `앞 호출은 다른 문서(${parsed.rcept_no})를 보고 있었습니다 — rcept_no 가 ${input.rcept_no} 로 바뀌었습니다`,
+      );
+    }
+    if (input.today && parsed.today !== input.today) {
+      throw continuationInvalid(
+        `앞 호출의 기준일은 ${parsed.today} 인데 today 가 ${input.today} 로 들어왔습니다 — ` +
+          '검색창 상한이 밀리면 앞 호출과 같은 실행이 아닙니다 (today 를 생략하면 앞 값을 그대로 씁니다)',
+      );
+    }
+    contMeta = parsed;
+  }
+
+  /**
+   * 판정 기준일 = J001 검색창의 상한.
+   * 이어보기 호출이 `today` 를 생략하면 **앞 호출의 값**을 이어받는다 — 호출마다 시스템 날짜로
+   * 다시 잡으면 자정을 넘긴 이어보기가 앞 호출과 다른 창을 보게 된다.
+   */
+  const today = input.today ?? contMeta?.today ?? toYMD(new Date());
+
   /** 이 실행이 실제로 쓴 DART HTTP 콜 수 — `list_calls` 는 회사당 1 카운터라 콜 수가 아니다 */
   const dartCallsBefore = client?.todayCalls() ?? null;
   const notes: string[] = [];
@@ -1864,6 +2030,13 @@ export async function detectUndisclosedTransactions(
     // 1~3월 접수는 전년도 의무분의 해 넘긴 제출일 가능성이 높다 — 직전 사업연도를 한 해 더 당긴다
     filingYear = m >= 4 ? y : y - 1;
   }
+  // 이어보기 토큰이 가리키는 실행과 **같은 문서**인지 확인한다. rcept_no 경로는 위에서 이미
+  // 걸렀지만 group 경로는 원천 문서를 찾아봐야 알 수 있다 (집단·연도가 바뀌면 문서가 달라진다).
+  if (contMeta && contMeta.rcept_no !== sourceRceptNo) {
+    throw continuationInvalid(
+      `앞 호출은 다른 문서(${contMeta.rcept_no})를 보고 있었습니다 — 이번 인자는 ${sourceRceptNo} 를 가리킵니다`,
+    );
+  }
   /** 거래가 속한 직전 사업연도 (12월 결산 가정 — 변칙 회계연도는 어긋날 수 있다) */
   const fiscalYear = filingYear - 1;
 
@@ -2046,6 +2219,8 @@ export async function detectUndisclosedTransactions(
   const joinFailures: Array<{ company: string; reason: string }> = [];
   /** 기업개황(법인등록번호) 조회 횟수 — 예산 상한 대비 */
   let jurirLookups = 0;
+  /** 조회 **횟수** 예산(`MAX_JURIR_LOOKUPS`)을 넘겨 동명 대조를 못 한 이름 수 — 재호출로 풀린다 */
+  let jurirBudgetSkips = 0;
   /** 동명 2건 이상을 법인등록번호로 확정한 건 — 근거를 진단에 남긴다 */
   const jurirResolved: Array<{
     company: string;
@@ -2131,14 +2306,23 @@ export async function detectUndisclosedTransactions(
         `후보가 상한 ${MAX_JURIR_CANDIDATES}개를 넘어 법인등록번호를 대조하지 않았습니다`,
       );
     }
-    if (jurirLookups + hits.length > MAX_JURIR_LOOKUPS) {
+    // ★ 예산이 세는 것은 **콜이 실제로 나가는 후보**뿐이다. 캐시 히트까지 세면 다시 호출해도
+    //   같은 이름들이 같은 예산을 다시 먹어 뒤쪽 이름이 영원히 대조되지 않는다(이어보기 제자리걸음).
+    const uncachedHits = deps.isJurirCached
+      ? hits.filter((h) => !deps.isJurirCached!(h.corpCode))
+      : hits;
+    if (jurirLookups + uncachedHits.length > MAX_JURIR_LOOKUPS) {
+      // 조회 **횟수** 예산이 모자란 것 — 재호출로 풀린다(결과가 캐시에 영구 남고, 남은 건은
+      // 다음 호출에서 캐시라 예산을 쓰지 않으므로 예산이 아직 못 본 이름에 돌아간다).
+      jurirBudgetSkips++;
       return ambiguous(
         `법인등록번호 조회 예산(${MAX_JURIR_LOOKUPS}회)을 넘어 대조하지 않았습니다 — ` +
           'resolve_entity(fetchJurirNo=true) 로 미리 캐시를 채우면 대조합니다',
       );
     }
     // 시간 예산(60초 벽) — 조회 횟수와 별개다. 이름 단위로 끊어 어느 후보를 봤는지 흐리지 않는다.
-    if (!budget.canAfford(MIN_SMALL_CALL_MS)) {
+    // 후보가 전부 캐시면 콜이 없으므로 시간 예산과 무관하다 (여기서 미루면 역시 제자리를 돈다).
+    if (uncachedHits.length > 0 && !budget.canAfford(MIN_SMALL_CALL_MS)) {
       jurirDeadlineSkips++;
       budget.markStopped();
       return ambiguous(
@@ -2150,8 +2334,9 @@ export async function detectUndisclosedTransactions(
     const matched: Array<{ corpCode: string; corpName: string }> = [];
     let failures = 0;
     for (const h of hits) {
-      jurirLookups++;
       const r = await deps.fetchJurirNo(h.corpCode);
+      // 캐시에서 나온 건은 콜이 없었으므로 예산을 쓰지 않는다 (원문 예산과 같은 규칙)
+      if (!(r.status === 'ok' && r.cached)) jurirLookups++;
       if (r.status === 'ok') {
         if (r.jurirNo === portalJurir) matched.push(h);
       } else if (r.status === 'error') {
@@ -2919,9 +3104,11 @@ export async function detectUndisclosedTransactions(
   }
 
   // 예산: 금액 큰 회사부터. 넘치는 회사의 거래는 판정하지 않고 그렇다고 말한다.
+  // ★ 순서는 **매 호출 같다** — 이어보기가 성립하려면 앞 호출이 본 회사가 이번에도 같은
+  //   자리에 있어야 한다 (같은 문서를 읽으므로 needsSearch 도 같다).
   const ranked = [...needsSearch.entries()].sort((a, b) => b[1].maxAmount - a[1].maxAmount);
-  const withinBudget = ranked.slice(0, MAX_COMPANIES_TO_SEARCH);
-  const overBudgetKeys = new Set(ranked.slice(MAX_COMPANIES_TO_SEARCH).map(([k]) => k));
+  /** 이 호출의 **건수** 예산(`MAX_COMPANIES_TO_SEARCH`)을 넘겨 이번에 보지 못한 회사 */
+  const overBudgetKeys = new Set<string>();
 
   // ── ⑥ 회사당 1회 J001 수집 ──
   // 창 상한은 **오늘**이다. 종전의 "사업연도말 +90일" 상한은 J004 작성 중 누락을 발견해
@@ -2930,11 +3117,47 @@ export async function detectUndisclosedTransactions(
   const fyStart = `${fiscalYear}0101`;
   budget.enter('j001_search');
   const searches = new Map<string, CompanySearch>(); // 정규화 이름 → 검색 결과
-  for (const [key, info] of withinBudget) {
+  /** 이 호출에서 **새로** 검색을 시도한 회사 수 — 건수 예산은 이 수를 센다 */
+  let newSearchSlots = 0;
+  /** 이 호출에서 실제로 J001 목록을 받아 온 회사 수 (조인 실패는 세지 않는다 — 진전의 척도다) */
+  let newSearchesPerformed = 0;
+  /** 이어보기 캐시에서 그대로 가져온 회사 수 (HTTP 0) */
+  let contReused = 0;
+  /**
+   * 이 호출에서 새로 받은 성공 목록 — 미완주로 끝나면 토큰 캐시에 쓴다.
+   * ★ 토큰은 **미완주가 확정된 뒤에야** 만들어지므로(완주한 첫 호출은 저장소를 건드리지
+   *   않는다) 루프 도중에는 쓸 곳이 없다. 그래서 메모리에 모았다가 끝에서 한 번에 쓴다.
+   */
+  const contToPersist = new Map<string, CompanySearch>();
+  /** 재호출로 다시 시도할 값어치가 있는 실패(시간 예산 계열)를 낸 회사 */
+  const retryableErrorKeys = new Set<string>();
+  for (const [key, info] of ranked) {
+    // ── ① 이어보기 캐시 — 앞 호출이 같은 실행에서 이미 받아 둔 목록 ──
+    // 콜도 건수 예산도 시간 임계도 쓰지 않는다. corp_code 가 캐시에 있으므로 조인도 다시
+    // 하지 않는다 (조인은 기업개황 호출을 부를 수 있어 공짜가 아니다).
+    if (contToken) {
+      const cachedRaw = deps.kvGet(`${contPrefix(contToken)}s:${key}`);
+      if (cachedRaw) {
+        try {
+          searches.set(key, JSON.parse(cachedRaw) as CompanySearch);
+          contReused++;
+          continue;
+        } catch {
+          // 손상된 항목은 없는 셈 치고 다시 검색한다 (조용히 빈 결과로 흘리지 않는다)
+        }
+      }
+    }
+    // ── ② 건수 예산 — **이 호출에서 새로 검색한 회사 수** 기준 ──
+    // 넘긴 회사는 버려지는 것이 아니라 다음 호출이 이어서 본다.
+    if (newSearchSlots >= MAX_COMPANIES_TO_SEARCH) {
+      overBudgetKeys.add(key);
+      continue;
+    }
+    newSearchSlots++;
     // ★ 시간 예산 — **진행 중인 것을 죽이지 않고 다음 것을 시작하지 않는다.** 금액 상위부터
     //   돌고 있으므로 여기서 끊기면 남는 것은 금액이 작은 회사들이다.
-    //   ⚠️ 이 회사들은 다음 실행에서도 처음부터 검색해야 한다 — J001 **목록은 캐시하지 않는다**
-    //   (설계 불변식). 재실행이 빨라지는 것은 원문·법인등록번호·법인 인덱스 쪽이다.
+    //   이 회사들은 **이어보기 토큰으로 다음 호출이 이어서** 검색한다 (J001 목록은 캐시하지
+    //   않지만, 이어보기 캐시가 한 실행 안에서만 그 자리를 대신한다).
     if (!budget.canAfford(MIN_LIST_CALL_MS)) {
       deadlineSkippedKeys.add(key);
       budget.markStopped('j001_search');
@@ -2970,17 +3193,27 @@ export async function detectUndisclosedTransactions(
       });
       continue;
     }
+    newSearchesPerformed++;
     try {
       const r = await deps.collectList(joined.code, 'J001', from, to);
       listCalls++;
+      // ★ **성공했을 때만** 센다 — 이 값이 `stalled`(제자리걸음) 판정의 근거이기 때문이다.
+      //   시도 횟수를 세면, 매번 같은 회사가 같은 이유로 실패하는 실행이 "진전 중"으로 보여
+      //   `complete:false` 인 채 `stalled:false` 가 영원히 계속된다 — 도구는 "다시 호출하세요"만
+      //   반복하고 사용자는 끝나지 않는 루프에 갇힌다 (작업 5 검토에서 실측으로 잡았다:
+      //   2·3회차의 카운터가 완전히 같았는데 stalled 이 false 였다).
       if (r.diagnostics.partial_results || r.diagnostics.truncated) partialLists = true;
-      searches.set(key, {
+      const result: CompanySearch = {
         corp_code: joined.code,
         from,
         to,
         rows: r.rows,
         partial: r.diagnostics.partial_results || r.diagnostics.truncated,
-      });
+      };
+      searches.set(key, result);
+      // 이어보기 캐시에는 **온전한 목록만** 넣는다 — 부분 수집을 이어보기로 굳히면 다음
+      // 호출이 그 누락을 물려받고 재시도할 기회가 영영 사라진다.
+      if (!result.partial) contToPersist.set(key, result);
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       // 수집 전 예상 시간이 **남은 예산**을 넘어 거절된 경우다 (realDeps 가 maxToolSeconds 를
@@ -2988,6 +3221,9 @@ export async function detectUndisclosedTransactions(
       const isDeadline =
         err instanceof ToolError &&
         (err.code === 'deadline_exceeded' || err.code === 'range_too_large');
+      // 시간이 모자라 거절된 수집은 **재호출로 풀린다** — 이어보기 미완주 사유로 센다.
+      // 그 밖의 실패(상류 오류 등)는 다시 부른다고 달라진다는 보장이 없어 세지 않는다.
+      if (isDeadline) retryableErrorKeys.add(key);
       searches.set(key, {
         corp_code: joined.code,
         from,
@@ -3169,8 +3405,10 @@ export async function detectUndisclosedTransactions(
       return {
         outcome: 'not_judged',
         reason:
-          `company_budget_exceeded — J001 검색 대상이 ${ranked.length}개사여서 금액 상위 ` +
-          `${MAX_COMPANIES_TO_SEARCH}개사만 대조했습니다. 이 회사는 rcept_no 없이 개별 확인이 필요합니다`,
+          `company_budget_exceeded — J001 검색 대상이 ${ranked.length}개사여서 이번 호출에서는 ` +
+          `금액 상위 ${MAX_COMPANIES_TO_SEARCH}개사만 새로 대조했습니다. ` +
+          '★ **continuation.token 을 같은 인자에 넣어 다시 호출하면 이 회사부터 이어서 봅니다** — ' +
+          'complete:true 가 나올 때까지 반복하면 이 회사도 판정됩니다',
       };
     }
     if (joinFailedKeys.has(key)) {
@@ -3189,10 +3427,10 @@ export async function detectUndisclosedTransactions(
         reason:
           `time_budget_exceeded — 이 도구의 시간 예산(${budgetSeconds(budgetMs)}초, MCP 60초 벽 대비)이 ` +
           '소진돼 이 회사의 J001 검색을 시작하지 못했습니다. 금액이 큰 회사부터 대조하므로 ' +
-          '남은 회사입니다 — ⚠️ **J001 공시 목록은 캐시하지 않아** 다시 실행해도 이 검색은 ' +
-          '처음부터 합니다. 다만 원문·법인등록번호·법인 인덱스는 캐시에 남아 앞 단계가 빨라지므로 ' +
-          '재실행이 여기까지 도달할 수 있습니다. 확실히 보려면 이 회사만 따로 ' +
-          'search_disclosures(pblntf_detail_ty:"J001") 로 확인하세요',
+          '남은 회사입니다 — ★ **continuation.token 을 같은 인자에 넣어 다시 호출하면 이 회사부터 ' +
+          '이어서 검색합니다**(앞 호출이 받아 둔 목록은 다시 받지 않으므로 예산이 이 회사에 ' +
+          '쓰입니다). complete:true 가 나올 때까지 반복하면 이 회사도 판정됩니다. ' +
+          '급하면 이 회사만 따로 search_disclosures(pblntf_detail_ty:"J001") 로 확인하세요',
       };
     }
     const s = searches.get(key);
@@ -3911,6 +4149,66 @@ export async function detectUndisclosedTransactions(
     budgetSkipped.jurir_disambiguations_skipped > 0 ||
     budgetSkipped.corp_index_not_loaded;
 
+  /* ── 이어보기 결산 — 이 결과가 **온전한 답인가** ────────────────────────────────
+   * ★ `incomplete_reasons` 에는 **재호출로 풀리는 것만** 담는다. 조인 실패(DART 에 상호가
+   *   없다)·판정불가(threshold_unknown, 자본을 못 읽었다)·유형 미상 보류(원문 상대방이 다르다)
+   *   같은 것은 몇 번을 더 불러도 그대로다 — 그건 "다 봤는데 확인하지 못한 것"이고 종전 어휘로
+   *   이미 표시돼 있다. 그것까지 미완주로 세면 `complete` 가 영원히 참이 되지 않아, 반복하면
+   *   끝난다는 이 장치의 약속 자체가 거짓이 된다.
+   */
+  const incompleteReasons: IncompleteReason[] = [];
+  if (overBudgetKeys.size > 0) incompleteReasons.push('companies_over_count_budget');
+  if (deadlineSkippedKeys.size > 0) incompleteReasons.push('companies_over_time_budget');
+  if (retryableErrorKeys.size > 0) incompleteReasons.push('company_search_failed_retryable');
+  if (filingDocBudgetHits > 0) incompleteReasons.push('filing_docs_over_fetch_budget');
+  if (filingDocDeadlineHits > 0) incompleteReasons.push('filing_docs_over_time_budget');
+  if (warming?.over_budget || warming?.over_deadline) incompleteReasons.push('warming_over_budget');
+  if (warming?.corp_index_skipped !== undefined) incompleteReasons.push('corp_index_not_loaded');
+  if (jurirDeadlineSkips > 0 || jurirBudgetSkips > 0) {
+    incompleteReasons.push('jurir_disambiguation_skipped');
+  }
+  const complete = incompleteReasons.length === 0;
+  /** 다음 호출이 **다시 시도할** 회사 수 (완주하면 반드시 0이다) */
+  const companiesRemaining =
+    overBudgetKeys.size + deadlineSkippedKeys.size + retryableErrorKeys.size;
+  const contCallIndex = (contMeta?.calls ?? 0) + 1;
+  const contCreatedAt = contMeta?.created_at ?? new Date(nowFn()).toISOString();
+  /**
+   * 이어보기가 **제자리걸음**인가 — 토큰을 들고 왔는데 새 검색도 새 원문도 0인데 완주가 아니다.
+   * 이대로 반복하면 영원히 끝나지 않으므로 사용자에게 다른 길을 알려야 한다.
+   */
+  const contStalled =
+    contToken !== null && !complete && newSearchesPerformed === 0 && filingDocFetches === 0;
+  let contIssuedToken: string | null = null;
+  if (complete) {
+    // 완주한 호출은 자기 토큰의 키를 전부 거둔다. ⚠️ **버려진 실행**(사용자가 이어보기를
+    // 그만둔 경우)의 키는 남는다 — 회사당 목록 수백 행이라 작고 TTL 이 지나면 무효라
+    // 허용한다. 만료 토큰을 다시 들고 오면 그때 지운다.
+    if (contToken) deps.kvDeletePrefix(contPrefix(contToken));
+  } else {
+    // ★ 토큰은 **첫 미완주 호출에서** 만든다 — 완주한 첫 호출은 토큰을 만들지도 저장하지도
+    //   않아 종전과 동일한 동작·동일한 저장소 상태로 끝난다.
+    contIssuedToken = contToken ?? randomBytes(16).toString('hex');
+    const nextMeta: ContinuationMeta = {
+      rcept_no: sourceRceptNo,
+      today,
+      fiscal_year: fiscalYear,
+      created_at: contCreatedAt,
+      calls: contCallIndex,
+    };
+    deps.kvSet(`${contPrefix(contIssuedToken)}meta`, JSON.stringify(nextMeta));
+    for (const [key, s] of contToPersist) {
+      deps.kvSet(`${contPrefix(contIssuedToken)}s:${key}`, JSON.stringify(s));
+    }
+  }
+  const contExpiresAt = new Date(
+    Date.parse(contCreatedAt) + CONTINUATION_TTL_MS,
+  ).toISOString();
+  const contEstimatedCalls = Math.max(
+    1,
+    Math.ceil(companiesRemaining / MAX_COMPANIES_TO_SEARCH),
+  );
+
   if (budgetTruncated) {
     notes.push(
       `⚠️ **이 결과는 시간 예산으로 중단된 부분 결과입니다.** MCP 클라이언트가 약 60초에 호출을 ` +
@@ -3921,9 +4219,9 @@ export async function detectUndisclosedTransactions(
         `법인등록번호 미대조 ${budgetSkipped.warming_names_not_matched + budgetSkipped.jurir_disambiguations_skipped}건` +
         (budgetSkipped.corp_index_not_loaded ? ' · 법인 인덱스 미적재' : '') +
         ` (diagnostics.budget 참조. 소진 지점: ${budget.stoppedAt ?? '미상'}). ` +
-        '★ 다시 실행하면 **원문·법인등록번호·법인 인덱스는 캐시에 남아** 앞 단계가 빨라지므로 ' +
-        '더 멀리 갑니다. ⚠️ 다만 **J001 공시 목록은 캐시하지 않으므로** 검색은 매번 처음부터 ' +
-        '합니다 — 검색을 못 한 회사는 rcept_no 없이 개별 확인이 더 확실합니다.',
+        '★ **여기서 끝이 아닙니다** — continuation.token 을 같은 인자에 넣어 다시 호출하면 ' +
+        '이번에 못 본 회사부터 이어서 봅니다. 앞 호출이 받아 둔 J001 목록은 다시 받지 않고, ' +
+        '원문·법인등록번호·법인 인덱스 캐시도 그대로라 호출을 거듭할수록 멀리 갑니다.',
     );
   }
 
@@ -3940,6 +4238,16 @@ export async function detectUndisclosedTransactions(
   }
 
   const scopeCaveats: string[] = [
+    // ★ **아직 온전하지 않다**는 사실이 맨 앞에 온다. 아래 caveat 들은 "본 범위 안에서의
+    //   한계"인데, 미완주 실행은 그 범위조차 확정되지 않았다.
+    ...(complete
+      ? []
+      : [
+          `★ **이 결과는 아직 온전하지 않습니다** — 남은 회사 ${companiesRemaining}개사. ` +
+            'continuation.token 을 같은 인자에 넣어 **complete:true 가 나올 때까지 다시 호출**하세요 ' +
+            `(예상 ${contEstimatedCalls}회 더). 미완주 사유: ${incompleteReasons.join(', ')}. ` +
+            '⚠️ 이 중간 결과를 최종 답으로 제시하지 마세요 — 못 본 범위는 "후보 없음"이 아닙니다.',
+        ]),
     // 예산으로 잘렸으면 **맨 앞에** 온다 — 아래 caveat 들은 전부 "다 봤을 때의 한계"를 말하는데,
     // 다 보지 못한 실행에서는 그보다 먼저 알아야 할 사실이다.
     ...(budgetTruncated
@@ -4320,6 +4628,23 @@ export async function detectUndisclosedTransactions(
     notes.push('ℹ️ 정정 접수분(최신본)을 읽었습니다 — 원본이 아니라 정정 반영 내용 기준입니다.');
   }
 
+  // ★ 미완주 안내는 **notes 맨 앞**에 온다 — 아래 note 들을 다 읽고 나서야 "그런데 이건
+  //   부분 결과였다"를 알게 되면 이미 결론을 내린 뒤다. 모든 push 가 끝난 지금 앞에 붙인다.
+  if (!complete) {
+    notes.unshift(
+      `★ **아직 온전한 답이 아닙니다 (continuation.complete:false).** 남은 회사 ` +
+        `${companiesRemaining}개사 · 이 토큰으로 ${contCallIndex}번째 호출 · 사유 ` +
+        `${incompleteReasons.join(', ')}. **continuation.token 을 같은 인자에 넣어 다시 ` +
+        `호출하세요** (예상 ${contEstimatedCalls}회 더, 토큰 수명 ${CONTINUATION_TTL_MS / 3_600_000}시간). ` +
+        'complete:true 를 낸 호출의 결과가 온전한 답이고, 그 전 결과를 최종으로 제시하면 안 됩니다.' +
+        (contStalled
+          ? ' ⚠️ **다만 이번 호출은 새로 검색한 회사도 새로 연 원문도 0건입니다** — 더 불러도 ' +
+            '같은 자리일 수 있으니, 남은 회사는 search_disclosures(pblntf_detail_ty:"J001") 로 ' +
+            '개별 확인하는 편이 확실합니다.'
+          : ''),
+    );
+  }
+
   log.info('미공시 교차탐지 완료', {
     rcept_no: sourceRceptNo,
     borrowings: borrowings.length,
@@ -4346,7 +4671,51 @@ export async function detectUndisclosedTransactions(
       fiscal_year: fiscalYear,
       judged_at: today,
     },
+    /**
+     * ── 이어보기 ──
+     * ★ **`complete` 가 이 응답에서 가장 먼저 읽어야 할 값이다.** false 면 이 결과는 중간
+     *   보고이고, `token` 을 같은 인자에 넣어 다시 부르면 안 본 회사부터 이어서 본다.
+     *   true 를 낸 호출의 결과가 온전한 답이다.
+     */
+    continuation: {
+      complete,
+      ...(contIssuedToken ? { token: contIssuedToken } : {}),
+      /** 이 토큰으로 몇 번째 호출인지 (토큰 없이 시작한 첫 호출은 1) */
+      call_index: contCallIndex,
+      /**
+       * 미완주 사유 — **재호출로 풀리는 것만** 담는다. 조인 실패·판정불가·유형 미상 보류처럼
+       * 다시 불러도 그대로인 것은 여기 없고 종전 어휘(not_judged 의 reason)로 표시돼 있다.
+       */
+      incomplete_reasons: incompleteReasons,
+      progress: {
+        /** J001 대조가 필요한 회사 총수 (매 호출 같다 — 같은 문서를 읽는다) */
+        companies_to_search_total: ranked.length,
+        /** 이 실행이 지금까지 목록을 확보한 회사 수 (앞 호출 재사용 + 이번 새 검색) */
+        companies_searched_cumulative: contReused + newSearchesPerformed,
+        /** 이번 호출에서 **목록을 실제로 받아 낸** 회사 수 (시도가 아니라 성공 — 진전의 척도) */
+        companies_searched_this_call: newSearchesPerformed,
+        /** 앞 호출의 캐시에서 그대로 가져온 회사 수 — 이만큼은 콜도 예산도 쓰지 않았다 */
+        companies_reused_from_token: contReused,
+        /** 다음 호출이 다시 시도할 회사 수 (complete:true 면 반드시 0) */
+        companies_remaining: companiesRemaining,
+        filing_docs_fetched_this_call: filingDocFetches,
+        /** 건수·시간 예산으로 열지 못한 원문 수 (합) */
+        filing_docs_not_read: filingDocBudgetHits + filingDocDeadlineHits,
+      },
+      ...(contIssuedToken ? { expires_at: contExpiresAt } : {}),
+      next_step: complete
+        ? '이 결과가 온전한 답입니다 — 더 호출할 필요가 없습니다.'
+        : `같은 인자에 continuation_token 을 넣어 다시 호출하세요. complete:true 가 나올 때까지 ` +
+          `반복하면 온전한 답이 됩니다 (남은 ${companiesRemaining}개사, 예상 ${contEstimatedCalls}회 더).`,
+      /**
+       * 이어보기가 제자리걸음이다 — 새 검색도 새 원문도 0인데 완주가 아니다.
+       * 더 부르지 말고 남은 회사를 개별 조회하라는 신호다.
+       */
+      ...(contStalled ? { stalled: true as const } : {}),
+    },
     summary: {
+      /** 이 결과가 온전한가 — 최상위 `continuation.complete` 와 같은 값이다 */
+      complete,
       /**
        * ★ 시간 예산으로 **범위가 잘린 실행**이다 — 완주한 실행에는 이 키가 없다.
        * 아래 카운터들은 "본 범위 안의" 집계이고, 못 본 범위는 not_judged 에 있다.
@@ -4478,9 +4847,17 @@ export async function detectUndisclosedTransactions(
               budget_ms: budget.budgetMs,
               elapsed_ms: budget.elapsedMs(),
               stopped_at: budget.stoppedAt,
-              /** 재실행이 이어서 보는 범위 — 목록은 여기 없다 (캐시하지 않는다) */
-              resumable_on_rerun: ['J001 원문', '법인등록번호(기업개황)', 'DART 법인 인덱스'],
-              not_resumable_on_rerun: ['J001 공시 목록 검색 (캐시하지 않아 매번 처음부터)'],
+              /**
+               * 이어보기 토큰으로 다시 부르면 이어서 보는 범위.
+               * J001 공시 목록은 캐시하지 않지만(설계 불변식), **같은 실행 안에서만** 유효한
+               * 이어보기 캐시가 그 자리를 대신한다 — 토큰 없는 새 호출은 언제나 새로 받는다.
+               */
+              resumable_with_continuation_token: [
+                'J001 공시 목록 검색 (이 실행이 이미 받은 회사는 다시 받지 않는다)',
+                'J001 원문',
+                '법인등록번호(기업개황)',
+                'DART 법인 인덱스',
+              ],
             },
           }
         : {}),
@@ -4537,6 +4914,15 @@ export async function detectUndisclosedTransactions(
         from_document: !input.group && populationSource === 'portal',
       },
       list_calls: listCalls,
+      /**
+       * ★ 이어보기 호출에서 **앞 호출이 받아 둔 목록을 그대로 쓴 회사 수**.
+       *
+       * 이 값이 있으면 `list_calls` 만 보고 대조 범위를 판단하면 안 된다 — 이번 호출은 목록을
+       * 새로 받지 않았을 뿐, 판정은 `list_calls + 이 값` 만큼의 회사로 이뤄졌다. 실측 예:
+       * 같은 문서를 한 번에 완주하면 `list_calls:12`, 3회로 이어 보면 마지막 호출이
+       * `list_calls:2` + 이 값 `10` 이고 **판정 결과는 완전히 같다**(2026-09-07 대조 0건).
+       */
+      ...(contReused > 0 ? { lists_reused_from_continuation: contReused } : {}),
       /**
        * 동명 2건 이상을 **법인등록번호**(포털 jurirno ↔ DART 기업개황 jurir_no)로 확정한 건.
        * 이름으로는 고를 수 없던 회사이므로 근거를 남긴다.

@@ -29,6 +29,12 @@ export type ErrorCode =
    * 이 코드가 응답으로 나가는 것은 원천 문서조차 못 받은 예외적 경우다.
    */
   | 'deadline_exceeded'
+  /**
+   * 이어보기 토큰(`continuation_token`)이 만료·부재이거나 앞 호출과 다른 인자로 들어왔다.
+   * 이어보기 캐시는 **한 논리적 실행 안에서만** 유효하므로, 어긋나면 앞 호출의 목록을
+   * 조용히 섞어 쓰지 않고 거절한다 — 토큰 없이 처음부터 다시 실행하면 된다.
+   */
+  | 'continuation_invalid'
   | 'internal_error';
 
 export interface ErrorResponse {
