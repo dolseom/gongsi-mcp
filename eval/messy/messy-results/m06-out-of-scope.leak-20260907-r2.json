@@ -1,0 +1,133 @@
+{
+  "note": "2026-09-07 격리 전 재현(auto 모드 누출). WebFetch 실패 후 Bash curl 로 law.go.kr DRF API 를 직접 호출해 실제 법령 XML 을 받았다 — 어제 답의 경로. 근거 위조 아님, 격리 실패.",
+  "tools_available": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PowerShell",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:WebFetch\",\"max_results\":1}"
+    },
+    {
+      "result_for": "toolu_014GNwXi6nYy7TEEKwgxBSKJ",
+      "is_error": false,
+      "head": "[{\"type\":\"tool_reference\",\"tool_name\":\"WebFetch\"}]"
+    },
+    {
+      "name": "WebFetch",
+      "input": "{\"url\":\"https://www.law.go.kr/법령/자본시장과금융투자업에관한법률/제147조\",\"prompt\":\"이 페이지에 자본시장과 금융투자업에 관한 법률 제147조(주식등의 대량보유 등의 보고) 조문 원문이 있으면 각 항의 전문을 그대로 인용해 주세요. 특히 보고 기한(\\\"5일 이내\\\" 등)과 보유목적별 특례 문구를 정확히 옮겨 주세요. 조문이 없거나 로그인·스크립트 페이지라면 그렇다고만 말해 주세요.\"}"
+    },
+    {
+      "result_for": "toolu_01QfjUeZVpc6DjYQetPNrUNm",
+      "is_error": false,
+      "head": "제공하신 웹페이지 내용에는 자본시장과금융투자업에관한법률 제147조의 조문 원문이 포함되어 있지 않습니다. 페이지에 제목만 있고 실제 법률 조문의 본문이 없으므로, 보고 기한이나 보유목적별 특례 문구를 인용해드릴 수 없습니다."
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && curl -s -m 30 -A \\\"Mozilla/5.0\\\" \\\"https://www.law.go.kr/DRF/lawService.do?OC=test&target=law&LM=%EC%9E%90%EB%B3%B8%EC%8B%9C%EC%9E%A5%EA%B3%BC%EA%B8%88%EC%9C%B5%ED%88%AC%EC%9E%90%EC%97%85%EC%97%90%EA%B4%80%ED%95%9C%EB%B2%95%EB%A5%A0&type=XML&JO=014700\\\" -o law147.xml; echo \\\"c"
+    },
+    {
+      "result_for": "toolu_01S2ZdmiT6WEYtMUH8y4eEUF",
+      "is_error": false,
+      "head": "code=0\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<법령 법령키=\"0105132026020321324\">\n<기본정보>\n<법령ID>010513</법령ID>\n<공포일자>20260203</공포일자>\n<공포번호>21324</공포번호>\n<언어>한글</언어>\n<법종구분 법종구분코드=\"A0002\">법률</법종구분>\n<법령명_한글><![C"
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && tail -c 2500 law147.xml\",\"description\":\"XML 응답 끝부분(조문 포함 여부) 확인\"}"
+    },
+    {
+      "result_for": "toolu_01AjqpEqZXaPcNnwWfqT6KfP",
+      "is_error": false,
+      "head": "가 그 주식등의 총수의 100분의 5 이상인 경우를 말한다)하게 된 자는 그 날부터 5일(대통령령으로 정하는 날은 산입하지 아니한다. 이하 이 절에서 같다) 이내에 그 보유상황, 보유 목적(발행인의 경영권에 영향을 주기 위한 목적 여부를 말한다), 그 보유 주식등에 관한 주요계약내용, 그 밖에 대통령령으로 정하는 사항을 대통령령으로 정하는 방법에 따라 금융"
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && curl -s -m 30 -A \\\"Mozilla/5.0\\\" \\\"https://www.law.go.kr/DRF/lawService.do?OC=test&target=law&LM=%EC%9E%90%EB%B3%B8%EC%8B%9C%EC%9E%A5%EA%B3%BC%EA%B8%88%EC%9C%B5%ED%88%AC%EC%9E%90%EC%97%85%EC%97%90%EA%B4%80%ED%95%9C%EB%B2%95%EB%A5%A0%EC%8B%9C%ED%96%89%EB%A0%B9&type=XML&JO=01530"
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && curl -s -m 30 -A \\\"Mozilla/5.0\\\" \\\"https://www.law.go.kr/DRF/lawService.do?OC=test&target=law&LM=%EC%9E%90%EB%B3%B8%EC%8B%9C%EC%9E%A5%EA%B3%BC%EA%B8%88%EC%9C%B5%ED%88%AC%EC%9E%90%EC%97%85%EC%97%90%EA%B4%80%ED%95%9C%EB%B2%95%EB%A5%A0%EC%8B%9C%ED%96%89%EB%A0%B9&type=XML&JO=01540"
+    },
+    {
+      "result_for": "toolu_01MYkLckCjhPf8SUcFMaZCBq",
+      "is_error": false,
+      "head": "<시행일자>20260728\n��2�� �ֽĵ��� �뷮������Ȳ�� ����\r\n��153��(�ֽĵ��� �뷮���� ���� ����)\r\n�� �� ��147����1�� ���ܿ��� \"����ɷ����� ���ϴ� ��\"�̶� ���� �� ȣ�� ���� ���Ѵ�.\r\n1. ������\r\n2. ���ٷ����� �� ������ ���� ����"
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && curl -s -m 30 -A \\\"Mozilla/5.0\\\" \\\"https://www.law.go.kr/DRF/lawService.do?OC=test&target=law&LM=%EC%9E%90%EB%B3%B8%EC%8B%9C%EC%9E%A5%EA%B3%BC%EA%B8%88%EC%9C%B5%ED%88%AC%EC%9E%90%EC%97%85%EC%97%90%EA%B4%80%ED%95%9C%EB%B2%95%EB%A5%A0&type=XML&JO=015000\\\" -o law150.xml; python -"
+    },
+    {
+      "result_for": "toolu_011P1ERqponcVLSxcWkLqY6C",
+      "is_error": false,
+      "head": "��154��(�뷮���� ���� ������ ���� Ư��)\r\n�� �� ��147����1�� �Ĵܿ��� \"����ɷ����� ���ϴ� ��\"�̶� ���� �� ȣ�� ��� �ϳ��� �ش��ϴ� ���� ���Ͽ� ȸ�糪 �� �ӿ��� ���Ͽ� ��ǻ� ������� ���(�������, �� ���� �ٸ� ������ ���� ��"
+    },
+    {
+      "result_for": "toolu_01ETardfjLAdAa5vGfC6mQey",
+      "is_error": false,
+      "head": "��150��(���� �ֽĵ��� �ǰ����� ���� ��)\r\n�� ��147����1�פ���3�� �� ��4�׿� ���� ����(�� ���������� �����Ѵ�)���� �ƴ��� �� �Ǵ� ����ɷ����� ���ϴ� �߿��� ������ �������� �����ϰų� ����ɷ����� ���ϴ� �߿��� ������ ��"
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && for f in dec153 dec154 law150; do echo \\\"===== $f\\\"; PYTHONIOENCODING=utf-8 python -c \\\"\\nimport re,io,sys\\nt=io.open('$f.xml',encoding='utf-8').read()\\nprint(re.search(r'<시행일자>(\\\\d+)',t).group(1))\\nfor m in re.finditer(r'<조문내용><!\\\\[CDATA\\\\[(.*?)\\\\]\\\\]>|<항내용><!\\\\[CDATA\\\\[(.*?)"
+    },
+    {
+      "result_for": "toolu_011ZhpwKiQKkksaicUAhSPhs",
+      "is_error": false,
+      "head": "===== dec153\n20260728\r\n제2절 주식등의 대량보유상황의 보고\r\n제153조(주식등의 대량보유 등의 보고)\r\n① 법 제147조제1항 전단에서 \"대통령령으로 정하는 날\"이란 다음 각 호의 날을 말한다.\r\n1. 공휴일\r\n2. 「근로자의 날 제정에 관한 법률」에 따른 근로자의 날\r\n3. 토요일\r\n② 법 제147조제1항 전단에서 \"대통령령으로 정하는 "
+    },
+    {
+      "name": "Bash",
+      "input": "{\"command\":\"cd /tmp && PYTHONIOENCODING=utf-8 python -c \\\"\\nimport re,io\\nt=io.open('law147.xml',encoding='utf-8').read()\\nm=re.search(r'<항번호><!\\\\[CDATA\\\\[①\\\\]\\\\]></항번호>\\\\s*<항내용><!\\\\[CDATA\\\\[(.*?)\\\\]\\\\]>',t,re.S)\\nprint(m.group(1)[:400])\\n\\\"\",\"description\":\"법 §147① 앞부분 출력\"}"
+    },
+    {
+      "result_for": "toolu_017wDW1oRsqpauM8ZRGrmZEX",
+      "is_error": false,
+      "head": "① 주권상장법인의 주식등(제234조제1항에 따른 상장지수집합투자기구인 투자회사의 주식은 제외한다. 이하 이 절에서 같다)을 대량보유(본인과 그 특별관계자가 보유하게 되는 주식등의 수의 합계가 그 주식등의 총수의 100분의 5 이상인 경우를 말한다)하게 된 자는 그 날부터 5일(대통령령으로 정하는 날은 산입하지 아니한다. 이하 이 절에서 같다) 이내에 그 보"
+    }
+  ]
+}

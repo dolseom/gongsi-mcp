@@ -104,6 +104,16 @@ function runClaude(question) {
       '--mcp-config', MCP_CONFIG_REL,
       '--strict-mcp-config',
       '--allowedTools', 'mcp__gongsi',
+      // ⚠️ **auto 모드에서는 `--allowedTools` 가 허용 목록으로 동작하지 않는다.**
+      // 사용자 설정이 `defaultMode: auto` 면 내장 도구가 그대로 살아 있다 — 2026-09-07
+      // stream-json 으로 확인한 결과 init 이벤트의 tools 45개에 WebFetch·WebSearch·Bash 가
+      // 전부 들어 있었다. 그러면 이 평가가 재는 것이 "우리 MCP 가 유용한가"가 아니라
+      // "모델이 웹을 잘 뒤지는가"가 되고, 웹 근거는 이 프로젝트가 쓰지 않기로 한 것이다
+      // (작업 원칙: 웹 검색 결과는 근거로 쓰지 않는다). 게다가 위 tool_not_used 판정이
+      // num_turns 로 도구 사용을 재는데, 웹 도구로 채운 턴도 똑같이 세어 통과시켜 버린다.
+      // → 차단이 필요하다. ★ ToolSearch 는 남긴다 (MCP 도구가 지연 로드라 스키마를
+      //   ToolSearch 로 먼저 가져온다 — 막으면 MCP 도구를 아예 못 부른다).
+      '--disallowedTools', 'WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent',
       '--output-format', 'json',
       '--max-turns', '12',
     ];
