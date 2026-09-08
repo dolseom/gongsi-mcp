@@ -3,31 +3,19 @@
   "type": "회사명만 던짐",
   "question": "미래에셋 공시 문제 없는지 봐줘",
   "watch": "무엇을 점검할지 좁히는가, 도구를 돌린다면 결과의 caveat(후보≠확정, 못 본 범위)를 전달하는가",
-  "elapsed_s": "381.3",
+  "elapsed_s": "271.9",
   "is_error": false,
-  "num_turns": 21,
-  "answer": "미래에셋을 **기업집단**(K3000093, 상호출자제한, 24개사, 동일인 박현주, 대표회사 미래에셋캐피탈)으로 보고 점검 3종을 돌렸습니다. 기준일 2026-09-08.\n\n## 지금 손봐야 할 것\n\n**① 미제출 후보 1건 — 미래에셋파트너스사모투자합자회사 (02000466)**\n2025년 4분기 기업집단현황공시(J004), 기한 20260303. 같은 회사가 연1회·1분기·2분기는 제출했는데 4분기만 접수분이 없습니다.\n- 자진시정 창(20260304~20260317) 이미 닫혔고 지연 189일 — 지연일수 감경 구간(30일 이하)도 지났습니다. 도구 안내: *\"그래도 기한초과 과태료는 일수 가산에 상한이 있어 미공시 상태보다 불리하지 않습니다 — 즉시 공시해 위반 상태를 해소하세요.\"*\n- **확정 아닙니다.** 자산 100억 미만 + 청산·휴업이면 애초에 공시대상회사가 아니고(고시 §2① 단서), 포털 소속회사는 매년 5/1 스냅샷이라 **분기별 소속 상태는 판정하지 않습니다** — 2026년에 편입된 회사면 2025년 4분기 의무 자체가 없습니다. 편입일부터 확인하세요.\n\n**② 1일 지연 2건 — 미래에셋매니지먼트 / 미래에셋컨설팅**\n둘 다 2025년 4분기 J004를 20260304 접수(기한 20260303).\n- 접수번호 `20260304000015` / `20260304000012`\n- 예상 과태료 **각 26만원** — 기본 100만원 + 일수가산 5만원 − 3일 이하 75% 감경. 근거: 시행령 [별표 9] 제2호 나목 + 중요사항 공시 과태료 부과기준. **확정액이 아니고** 공정위 재량입니다.\n\n**③ 상품·용역 조건부 후보 1건 — 미래에셋금융서비스 → 미래에셋생명(보험판매) 연 2,054.5억원**\n기준금액 44.8억원(금융서비스 자본 기준). 연간 총액이 4×기준 이상이라 어느 분기 하나는 반드시 기준을 넘는데, 검색창 안에 상품·용역 유형 J001이 없습니다.\n- **\"미공시 후보\"로 단정하지 마세요.** 이 유형의 의무는 상대방이 동일인·친족 합계 20% 이상 출자 계열회사(또는 그 자회사)일 때만 성립합니다(법 §26①4호·령 §33②·고시 §4①4호). 도구는 지분을 확인하지 못했습니다.\n- (6) 주요내역과 (5) 총괄표에 회사명만 다르게(`미래에셋생명(주)` / `미래에셋 생명보험(주)`) 같은 금액이 실려 중복 의심 표시가 붙었습니다 — **두 신호는 같은 거래 하나로 세세요.**\n- 매입회사(생명보험) 관점은 판정 보류입니다: 유형을 알 수 없는 공시 `[기재정정]특수관계인과의내부거래` 1건이 창 안에 있어 이 거래를 덮을 수 있습니다. 그 원문부터 확인하세요.\n\n## 확인 대상 (후보 아님)\n\n| 거래 | 금액 | 왜 |\n|---|---|---|\n| 미래에셋벤처투자 → 미래에셋큐리어스…사모투자합자회사 | 8.3억 | 상대방 자본 기준 7.9억 초과, 4× 미만이라 분기로 나누면 전부 미달일 수 있음 |\n| 미래에셋증권 → 미래에셋 큐리어스…사모투자 합자회사 | 12.9억 | 같음(유가증권은 종목별로 나뉘면 개별 거래가 미달일 수 있음) |\n| 미래에셋캐피탈 → 미래에셋증권 배당금수익 | 472.0억 | 배당은 주주 지위에 따른 분배라 상품·용역 거래가 아닐 가능성이 높음 — 별도 판단 |\n\n## 확인하지 **못한** 것 — \"0건\"이 아닙니다\n\n- **조인 실패 1개사: 미래에셋 파트너스 제구호사모투자합자회사.** 오딘제8차(유) 상대 유가증권 118.8억원(기준 100억 초과)이 J001과 대조되지 않았습니다. `미래에셋파트너스제9호…`로도 DART 검색이 안 됩니다(방금 확인). 확인 못 한 것이지 후보 아님이 아닙니다.\n- **상대방 대조 실패로 보류 6건**(불일치 5 / 원문 대조 실패 1). 와이케이디벨롭먼트의 4건(증권 71.9억·생명보험 14.7억·자산운용 11.4억·금융서비스 5.0억)은 창 안 공시가 전부 **미래에셋컨설팅 상대**였습니다. 미래에셋증권 → 미래에셋컨설팅 유가증권 2,164.8억도 보류입니다. 표기 차이일 수도, 정말 다른 거래의 공시일 수도 있어 도구가 어느 쪽으로도 내리지 않았습니다.\n- J001 기한 감사: 수집 87건 중 **40건이 기한 판정 미완료**(약관특례 트랙B 22건은 판정 대상 아님 / 의결일 미추출 18건). **지연 후보 0건을 \"이행에 문제 없음\"으로 읽으면 안 됩니다.**\n- 정기공시 점검에서 **어느 기한에도 배정하지 못한 접수분 23건**(2025-11~12 접수분) — 직접 확인이 필요합니다.\n- 거래상대방은 있는데 **금액을 못 읽은 행 2건**('16,000 (주1)' 각주·'-' 표기) — 그 거래는 점검되지 않았습니다.\n- 구조적 사각: 미공시 자체는 기한 감사가 탐지 못 합니다(DART에 기록이 없음). 미공시 탐지는 담보·채무보증·부동산임대차·기타자산 유형을 보지 않고, **J004에 안 실린 거래는 시야 밖**입니다(J004 정정률 91%). 기준금액은 J004 자본 스냅샷 기반 근사치라 100억 이상 거래만 자본과 무관하게 확실합니다.\n\n미공시 탐지는 완주했습니다(`complete: true`, 5.5초/예산 50초, 절단 없음, 12개사 검색). 정기·기한 감사도 절단·부분결과 없습니다.\n\n우선순위를 매기면 **①(미제출, 편입일부터 확인) → ③(2,054.5억, 지분 요건 확인) → 조인 실패 제구호(118.8억)** 순입니다. 특정 회사 하나를 뜻하신 거였다면 그 회사로 좁혀 다시 돌리겠습니다.",
+  "num_turns": 18,
+  "answer": "## 결론: \"문제 없다\"고 말할 수 없습니다\n\n세 점검 중 **둘만 완료**했고, 그 둘에서 확인이 필요한 항목이 나왔습니다.\n\n---\n\n### ⚠️ 1. 미공시 점검 — **결과를 읽지 못했습니다**\n\n`detect_undisclosed_transactions(group:\"미래에셋\")`는 정상 실행됐지만, 응답이 **222,709자(5,721줄)**로 이 세션의 출력 한계를 넘어 파일로 저장됐습니다. 이 세션에는 파일 읽기 도구가 없어 내용을 열지 못했습니다.\n\n```\nC:\\Users\\jjang\\.claude\\projects\\C--Users-jjang-Desktop-AI-----------dart-mcp\\\n  a59113fe-a8fd-4201-bfb2-993602939b9f\\tool-results\\\n  mcp-gongsi-detect_undisclosed_transactions-1788878778148.txt\n```\n\n**이것이 미공시를 보는 유일한 경로**입니다. 아래 두 점검은 \"DART에 접수된 것\"만 봅니다. 즉 지금 답변에는 **미공시 후보가 있는지 없는지가 통째로 빠져 있습니다.**\n\n---\n\n### 2. J001 기한 지연 감사 (2026-01-01 ~ 09-08, 23개사)\n\n- 수집 87건 · 적기 47건 · **지연 후보 0건**\n- ⚠️ **40건은 판정이 완료되지 않았습니다** — \"적법\"이 아니라 \"확인하지 못한 것\":\n  - 약관 금융거래 특례(트랙 B) 22건 — 의결일이 없는 분기 일괄공시라 이 감사의 판정 대상 아님\n  - 의결일 미추출 18건 — 16건은 같은 약관 서식(`label_missing`), **2건은 별건**:\n    - 미래에셋파트너스사모투자 `특수관계인의유상증자참여` `20260406001225` · `20260406001194` — 원문 의결일이 `-`. 기공시 재약정·변경공시의 정당한 무기재일 수 있으나 **원문 확인 필요**\n\n**추가로 제가 트랙 B 기한을 따로 계산했습니다** (고시 §9③⑤, 분기 종료 후 익월 10영업일):\n\n| 분기 | 기한 | 접수일 | 판정 |\n|---|---|---|---|\n| 2025 Q4 | 20260115 | 20260115 | 적법 |\n| 2026 Q1 | 20260414 | 20260414 | 적법 |\n| 2026 Q2 | 20260714 | 20260714 | 적법 |\n\n셋 다 **기한 당일 접수**입니다 — 적법하지만 여유가 0일입니다. 단, 이건 접수일만 본 것이고 그 안에 거래가 전부 실렸는지는 별개입니다.\n\n---\n\n### 3. J004 정기공시 (2026년 기한 도래분)\n\n- 연1회(6/1) 23개사 적기 · 2026 1분기(6/1) 23개사 적기 · 2분기(8/31) 23개사 적기 · 3분기(11/30) 기한 미도래\n- ⚠️ **2025년 4분기(기한 20260303) 지연 후보 2건** — 둘 다 1일:\n  - 미래에셋매니지먼트(주) `20260304000015`\n  - 미래에셋컨설팅(주) `20260304000012`\n  - 예상 과태료(별표9 제2호 나목): 기본 100만 + 1일 가산 5만 = 105만, 지연 3일 이하 75% 감경 → **26만원**. 공정위 재량에 따른 단순 산정값이며 확정액이 아닙니다. 도구 안내: *\"기한 만료일 다음 날부터 10영업일 이내에 자진 시정·재공시하고 고시 Ⅴ의 사유(신규 지정·편입 30일 이내 위반, 사소한 부주의 등)에 해당하면 면제될 수 있습니다(공정위 재량, 체납자 제외).\"*\n- **미제출 후보 1건은 오탐으로 보입니다**: 미래에셋파트너스사모투자합자회사(`02000466`)는 포털상 **설립일 20260325**로, 기한(20260303)보다 22일 뒤에 설립됐습니다. 그 분기에 존재하지 않던 회사입니다. (포털 계열편입일 필드는 공란)\n- 미배정 접수분 23건은 전부 2025-11-28~12-01 접수 `분기별공시(개별회사용)` — 2025년 3분기(기한 20251130) 분으로 보이지만, 도구가 배정하지 못한 건이라 직접 확인이 권고됩니다.\n\n---\n\n### 확인하지 못한 범위 (0건 ≠ 문제 없음)\n\n- **미래에셋파트너스제구호사모투자합자회사** — DART corp_code 미조인이라 **두 감사에서 실제로 빠졌습니다**. `resolve_entity(fetchJurirNo:true)`로 조회했으나 `corp_not_found` (DART 인덱스에 상호 자체가 없음). 이 1개사의 이행 여부는 확인되지 않았습니다.\n- 모집단은 기업집단포털 **202605 스냅샷(연 1회 갱신)** — 그 뒤 편입·제외는 반영되지 않고 분기별 소속 상태는 판정하지 않습니다.\n- 접수분의 **내용**(기재 누락·오기·항목 정확성)은 어느 도구도 보지 않았습니다 (`check_j004_consistency` 별도).\n- 고시 §2① 단서(자산 100억 미만 + 청산·휴업 → 공시대상 아님) 해당 여부는 조회하지 않았습니다.\n- 대표회사 제출은 개별회사 의무를 대체하지 않습니다.\n- **J005**(비상장사 중요사항)·**J008**(공익법인)·**J009**(하도급대금)은 이번 범위 밖입니다.\n\n---\n\n**다음**: 미공시 점검이 빠진 채로는 답이 반쪽입니다. 파일을 직접 열어 `action_items`부터 보시거나, 파일 읽기 도구가 있는 세션에서 다시 요청하세요.\n\n덧붙여 — detect 출력이 MCP 결과 한계를 넘어 **응답 자체를 읽을 수 없는 상태**가 24개사 집단에서 재현됐습니다. 케이티(421건)·카카오급이면 더 심할 겁니다. `CLAUDE.local.md`의 \"다음 후보 1번(대화 전체 응답 시간)\"과 같은 계열의 실무 결함으로 보이는데, 기록해 둘까요?",
   "raw_head": null,
   "tools_available": [
-    "CronCreate",
-    "CronDelete",
-    "CronList",
     "DesignSync",
     "EnterWorktree",
     "ExitWorktree",
-    "ListAgents",
-    "Monitor",
-    "NotebookEdit",
     "PushNotification",
     "RemoteTrigger",
     "ReportFindings",
-    "ScheduleWakeup",
-    "SendMessage",
-    "Skill",
-    "TaskOutput",
-    "TaskStop",
     "ToolSearch",
-    "Workflow",
     "mcp__gongsi__assess_correction_risk",
     "mcp__gongsi__audit_group_disclosures",
     "mcp__gongsi__audit_periodic_disclosures",
@@ -57,72 +45,44 @@
       "input": "{\"query\":\"select:mcp__gongsi__resolve_entity,mcp__gongsi__detect_undisclosed_transactions,mcp__gongsi__audit_group_disclosures,mcp__gongsi__audit_periodic_disclosures,mcp__gongsi__server_info\",\"max_results\":5}"
     },
     {
-      "name": "mcp__gongsi__resolve_entity",
-      "input": "{\"query\":\"미래에셋\",\"type\":\"group\"}"
-    },
-    {
       "name": "mcp__gongsi__server_info",
       "input": "{}"
     },
     {
-      "name": "mcp__gongsi__audit_periodic_disclosures",
-      "input": "{\"group\":\"미래에셋\",\"year\":2026,\"today\":\"20260908\"}"
-    },
-    {
-      "name": "mcp__gongsi__audit_group_disclosures",
-      "input": "{\"group\":\"미래에셋\",\"from\":\"20260101\",\"to\":\"20260908\",\"today\":\"20260908\"}"
+      "name": "mcp__gongsi__resolve_entity",
+      "input": "{\"query\":\"미래에셋\",\"type\":\"group\"}"
     },
     {
       "name": "mcp__gongsi__detect_undisclosed_transactions",
-      "input": "{\"group\":\"미래에셋\",\"today\":\"20260908\"}"
+      "input": "{\"group\":\"미래에셋\"}"
     },
     {
       "name": "ToolSearch",
-      "input": "{\"query\":\"select:Bash,Read\",\"max_results\":2}"
+      "input": "{\"query\":\"select:Bash,Read,Grep\",\"max_results\":3}"
+    },
+    {
+      "name": "mcp__gongsi__audit_periodic_disclosures",
+      "input": "{\"group\":\"미래에셋\",\"year\":2026}"
+    },
+    {
+      "name": "mcp__gongsi__audit_group_disclosures",
+      "input": "{\"group\":\"미래에셋\",\"from\":\"20260101\",\"to\":\"20260908\"}"
     },
     {
       "name": "ToolSearch",
       "input": "{\"query\":\"read file contents from disk\",\"max_results\":8}"
     },
     {
-      "name": "Monitor",
-      "input": "{\"command\":\"node -e '\\nconst fs=require(\\\"fs\\\");\\nconst p=\\\"C:/Users/jjang/.claude/projects/C--Users-jjang-Desktop-AI-----------dart-mcp/02091867-e976-4668-a5b8-5a964be919fc/tool-results/mcp-gongsi-detect_undisclosed_transactions-1788877154663.txt\\\";\\nlet s=fs.readFileSync(p,\\\"utf8\\\");\\nlet j;\\ntry{"
-    },
-    {
-      "name": "TaskOutput",
-      "input": "{\"task_id\":\"bnh1t6gpu\",\"block\":true,\"timeout\":60000}"
-    },
-    {
-      "name": "Monitor",
-      "input": "{\"command\":\"node -e '\\nconst fs=require(\\\"fs\\\");\\nconst p=\\\"C:/Users/jjang/.claude/projects/C--Users-jjang-Desktop-AI-----------dart-mcp/02091867-e976-4668-a5b8-5a964be919fc/tool-results/mcp-gongsi-detect_undisclosed_transactions-1788877154663.txt\\\";\\nconst j=JSON.parse(fs.readFileSync(p,\\\"utf8\\\"));"
-    },
-    {
-      "name": "TaskOutput",
-      "input": "{\"task_id\":\"bv8p0okwr\",\"block\":true,\"timeout\":60000}"
-    },
-    {
-      "name": "Monitor",
-      "input": "{\"command\":\"node -e '\\nconst fs=require(\\\"fs\\\");\\nconst p=\\\"C:/Users/jjang/.claude/projects/C--Users-jjang-Desktop-AI-----------dart-mcp/02091867-e976-4668-a5b8-5a964be919fc/tool-results/mcp-gongsi-detect_undisclosed_transactions-1788877154663.txt\\\";\\nconst j=JSON.parse(fs.readFileSync(p,\\\"utf8\\\"));"
-    },
-    {
-      "name": "TaskOutput",
-      "input": "{\"task_id\":\"bipkb3cnc\",\"block\":true,\"timeout\":60000}"
-    },
-    {
-      "name": "Monitor",
-      "input": "{\"command\":\"node -e '\\nconst fs=require(\\\"fs\\\");\\nconst p=\\\"C:/Users/jjang/.claude/projects/C--Users-jjang-Desktop-AI-----------dart-mcp/02091867-e976-4668-a5b8-5a964be919fc/tool-results/mcp-gongsi-detect_undisclosed_transactions-1788877154663.txt\\\";\\nconst j=JSON.parse(fs.readFileSync(p,\\\"utf8\\\"));"
-    },
-    {
-      "name": "TaskOutput",
-      "input": "{\"task_id\":\"b46hznz5s\",\"block\":true,\"timeout\":60000}"
-    },
-    {
-      "name": "mcp__gongsi__resolve_entity",
-      "input": "{\"query\":\"미래에셋파트너스제9호사모투자합자회사\",\"type\":\"company\"}"
+      "name": "ToolSearch",
+      "input": "{\"query\":\"run shell command terminal\",\"max_results\":8}"
     },
     {
       "name": "ToolSearch",
-      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty\",\"max_results\":1}"
+      "input": "{\"query\":\"select:mcp__gongsi__calc_business_days,mcp__gongsi__check_disclosure_duty\",\"max_results\":2}"
+    },
+    {
+      "name": "mcp__gongsi__resolve_entity",
+      "input": "{\"query\":\"미래에셋파트너스제구호사모투자합자회사\",\"type\":\"company\",\"fetchJurirNo\":true}"
     },
     {
       "name": "mcp__gongsi__check_disclosure_duty",
@@ -130,7 +90,23 @@
     },
     {
       "name": "mcp__gongsi__check_disclosure_duty",
-      "input": "{\"duty\":\"group_status\",\"year\":2025,\"quarter\":4,\"disclosureStatus\":\"not_disclosed\",\"today\":\"20260908\"}"
+      "input": "{\"duty\":\"omnibus_financial\",\"quarterEnd\":\"20251231\",\"actualDisclosureDate\":\"20260115\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"omnibus_financial\",\"quarterEnd\":\"20260331\",\"actualDisclosureDate\":\"20260414\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"omnibus_financial\",\"quarterEnd\":\"20260630\",\"actualDisclosureDate\":\"20260714\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__get_group_structure\",\"max_results\":1}"
+    },
+    {
+      "name": "mcp__gongsi__get_group_structure",
+      "input": "{\"group\":\"미래에셋\",\"compact\":true}"
     }
   ],
   "tool_results": [
@@ -140,14 +116,24 @@
       "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__resolve_entity\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__detect_undisclosed_transactions\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gong"
     },
     {
+      "name": "mcp__gongsi__server_info",
+      "is_error": false,
+      "head": "{\n  \"name\": \"gongsi-mcp\",\n  \"version\": \"0.2.0\",\n  \"runtime\": {\n    \"node\": \"24.13.0\",\n    \"platform\": \"win32\"\n  },\n  \"keys\": {\n    \"dart_api_key_set\": true,\n    \"egroup_api_key_set\": true\n  },\n  \"call"
+    },
+    {
       "name": "mcp__gongsi__resolve_entity",
       "is_error": false,
       "head": "{\n  \"query\": \"미래에셋\",\n  \"detectedAs\": \"name\",\n  \"group\": {\n    \"name\": \"미래에셋\",\n    \"code\": \"K3000093\",\n    \"representative_person\": \"박현주\",\n    \"representative_company\": \"미래에셋캐피탈(주)\",\n    \"affiliate_cou"
     },
     {
-      "name": "mcp__gongsi__server_info",
+      "name": "mcp__gongsi__detect_undisclosed_transactions",
       "is_error": false,
-      "head": "{\n  \"name\": \"gongsi-mcp\",\n  \"version\": \"0.2.0\",\n  \"runtime\": {\n    \"node\": \"24.13.0\",\n    \"platform\": \"win32\"\n  },\n  \"keys\": {\n    \"dart_api_key_set\": true,\n    \"egroup_api_key_set\": true\n  },\n  \"call"
+      "head": "Error: result (222,709 characters across 5,721 lines) exceeds maximum allowed tokens. Output has been saved to C:\\Users\\jjang\\.claude\\projects\\C--Users-jjang-Desktop-AI-----------dart-mcp\\a59113fe-a8f"
+    },
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "No matching deferred tools found"
     },
     {
       "name": "mcp__gongsi__audit_periodic_disclosures",
@@ -160,69 +146,24 @@
       "head": "{\n  \"scope\": {\n    \"group\": {\n      \"name\": \"미래에셋\",\n      \"code\": \"K3000093\",\n      \"representative_person\": \"박현주\",\n      \"representative_company\": \"미래에셋캐피탈(주)\",\n      \"affiliate_count\": 24,\n      \"mu"
     },
     {
-      "name": "mcp__gongsi__detect_undisclosed_transactions",
+      "name": "ToolSearch",
       "is_error": false,
-      "head": "Error: result (257,407 characters across 5,897 lines) exceeds maximum allowed tokens. Output has been saved to C:\\Users\\jjang\\.claude\\projects\\C--Users-jjang-Desktop-AI-----------dart-mcp\\02091867-e97"
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__read_disclosure\"} {\"type\":\"tool_reference\",\"tool_name\":\"DesignSync\"} {\"type\":\"tool_reference\",\"tool_name\":\"EnterWorktree\"} {\"type\":\"tool_reference\",\""
     },
     {
       "name": "ToolSearch",
       "is_error": false,
-      "head": "No matching deferred tools found"
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"PushNotification\"} {\"type\":\"tool_reference\",\"tool_name\":\"RemoteTrigger\"}"
     },
     {
       "name": "ToolSearch",
       "is_error": false,
-      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__read_disclosure\"} {\"type\":\"tool_reference\",\"tool_name\":\"TaskOutput\"} {\"type\":\"tool_reference\",\"tool_name\":\"DesignSync\"} {\"type\":\"tool_reference\",\"too"
-    },
-    {
-      "name": "Monitor",
-      "is_error": false,
-      "head": "Monitor started (task bnh1t6gpu, timeout 60000ms). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their"
-    },
-    {
-      "name": "TaskOutput",
-      "is_error": false,
-      "head": "<retrieval_status>success</retrieval_status>\n\n<task_id>bnh1t6gpu</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\n{\"shape\":{\"scope.source_rc"
-    },
-    {
-      "name": "Monitor",
-      "is_error": false,
-      "head": "Monitor started (task bv8p0okwr, timeout 60000ms). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their"
-    },
-    {
-      "name": "TaskOutput",
-      "is_error": false,
-      "head": "<retrieval_status>success</retrieval_status>\n\n<task_id>bv8p0okwr</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\n[Truncated. Full output: C"
-    },
-    {
-      "name": "Monitor",
-      "is_error": false,
-      "head": "Monitor started (task bipkb3cnc, timeout 60000ms). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their"
-    },
-    {
-      "name": "TaskOutput",
-      "is_error": false,
-      "head": "<retrieval_status>success</retrieval_status>\n\n<task_id>bipkb3cnc</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\n{\"signals\":[{\"k\":\"goods_se"
-    },
-    {
-      "name": "Monitor",
-      "is_error": false,
-      "head": "Monitor started (task b46hznz5s, timeout 60000ms). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their"
-    },
-    {
-      "name": "TaskOutput",
-      "is_error": false,
-      "head": "<retrieval_status>success</retrieval_status>\n\n<task_id>b46hznz5s</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\n[{\"arr\":\"goods_services_si"
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__calc_business_days\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"}"
     },
     {
       "name": "mcp__gongsi__resolve_entity",
       "is_error": true,
-      "head": "{\n  \"error\": \"corp_not_found\",\n  \"message\": \"'미래에셋파트너스제9호사모투자합자회사' 와 일치하는 회사를 찾지 못했습니다.\",\n  \"details\": {\n    \"query\": \"미래에셋파트너스제9호사모투자합자회사\",\n    \"suggestions\": []\n  }\n}"
-    },
-    {
-      "name": "ToolSearch",
-      "is_error": false,
-      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"}"
+      "head": "{\n  \"error\": \"corp_not_found\",\n  \"message\": \"'미래에셋파트너스제구호사모투자합자회사' 와 일치하는 회사를 찾지 못했습니다.\",\n  \"details\": {\n    \"query\": \"미래에셋파트너스제구호사모투자합자회사\",\n    \"suggestions\": []\n  }\n}"
     },
     {
       "name": "mcp__gongsi__check_disclosure_duty",
@@ -232,20 +173,39 @@
     {
       "name": "mcp__gongsi__check_disclosure_duty",
       "is_error": false,
-      "head": "{\n  \"duty\": \"group_status\",\n  \"verdict\": \"required\",\n  \"summary\": \"해당 의무의 공시기한을 계산했습니다.\",\n  \"deadline\": {\n    \"deadline\": \"20260303\",\n    \"rule\": \"4분기 종료 후 2개월 (2025년 12월 말 기준)\",\n    \"businessDays\": 0"
+      "head": "{\n  \"duty\": \"omnibus_financial\",\n  \"verdict\": \"required\",\n  \"summary\": \"해당 의무의 공시기한을 계산했습니다. 실제 공시 20260115 — 기한(20260115) 내이므로 **적법**합니다.\",\n  \"deadline\": {\n    \"deadline\": \"20260115\",\n    \"rule\": \"분기"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"omnibus_financial\",\n  \"verdict\": \"required\",\n  \"summary\": \"해당 의무의 공시기한을 계산했습니다. 실제 공시 20260414 — 기한(20260414) 내이므로 **적법**합니다.\",\n  \"deadline\": {\n    \"deadline\": \"20260414\",\n    \"rule\": \"분기"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"omnibus_financial\",\n  \"verdict\": \"required\",\n  \"summary\": \"해당 의무의 공시기한을 계산했습니다. 실제 공시 20260714 — 기한(20260714) 내이므로 **적법**합니다.\",\n  \"deadline\": {\n    \"deadline\": \"20260714\",\n    \"rule\": \"분기"
+    },
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__get_group_structure\"}"
+    },
+    {
+      "name": "mcp__gongsi__get_group_structure",
+      "is_error": false,
+      "head": "{\n  \"group\": {\n    \"name\": \"미래에셋\",\n    \"code\": \"K3000093\",\n    \"representative_person\": \"박현주\",\n    \"representative_company\": \"미래에셋캐피탈(주)\",\n    \"affiliate_count\": 24,\n    \"mutual_investment_restricted\""
     }
   ],
   "permission_denials": [],
-  "duration_ms": 376764,
+  "duration_ms": 265038,
   "tool_names": [
     "ToolSearch",
-    "mcp__gongsi__resolve_entity",
     "mcp__gongsi__server_info",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__detect_undisclosed_transactions",
     "mcp__gongsi__audit_periodic_disclosures",
     "mcp__gongsi__audit_group_disclosures",
-    "mcp__gongsi__detect_undisclosed_transactions",
-    "Monitor",
-    "TaskOutput",
-    "mcp__gongsi__check_disclosure_duty"
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__get_group_structure"
   ]
 }
