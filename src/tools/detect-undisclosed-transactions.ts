@@ -1385,6 +1385,110 @@ interface GoodsCaveatRow {
 }
 
 /**
+ * 사람이 **지금 확인해야 하는** 판정 상태. 이 목록에 있으면 `action_items` 로 앞에 끌어낸다.
+ *
+ * ★ 왜 필요한가 (실물 5문서 실측, 2026-09-08): 결과는 상태별 바구니로 나뉘어 있고 그 이름은
+ * **매출(매도)회사 관점**이다. 그런데 거래 한 건에는 의무자가 둘이라(매뉴얼 lit26-001),
+ * 매출회사 기준으로 미달인 건이 **매입회사 자본 기준으로는 후보**일 수 있다. 실제로
+ * `goods_services_matrix_below_threshold`(케이티 421건·카카오 337건) **안에**
+ * `buyer_side` 조건부 후보 8건·확인 대상 21건이 들어 있었다 —
+ * 실무자가 "기준 미달" 바구니를 열어볼 이유가 없으니 그대로 묻힌다.
+ *
+ * 바구니는 그대로 두고(근거·검증 가능성 유지) **가로질러 모아 앞에 놓는다.**
+ */
+const ACTION_STATUS_PRIORITY: Record<string, number> = {
+  // 미공시 후보 — 이 도구가 낼 수 있는 가장 강한 신호
+  undisclosed_candidate: 1,
+  // 상대방 지분 요건만 확인하면 후보가 확정된다
+  candidate_if_counterparty_qualified: 2,
+  // 연간 총액만 기준 이상 — 후보가 아니라 확인 대상
+  candidate_aggregate_only: 3,
+};
+
+/** `action_items` 한 줄 — 어느 바구니에서 왔는지(source)를 반드시 남겨 원문 근거로 되돌아갈 수 있게 한다 */
+interface ActionItem {
+  priority: number;
+  status: string;
+  /** '본인' = 배열의 주체 회사 관점, '거래상대방' = buyer_side/seller_side/lender_side 관점 */
+  perspective: '본인' | '거래상대방';
+  /** 공시의무를 지는 회사 */
+  company: string;
+  counterparty: string;
+  amount_display?: string;
+  threshold_display?: string;
+  /** 이 항목이 실린 원래 배열 이름 — 근거·caveat 전문이 거기 있다 */
+  source: string;
+}
+
+/** 신호 객체에서 금액 표시를 꺼낸다 (배열마다 필드 이름이 다르다) */
+function signalAmountDisplay(s: Record<string, unknown>): string | undefined {
+  for (const k of ['annual_amount_display', 'annual_amount_total_display', 'amount_display']) {
+    const v = s[k];
+    if (typeof v === 'string') return v;
+  }
+  return undefined;
+}
+
+function thresholdDisplay(o: unknown): string | undefined {
+  if (!o || typeof o !== 'object') return undefined;
+  const th = (o as { threshold?: { value_display?: unknown } }).threshold;
+  return typeof th?.value_display === 'string' ? th.value_display : undefined;
+}
+
+/**
+ * 결과 전체를 가로질러 **조치가 필요한 판정**만 모은다.
+ *
+ * 최종 payload 를 그대로 훑으므로 배열이 새로 생겨도 자동으로 포함된다 — 바구니 이름을
+ * 하드코딩하면 새 유형이 생겼을 때 조용히 빠진다.
+ */
+function collectActionItems(payload: Record<string, unknown>): ActionItem[] {
+  const out: ActionItem[] = [];
+  const push = (
+    status: unknown,
+    perspective: ActionItem['perspective'],
+    company: unknown,
+    counterparty: unknown,
+    amount: string | undefined,
+    threshold: string | undefined,
+    source: string,
+  ): void => {
+    if (typeof status !== 'string') return;
+    const priority = ACTION_STATUS_PRIORITY[status];
+    if (priority === undefined) return;
+    out.push({
+      priority,
+      status,
+      perspective,
+      company: typeof company === 'string' ? company : '(미상)',
+      counterparty: typeof counterparty === 'string' ? counterparty : '(미상)',
+      ...(amount ? { amount_display: amount } : {}),
+      ...(threshold ? { threshold_display: threshold } : {}),
+      source,
+    });
+  };
+
+  for (const [name, arr] of Object.entries(payload)) {
+    if (!Array.isArray(arr)) continue;
+    for (const raw of arr) {
+      if (!raw || typeof raw !== 'object') continue;
+      const s = raw as Record<string, unknown>;
+      const amount = signalAmountDisplay(s);
+      push(s['status'], '본인', s['company'], s['counterparty'], amount, thresholdDisplay(s), name);
+      // 거래상대방 관점 — 같은 거래를 **상대방 자기 자본**으로 다시 잰 판정이다
+      for (const key of ['buyer_side', 'seller_side', 'lender_side']) {
+        const side = s[key];
+        if (!side || typeof side !== 'object') continue;
+        const sv = side as Record<string, unknown>;
+        push(sv['status'], '거래상대방', sv['company'], s['company'], amount, thresholdDisplay(sv), name);
+      }
+    }
+  }
+
+  // 우선순위 → 금액 큰 순. 금액은 표시 문자열뿐이라 숫자로 되돌리지 않고 길이·사전순으로만 안정 정렬한다.
+  return out.sort((a, b) => a.priority - b.priority || (b.amount_display ?? '').length - (a.amount_display ?? '').length);
+}
+
+/**
  * 상품·용역 연간 총액 → 분기 판정 강도. (6) 합산과 (5) 총괄 두 금액을 **같은 규칙**으로
  * 재기 위해 함수로 뺐다 — 승격 여부를 "판정이 실제로 달라지는가"로 정하려면 둘을
  * 같은 자로 재야 한다.
@@ -4830,7 +4934,7 @@ export async function detectUndisclosedTransactions(
     listCalls,
   });
 
-  return {
+  const payload: Record<string, unknown> = {
     scope: {
       source_rcept_no: sourceRceptNo,
       source_viewer_url: viewerUrl(sourceRceptNo),
@@ -5199,5 +5303,31 @@ export async function detectUndisclosedTransactions(
         ],
       },
     },
+  };
+
+  // ★ 조치가 필요한 판정을 **바구니를 가로질러** 앞으로 끌어낸다.
+  //   바구니 이름은 매출(매도)회사 관점이라, 매입회사 관점 후보가 '기준 미달' 안에 묻힌다
+  //   (ACTION_STATUS_PRIORITY 주석의 실측 참조). 원래 배열은 그대로 두고 요약만 앞에 놓는다.
+  const actionItems = collectActionItems(payload);
+  return {
+    scope: payload['scope'],
+    continuation: payload['continuation'],
+    /**
+     * **지금 확인할 것** — 상태별 바구니를 가로질러 모은 우선순위 목록.
+     * 각 항목의 `source` 가 원래 배열 이름이고, 근거·caveat 전문은 거기에 그대로 있다.
+     * 비어 있어도 "문제 없음"이 아니다 — `coverage`·`not_judged`·`scope_caveats` 를 함께 보라.
+     */
+    action_items: {
+      total: actionItems.length,
+      note:
+        '이 목록은 아래 배열들을 **가로질러** 모은 것입니다. 같은 거래라도 매출(매도)회사 ' +
+        '기준으로는 미달인데 **매입(매수)회사 자본 기준으로는 후보**일 수 있어(매뉴얼 lit26-001, ' +
+        '기준금액은 각자의 자본으로 계산), 상태별 바구니만 보면 상대방 관점 후보를 놓칩니다. ' +
+        'perspective 가 "거래상대방" 인 항목이 그것입니다. ' +
+        '⚠️ 후보는 확정이 아니며, 이 목록이 비어 있어도 "이상 없음"이 아닙니다 — ' +
+        '판정하지 못한 범위는 not_judged·coverage·scope_caveats 에 따로 있습니다.',
+      items: actionItems,
+    },
+    ...payload,
   };
 }
