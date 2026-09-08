@@ -4692,3 +4692,172 @@ describe('이어보기 — 여러 호출로 온전한 답 (작업 5)', () => {
     expect(warmWarming.over_budget).toBe(false);
   });
 });
+
+/**
+ * ★ (5) 총괄표가 (6) 주요 내역보다 큰 금액을 적는 경우 (Codex ④ — 실물 40문서로 확인)
+ *
+ * (6)은 서식상 "국내 계열회사와 상품ㆍ용역을 거래한 금액이 **일정 규모 이상**인 경우"의
+ * 내역만 싣고, 그 규모 기준은 우리가 계산하는 기준금액(령 §33①)과 다르다. 그래서 같은 쌍이라도
+ * (5) 총괄표의 연간 총액이 (6) 합산보다 클 수 있다.
+ *
+ * 실측(2026-09-08, 2026-05~06 J004 40문서): 두 표에 함께 나온 149쌍 중 **30쌍**이 그랬고,
+ * 최대는 ㈜케이티 → ㈜케이티에스테이트의 (5) 664.90억 vs (6) 4.04억(164배)이다.
+ * 종전에는 (6)에 쌍이 있으면 (5) 값을 **비교 없이 버려서** 그 664.90억이 4.04억으로 판정됐다.
+ */
+describe('(5) 총괄이 (6) 합산보다 크면 그 값으로 판정한다', () => {
+  const 백만 = 1_000_000;
+  /** 기준금액 = min(100억, max(5억, max(자본총계 100억, 자본금 10억) × 5%)) = 5억 → 4× = 20억 */
+  const HEAD = [
+    '| 기업집단명 : | 테스트집단 |',
+    '| --- | --- |',
+    '## (2) 회사 재무현황',
+    '| (단위 : 백만원, %) |',
+    '| --- |',
+    '| 계열회사명 |  | 자본금 | 자본총계 |',
+    '| --- | --- | --- | --- |',
+    '| 비금융회사 | 갑회사(주) | 1,000 | 10,000 |',
+  ];
+  /** (5) 총괄표 — 갑회사 행 × 을회사 열 */
+  const matrix = (amount: string): string[] => [
+    '## (5) 계열회사간 상품ㆍ용역거래 현황',
+    '| (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |',
+    '| --- |',
+    // 열 회사가 2개 이상이어야 파서가 교차표로 인정한다 (pickNameRow: 고유 셀 3 이상)
+    '| 매출 / 매입회사 |  | 비금융회사 |  |  |',
+    '| --- | --- | --- | --- | --- |',
+    '| (소속회사) |  | 을회사(주) | 병회사(주) | 소계 |',
+    `| 비금융회사 | 갑회사(주) | ${amount} | - | ${amount} |`,
+  ];
+  /** (6) 주요 내역 — 표 라벨을 갈아 끼울 수 있게 */
+  const detail = (rows: Array<{ label: string; amount: string }>): string[] => {
+    const out = ['## (6) 계열회사간 주요 상품ㆍ용역거래 내역'];
+    for (const r of rows) {
+      out.push(
+        r.label,
+        '| (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |',
+        '| --- |',
+        '| 소속회사명 |  | 거래상대방 | 업종 | 품목 | 대금지급조건 | 거래상대방 선정방식 | 매출액 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+        `| 비금융회사 | 갑회사(주) | 을회사(주) | C1000(제조업) | 부품 | 현금 | 수의계약 | ${r.amount} |`,
+      );
+    }
+    return out;
+  };
+  const CORPS = { 갑회사: [{ corpCode: '00000001', corpName: '갑회사' }] };
+  const 연1회 = '나. 비상장회사와 그 계열회사간 주요 상품ㆍ용역거래 내역 (연1회)';
+  const 분기 = '가. 상장회사와 그 계열회사간 주요 상품ㆍ용역거래 내역 (분기)';
+
+  async function run(md: string[]): Promise<Record<string, any>> {
+    return (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md.join('\n'), corps: CORPS, j001: [] }),
+    )) as Record<string, any>;
+  }
+
+  it('(6) 4억 · (5) 30억 → 판정 불가에서 조건부 후보로 올라간다 (두 값을 모두 남긴다)', async () => {
+    const r = await run([
+      ...HEAD,
+      ...matrix('3,000'),
+      ...detail([{ label: 연1회, amount: '400' }]),
+    ]);
+    // (6) 합산 4억 하나만 봤다면 4×기준(20억) 미달이라 **판정 불가**로 끝났다
+    expect(r['summary'].goods_services_candidates_if_qualified).toBe(1);
+    expect(r['summary'].goods_services_not_judgeable).toBe(0);
+    const g = (r['goods_services_signals'] as Array<Record<string, any>>)[0]!;
+    expect(g['status']).toBe('candidate_if_counterparty_qualified');
+    expect(g['quarterly_logic']).toBe('annual_geq_4x_threshold');
+    // 두 값이 **모두** 남는다 — 사용자가 차액의 성격을 원문으로 확인할 수 있어야 한다
+    expect(g['annual_amount_total']).toBe(400 * 백만);
+    expect(g['matrix_annual_total']).toBe(3_000 * 백만);
+    expect(g['judged_on']).toBe('(5)총괄');
+    expect(String(g['matrix_caveat'])).toContain('일정 규모 이상');
+    expect(String(g['matrix_caveat'])).toContain('품목이 없어');
+    expect(r['diagnostics'].goods_services_matrix.pairs_promoted_to_major_detail).toBe(1);
+    expect(r['diagnostics'].goods_services_matrix.largest_promotion.excess_display).toBe('26억원');
+  });
+
+  it('승격을 notes 로 알린다', async () => {
+    const r = await run([
+      ...HEAD,
+      ...matrix('3,000'),
+      ...detail([{ label: 연1회, amount: '400' }]),
+    ]);
+    expect(
+      (r['notes'] as string[]).some(
+        (n) => n.includes('(5) 총괄표가 더 큰 금액') && n.includes('갑회사(주) → 을회사(주)'),
+      ),
+    ).toBe(true);
+  });
+
+  it('판정을 바꾸지 않는 **미세한 차이**(5% 이내)는 승격하지 않는다 — caveat 만 늘지 않게', async () => {
+    // (6) 3,000백만 vs (5) 3,010백만 = 0.33%. 둘 다 4×기준 이상이라 판정도 같다.
+    const r = await run([
+      ...HEAD,
+      ...matrix('3,010'),
+      ...detail([{ label: 연1회, amount: '3,000' }]),
+    ]);
+    const g = (r['goods_services_signals'] as Array<Record<string, any>>)[0]!;
+    expect(g['status']).toBe('candidate_if_counterparty_qualified');
+    expect(g['judged_on']).toBe('(6)합산');
+    expect(g['matrix_annual_total']).toBeUndefined();
+    expect(g['annual_amount_total']).toBe(3_000 * 백만);
+    expect(r['diagnostics'].goods_services_matrix.pairs_promoted_to_major_detail).toBe(0);
+  });
+
+  it('(5)가 더 작으면 종전대로 (6) 합산으로 판정한다', async () => {
+    const r = await run([
+      ...HEAD,
+      ...matrix('1,000'),
+      ...detail([{ label: 연1회, amount: '3,000' }]),
+    ]);
+    const g = (r['goods_services_signals'] as Array<Record<string, any>>)[0]!;
+    expect(g['judged_on']).toBe('(6)합산');
+    expect(g['annual_amount_total']).toBe(3_000 * 백만);
+    expect(g['matrix_annual_total']).toBeUndefined();
+  });
+
+  /**
+   * ★ 실물(케이티 20260617000447)에서 잡은 별개 결함 — 같은 쌍이 (6)의 '가.(분기)' 표와
+   * '나.(연1회)' 표에 **모두** 실린다. 종전에는 그냥 더해서 ㈜케이뱅크 → 비씨카드㈜ 가
+   * 분기 89.39억 + 연1회 244.69억 = 334.08억으로 계상됐는데, 같은 문서 (5) 총괄표의 그 쌍은
+   * **244.69억**이라 연1회 값만이 연간 총액임이 확인된다. 더하면 이중 계상이다.
+   */
+  it('같은 쌍이 분기 표와 연1회 표에 모두 있으면 **더하지 않고** 큰 쪽만 쓴다', async () => {
+    const r = await run([
+      ...HEAD,
+      ...matrix('3,000'),
+      ...detail([
+        { label: 분기, amount: '1,000' },
+        { label: 연1회, amount: '3,000' },
+      ]),
+    ]);
+    const g = (r['goods_services_signals'] as Array<Record<string, any>>)[0]!;
+    // 4,000백만(합)이 아니라 3,000백만(큰 쪽)
+    expect(g['annual_amount_total']).toBe(3_000 * 백만);
+    expect(g['label_overlap']).toBeDefined();
+    expect(g['label_overlap'].quarterly_display).toBe('10억원');
+    expect(g['label_overlap'].annual_display).toBe('30억원');
+    expect(String(g['label_overlap'].note)).toContain('이중 계상');
+    expect(r['diagnostics'].goods_services_matrix.pairs_in_both_major_detail_tables).toBe(1);
+    // (5)와 같은 값이 됐으므로 승격은 일어나지 않는다
+    expect(g['judged_on']).toBe('(6)합산');
+    expect(
+      (r['notes'] as string[]).some((n) => n.includes("'가.(분기)' 표와")),
+    ).toBe(true);
+  });
+
+  it('한 표에만 있으면 종전대로 합산한다 (라벨 분리가 정상 합산을 깨지 않는다)', async () => {
+    const r = await run([
+      ...HEAD,
+      ...matrix('1,000'),
+      ...detail([
+        { label: 연1회, amount: '2,000' },
+        { label: 연1회, amount: '1,000' },
+      ]),
+    ]);
+    const g = (r['goods_services_signals'] as Array<Record<string, any>>)[0]!;
+    expect(g['annual_amount_total']).toBe(3_000 * 백만);
+    expect(g['label_overlap']).toBeUndefined();
+    expect(r['diagnostics'].goods_services_matrix.pairs_in_both_major_detail_tables).toBe(0);
+  });
+});

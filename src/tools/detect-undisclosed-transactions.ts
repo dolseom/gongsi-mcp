@@ -1138,6 +1138,35 @@ interface GoodsSignal {
   annual_amount_total: number;
   annual_amount_total_display: string;
   items: GoodsItem[];
+  /**
+   * 같은 쌍을 **(5) 총괄표**가 더 크게 적었을 때 그 값 — 판정은 이 값으로 한다.
+   *
+   * ★ 왜 필요한가 (실물 40문서 측정, 2026-09-08): (6)은 서식상 "거래한 금액이 **일정 규모
+   * 이상**인 경우"의 내역만 싣고 그 규모 기준은 우리가 계산하는 기준금액(령 §33①)과 다르다.
+   * 그래서 같은 쌍이라도 (5) 총괄표의 연간 총액이 (6) 합산보다 클 수 있다 — 겹친 149쌍 중
+   * **30쌍**이 그랬고, 최대는 ㈜케이티 → ㈜케이티에스테이트의 (5) 664.90억 vs (6) 4.04억
+   * (164배)다. 종전에는 (6)에 쌍이 있으면 (5) 값을 **비교 없이 버려서**, 그 664.90억이
+   * 4.04억으로 판정돼 후보가 통째로 사라졌다.
+   */
+  matrix_annual_total?: number;
+  matrix_annual_total_display?: string;
+  /** (5) 총괄 − (6) 합산. (6)이 담지 못한 부분의 크기다 */
+  matrix_excess_display?: string;
+  /** 판정에 쓴 금액의 출처 — `(5)총괄` 이면 위 승격이 일어났다는 뜻이다 */
+  judged_on?: '(6)합산' | '(5)총괄';
+  /** (5) 값을 판정에 쓸 때 함께 지는 한계 (품목 부재 등) */
+  matrix_caveat?: string;
+  /**
+   * 같은 쌍이 (6)의 '가.(분기)' 표와 '나.(연1회)' 표에 **모두** 실렸다 — 한쪽이 다른 쪽의
+   * 부분기간이라 **더하면 이중 계상**이다. 합산하지 않고 큰 쪽만 썼다.
+   * (실물: ㈜케이뱅크 → 비씨카드㈜ 분기 89.39억 + 연1회 244.69억 = 334.08억으로 계상되던
+   * 것이, (5) 총괄표의 244.69억과 대조하면 연1회 값만이 연간 총액임이 확인된다.)
+   */
+  label_overlap?: {
+    quarterly_display: string;
+    annual_display: string;
+    note: string;
+  };
   threshold?: { value: number; value_display: string; formula: string; source_row: string };
   certainty?: Certainty;
   /** 연간 합산 ≥ 4×기준금액 ⇒ 어느 분기 하나는 반드시 기준금액 이상 (비둘기집 논증) */
@@ -1353,6 +1382,36 @@ interface GoodsCaveatRow {
   quarterly_logic: GoodsSignal['quarterly_logic'];
   /** 회사가 다른 신호로 이미 검색된 경우에 한해, 참고용 J001 존재 정보를 동봉 (교차검토 S-9) */
   related_j001?: { goods_type_filings_in_window: number; from: string; to: string };
+}
+
+/**
+ * 상품·용역 연간 총액 → 분기 판정 강도. (6) 합산과 (5) 총괄 두 금액을 **같은 규칙**으로
+ * 재기 위해 함수로 뺐다 — 승격 여부를 "판정이 실제로 달라지는가"로 정하려면 둘을
+ * 같은 자로 재야 한다.
+ *
+ * 비둘기집: 연간 합산 ≥ 4×기준금액이면 네 분기 전부가 기준금액 미만일 수 없다.
+ * 그 미만이면 분기 집중 여부를 알 수 없어 **원리상 판정 불가**다.
+ */
+function goodsQuarterlyLogic(
+  amount: number,
+  th: ApproxThreshold | undefined,
+): GoodsSignal['quarterly_logic'] {
+  if (amount >= 4 * CAP_100) return 'annual_geq_4x_threshold';
+  if (!th) return 'threshold_unknown';
+  return amount >= 4 * th.value ? 'annual_geq_4x_threshold' : 'annual_below_4x_threshold';
+}
+
+/**
+ * (6) 주요 상품ㆍ용역거래 내역의 이 표가 **분기** 표인가 ('가. 상장회사 … (분기)').
+ *
+ * ★ 왜 표 라벨을 봐야 하는가 (실물, 케이티 20260617000447): 같은 쌍이 '가.(분기)' 와
+ * '나.(연1회)' 표에 모두 실리는 문서가 있다. 두 표의 값을 더하면 이중 계상이다 —
+ * ㈜케이뱅크 → 비씨카드㈜ 는 분기 89.39억 + 연1회 244.69억 = 334.08억으로 계상됐는데,
+ * 같은 문서 (5) 총괄표의 그 쌍은 **244.69억**이라 연1회 값만이 연간 총액임이 확인된다.
+ * 라벨을 못 읽는 표(빈 라벨)는 분기가 아닌 쪽으로 담는다 — 종전 동작과 같다.
+ */
+function isQuarterlyGoodsTable(label: string): boolean {
+  return label.includes('분기');
 }
 
 /**
@@ -2634,7 +2693,15 @@ export async function detectUndisclosedTransactions(
   const caveatRows: GoodsCaveatRow[] = [];
   const aggregates = new Map<
     string,
-    { company: string; counterparty: string; total: number; items: GoodsItem[] }
+    {
+      company: string;
+      counterparty: string;
+      /** '가.(분기)' 표에서 온 합 */
+      quarterly: number;
+      /** 그 밖의 표('나.(연1회)' 등)에서 온 합 */
+      annual: number;
+      items: GoodsItem[];
+    }
   >();
   for (const g of goods as GoodsServiceRow[]) {
     const itemCaveat = itemLikelyNotGoodsService(g.item);
@@ -2680,10 +2747,14 @@ export async function detectUndisclosedTransactions(
     const agg = aggregates.get(key) ?? {
       company: g.company,
       counterparty: g.counterparty,
-      total: 0,
+      quarterly: 0,
+      annual: 0,
       items: [],
     };
-    agg.total += g.annualAmount;
+    // ★ 표 라벨을 갈라 담는다 — 같은 쌍이 '가.(분기)' 와 '나.(연1회)' 에 모두 실리면
+    //   한쪽이 다른 쪽의 부분기간이라 **더하면 이중 계상**이다 (GoodsSignal.label_overlap 주석).
+    if (isQuarterlyGoodsTable(g.label)) agg.quarterly += g.annualAmount;
+    else agg.annual += g.annualAmount;
     agg.items.push({
       item: g.item,
       annual_amount: g.annualAmount,
@@ -2693,15 +2764,86 @@ export async function detectUndisclosedTransactions(
     aggregates.set(key, agg);
   }
 
+  // (5) 총괄표의 쌍별 연간 총액 — (6) 판정을 보강하는 데 쓴다 (GoodsSignal.matrix_annual_total).
+  // 파서가 같은 쌍을 두 번 만나면 첫 값을 쓰므로(MatrixResult.duplicatePairs) 여기서도 첫 값이다.
+  const matrixTotals = new Map<string, { amount: number; colGroup: string }>();
+  for (const c of goodsMatrixSeed.cells) {
+    const key = `${normalizeCompanyName(c.rowCompany)} ${normalizeCompanyName(c.colCompany)}`;
+    if (!matrixTotals.has(key)) matrixTotals.set(key, { amount: c.amount, colGroup: c.colGroup });
+  }
+  /** (5) 총괄 값이 더 커서 판정 금액을 올린 쌍 (진단용) */
+  const goodsPromotedFromMatrix: { pair: string; from: number; to: number }[] = [];
+  /** (6) 두 표에 걸쳐 실려 합산하지 않은 쌍 수 (진단용) */
+  let goodsLabelOverlaps = 0;
+
   const judgedGoods: GoodsSignal[] = [...aggregates.values()].map((a) => {
     const th = thresholds.get(normalizeCompanyName(a.company));
+    const key = `${normalizeCompanyName(a.company)} ${normalizeCompanyName(a.counterparty)}`;
+    // 두 표에 걸친 쌍은 **더하지 않는다** — 한쪽이 다른 쪽의 부분기간이다 (isQuarterlyGoodsTable).
+    const overlapped = a.quarterly > 0 && a.annual > 0;
+    if (overlapped) goodsLabelOverlaps++;
+    const detailTotal = overlapped ? Math.max(a.quarterly, a.annual) : a.quarterly + a.annual;
+
+    // (5) 총괄이 같은 쌍을 더 크게 적었으면 **그 값으로 판정한다**. (6)은 "일정 규모 이상"만
+    // 싣는 표라 상대방별 연간 총액을 다 담지 못한다 — 실물 30/149 쌍에서 실제로 더 컸다.
+    // 국외 계열회사 열은 공시대상이 아니므로(법 §26①·고시 §2③2호) 승격 근거로 쓰지 않는다.
+    //
+    // ★ 두 표를 옮겨 적는 과정의 미세한 오차(반올림·전기 오류)까지 승격으로 표시하면
+    //   caveat 만 늘고 사람이 볼 것은 늘지 않는다 — 실측(케이티)에서 16건 중 3건이
+    //   1.000~1.017배(차액 100만~8,600만원)였고 그 셋은 판정을 전혀 바꾸지 않았다.
+    //   그래서 **판정(quarterly_logic)이 실제로 달라지거나 차액이 5%를 넘을 때만** 승격한다.
+    //   승격하지 않으면 판정도 (6) 합산 그대로다 — 근거와 판정 금액이 어긋나지 않게.
+    const mt = matrixTotals.get(key);
+    const usable =
+      mt !== undefined && !isForeignAffiliateColumn(mt.colGroup) && mt.amount > detailTotal;
+    const promote =
+      usable &&
+      (goodsQuarterlyLogic(mt.amount, th) !== goodsQuarterlyLogic(detailTotal, th) ||
+        mt.amount - detailTotal > detailTotal * 0.05);
+    const judgeAmount = promote ? mt.amount : detailTotal;
+    if (promote) {
+      goodsPromotedFromMatrix.push({
+        pair: `${a.company} → ${a.counterparty}`,
+        from: detailTotal,
+        to: mt.amount,
+      });
+    }
+
     const base: GoodsSignal = {
       company: a.company,
       counterparty: a.counterparty,
       source: '(6)주요내역',
-      annual_amount_total: a.total,
-      annual_amount_total_display: fmtWon(a.total),
+      annual_amount_total: detailTotal,
+      annual_amount_total_display: fmtWon(detailTotal),
       items: a.items,
+      ...(overlapped
+        ? {
+            label_overlap: {
+              quarterly_display: fmtWon(a.quarterly),
+              annual_display: fmtWon(a.annual),
+              note:
+                `이 쌍이 (6)의 '가.(분기)' 표(${fmtWon(a.quarterly)})와 '나.(연1회)' ` +
+                `표(${fmtWon(a.annual)})에 **모두** 실려 있습니다 — 한쪽이 다른 쪽의 부분기간이면 ` +
+                '더하는 것이 이중 계상이라 합산하지 않고 큰 쪽만 판정에 썼습니다. 원문 두 표를 ' +
+                '직접 대조해 별개 거래인지 확인하세요 (별개라면 실제 총액은 더 큽니다)',
+            },
+          }
+        : {}),
+      ...(promote
+        ? {
+            matrix_annual_total: mt.amount,
+            matrix_annual_total_display: fmtWon(mt.amount),
+            matrix_excess_display: fmtWon(mt.amount - detailTotal),
+            judged_on: '(5)총괄' as const,
+            matrix_caveat:
+              `(5) 계열회사간 상품ㆍ용역거래 **총괄표**가 같은 쌍에 ${fmtWon(mt.amount)}를 적어 ` +
+              `(6) 주요 내역 합산(${fmtWon(detailTotal)})보다 ${fmtWon(mt.amount - detailTotal)} ` +
+              '큽니다 — (6)은 "거래한 금액이 **일정 규모 이상**인 경우"의 내역만 싣는 표라 상대방별 ' +
+              '연간 총액을 다 담지 못하므로, 판정은 더 큰 (5) 총액으로 했습니다. ⚠️ 다만 (5)에는 ' +
+              '**품목이 없어** 배당·이자·임대차처럼 상품·용역이 아닌 항목이 그 차액에 섞여 있어도 ' +
+              '가려내지 못합니다. 차액의 성격은 원문 (5)·(6) 두 표를 대조해 확인하세요',
+          }
+        : { judged_on: '(6)합산' as const }),
       ...(th
         ? {
             threshold: {
@@ -2714,19 +2856,16 @@ export async function detectUndisclosedTransactions(
         : {}),
       quarterly_logic: 'threshold_unknown',
     };
-    // 비둘기집: 연간 합산 ≥ 4×기준금액이면 네 분기 전부가 기준금액 미만일 수 없다.
-    // 그 미만이면 분기 집중 여부를 알 수 없어 **원리상 판정 불가**다 (놓치는 것이 아니라 못 보는 것).
-    if (a.total >= 4 * CAP_100) {
-      return { ...base, quarterly_logic: 'annual_geq_4x_threshold', certainty: 'certain_by_cap' };
-    }
-    if (!th) return base;
-    if (a.total >= 4 * th.value) {
+    // 판정 강도는 goodsQuarterlyLogic 한 곳에서만 정한다 (승격 판단과 같은 자로 재기 위해).
+    const logic = goodsQuarterlyLogic(judgeAmount, th);
+    if (logic === 'annual_geq_4x_threshold') {
       return {
         ...base,
-        quarterly_logic: 'annual_geq_4x_threshold',
-        certainty: 'approx_from_j004',
+        quarterly_logic: logic,
+        certainty: judgeAmount >= 4 * CAP_100 ? 'certain_by_cap' : 'approx_from_j004',
       };
     }
+    if (logic === 'threshold_unknown') return base;
     return { ...base, quarterly_logic: 'annual_below_4x_threshold' };
   });
 
@@ -2826,9 +2965,11 @@ export async function detectUndisclosedTransactions(
   //   **표시만 한다** (화이트리스트를 필터가 아니라 표시로 쓰는 것과 같은 규칙).
   const majorByCompanyAmount = new Map<string, string>();
   for (const a of aggregates.values()) {
-    // 금액 0 은 우연 일치가 흔해 힌트로 쓰지 않는다
-    if (a.total > 0) {
-      majorByCompanyAmount.set(`${normalizeCompanyName(a.company)} ${a.total}`, a.counterparty);
+    // 라벨별 소계와 그 합을 **모두** 힌트 키로 넣는다 — 표기 차이를 찾는 것이 목적이라
+    // 어느 쪽 값이 (5)와 같아도 같은 거래 의심으로 표시해야 한다.
+    // 금액 0 은 우연 일치가 흔해 힌트로 쓰지 않는다.
+    for (const v of [a.quarterly, a.annual, a.quarterly + a.annual]) {
+      if (v > 0) majorByCompanyAmount.set(`${normalizeCompanyName(a.company)} ${v}`, a.counterparty);
     }
   }
   const GOODS5_CAVEAT =
@@ -3026,7 +3167,14 @@ export async function detectUndisclosedTransactions(
   }
 
   for (const g of judgedGoods) {
-    g.buyer_side = await judgeCounterSide(g.counterparty, g.annual_amount_total, 'goods', g.company);
+    // 매입회사 쪽 판정도 **판정에 쓴 금액**으로 한다 — (5) 총괄이 더 컸다면 그쪽이다.
+    // 한쪽만 (6) 합산으로 재면 같은 거래를 두 회사에 다른 크기로 재는 셈이 된다.
+    g.buyer_side = await judgeCounterSide(
+      g.counterparty,
+      g.matrix_annual_total ?? g.annual_amount_total,
+      'goods',
+      g.company,
+    );
   }
   for (const sec of judgedSecurities) {
     // 국외 계열회사는 양쪽 다 의무가 없다 (법 §26① 상대방 제외 + 국내 회사가 아니다)
@@ -4473,6 +4621,28 @@ export async function detectUndisclosedTransactions(
         '하나로 세세요. 우연히 금액이 같은 별개 거래일 수도 있어 버리지 않고 표시만 했습니다.',
     );
   }
+  if (goodsPromotedFromMatrix.length > 0) {
+    const top = [...goodsPromotedFromMatrix].sort((x, y) => y.to - y.from - (x.to - x.from));
+    notes.push(
+      `(6) 주요 내역 신호 ${goodsPromotedFromMatrix.length}건은 **(5) 총괄표가 더 큰 금액**을 적어 ` +
+        `그 값으로 판정했습니다 (${top
+          .slice(0, 3)
+          .map((p) => `${p.pair} ${fmtWon(p.from)}→${fmtWon(p.to)}`)
+          .join(', ')}${top.length > 3 ? ` 외 ${top.length - 3}건` : ''}) — (6)은 "거래한 금액이 ` +
+        '**일정 규모 이상**인 경우"의 내역만 싣는 표라 상대방별 연간 총액을 다 담지 못합니다. ' +
+        '두 값을 모두 신호에 실었으니(annual_amount_total ↔ matrix_annual_total) 차액의 성격은 ' +
+        '원문 두 표를 대조해 확인하세요 — (5)에는 품목이 없어 배당·이자·임대차가 섞였는지 ' +
+        '가려내지 못합니다.',
+    );
+  }
+  if (goodsLabelOverlaps > 0) {
+    notes.push(
+      `⚠️ (6) 주요 내역에서 ${goodsLabelOverlaps}개 쌍이 '가.(분기)' 표와 '나.(연1회)' 표에 ` +
+        '**모두** 실려 있습니다 — 한쪽이 다른 쪽의 부분기간이면 더하는 것이 이중 계상이라 ' +
+        '합산하지 않고 큰 쪽만 판정에 썼습니다 (label_overlap 에 두 값을 실었습니다). 두 표가 ' +
+        '**별개 거래**를 적은 것이라면 실제 총액은 더 크므로 원문을 대조하세요.',
+    );
+  }
   if (secCandidates.length > 0) {
     notes.push(
       `⚠️ 유가증권 **총액 확인 대상** ${secCandidates.length}건 (candidate_aggregate_only) — 상대방별 ` +
@@ -4974,6 +5144,31 @@ export async function detectUndisclosedTransactions(
         ragged_rows: goodsMatrixSeed.raggedRows,
         /** (6) 주요 내역에 이미 있어 보완하지 않은 쌍 수 (중복 방지가 실제로 동작한 횟수) */
         pairs_also_in_major_detail: goodsMatrixPairsAlsoInDetail,
+        /**
+         * 그중 (5) 총액이 (6) 합산보다 커서 **(6) 신호의 판정 금액을 올린** 쌍 수.
+         * 종전에는 (6)에 쌍이 있으면 (5) 값을 비교 없이 버려 이 차이가 통째로 사라졌다.
+         */
+        pairs_promoted_to_major_detail: goodsPromotedFromMatrix.length,
+        /** 그 승격 중 차액이 가장 큰 것 (사람이 먼저 볼 것) */
+        largest_promotion:
+          goodsPromotedFromMatrix.length > 0
+            ? (() => {
+                const top = [...goodsPromotedFromMatrix].sort(
+                  (x, y) => y.to - y.from - (x.to - x.from),
+                )[0]!;
+                return {
+                  pair: top.pair,
+                  major_detail_display: fmtWon(top.from),
+                  matrix_display: fmtWon(top.to),
+                  excess_display: fmtWon(top.to - top.from),
+                };
+              })()
+            : undefined,
+        /**
+         * (6)의 '가.(분기)' 표와 '나.(연1회)' 표에 **모두** 실려 합산하지 않은 쌍 수.
+         * 0 이 아니면 그 쌍들은 `label_overlap` 을 달고 나간다 (이중 계상 방지).
+         */
+        pairs_in_both_major_detail_tables: goodsLabelOverlaps,
         /** 이름은 달랐지만 (6)에 같은 매출회사·같은 금액 행이 있어 중복 의심으로 표시한 쌍 수 */
         possible_duplicates: goodsMatrixPossibleDuplicates,
         /** 회사 목록에서 확인되지 않은 매입회사 이름 (표기 흔들림·국외 계열사 등) */
