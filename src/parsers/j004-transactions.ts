@@ -205,6 +205,29 @@ function findCol(t: LabeledTable, ...keywords: string[]): number {
 }
 
 /**
+ * 같은 뜻의 열 이름 여러 개 중 **먼저 걸리는** 열 (없으면 -1).
+ *
+ * ★ 왜 필요한가 (실물 40문서 실측, 2026-09-08): 같은 J004 서식인데도 회사명 열 이름이
+ * 문서마다 다르다 — 재무현황 절의 첫 열 헤더는 **`소속회사명` 39표 vs `계열회사명` 1표**였다.
+ * 한 이름만 찾으면 나머지 문서의 표가 통째로 버려지고, 재무현황이 사라지면 기준금액
+ * (령 §33① = min(100억, max(5억, max(자본총계, 자본금) × 5%)))을 아예 계산하지 못해
+ * 판정이 전부 `threshold_unknown` 으로 떨어진다. 실제로 그 상태였다.
+ */
+function findColAny(t: LabeledTable, names: string[], ...alsoRequired: string[]): number {
+  for (const n of names) {
+    const c = findCol(t, n, ...alsoRequired);
+    if (c !== -1) return c;
+  }
+  return -1;
+}
+
+/**
+ * 회사명 열의 이름 변형 — 실물에서 확인된 것만 넣는다 (추측으로 넓히지 않는다).
+ * 넓게 잡을수록 엉뚱한 열을 회사명으로 읽을 위험이 커진다.
+ */
+const COMPANY_COL_NAMES = ['소속회사명', '계열회사명'];
+
+/**
  * 소계·합계 행인가 — 집계 행을 개별 거래로 세면 금액이 두 배가 된다.
  * '소계(주1)' 같은 각주 접미 변형도 집계 행이다 — 놓치면 소계가 개별 거래로 승격돼
  * 오경보가 된다 (교차검토 S-8).
@@ -288,7 +311,7 @@ export function extractCapitals(markdown: string): CapitalRow[] {
   if (!sec) return [];
   const out: CapitalRow[] = [];
   for (const t of readLabeledTables(sec)) {
-    const cCompany = findCol(t, '계열회사명');
+    const cCompany = findColAny(t, COMPANY_COL_NAMES);
     const cCapital = findCol(t, '자본금');
     const cEquity = findCol(t, '자본총계');
     // 부채비율 열도 '자본총계' 를 품고 있어 자본 열보다 오른쪽이다 — 가장 왼쪽을 쓴다
