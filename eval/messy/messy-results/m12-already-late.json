@@ -3,9 +3,145 @@
   "type": "이미 늦음",
   "question": "기한 지났어요 3일 지났는데 지금이라도 내면 되나요 벌금 얼마나오죠",
   "watch": "★ 자진시정 10영업일 골든타임(면제 가능)을 안내하는가 — 이게 이 도구의 차별점이다. 감경(3일↓ 75%)도",
-  "elapsed_s": "78.0",
+  "elapsed_s": "160.5",
   "is_error": false,
   "num_turns": 10,
-  "answer": "**결론: 지금이라도 내야 하고, 빨리 낼수록 과태료가 줄어듭니다.** 안 내고 버티면 \"미공시\"가 되어 금액이 열 배로 뜁니다.\n\n공시 유형을 안 알려주셔서 **대규모내부거래(J001)** 로 가정하고 계산했습니다. 기한 2026-09-03, 오늘은 일요일이라 실제 접수 가능일인 **월요일(9/7) 제출 = 4일 지연** 기준입니다.\n\n**예상 과태료 (이사회 의결은 거친 경우)**\n\n| 거래금액 | 산식 | 예상액 |\n|---|---|---|\n| 100억 이상 | (기본 500만 + 4일×10만) × 100% − 50% 감경 | **270만원** |\n| 30억 (20~40억 구간) | (500만 + 40만) × 60% − 50% 감경 | **162만원** |\n| 15일 지연(9/18)까지 미루면 | (500만 + 150만) − 30% 감경 | 455만원 |\n\n- 근거: 시행령 별표 9 제2호 가목 + 과태료 부과기준 고시. 지연 감경은 달력일 기준 3일 이하 75% / 7일 이하 50% / 15일 이하 30% / 30일 이하 20% 입니다. **7일을 넘기는 순간(9/11부터) 감경률이 50%에서 30%로 떨어집니다.**\n- 거래금액이 100억 미만이면 구간별 적용비율(90~50%)로 더 줄어듭니다.\n\n**주의할 분기점**\n\n- **이사회 의결을 안 거쳤다면** 별표 9의 \"의결 X\" 칸이 적용되어 기본금액이 5,000만원입니다. 4일 지연 감경을 받아도 **2,500만원**입니다. 이 경우 답이 완전히 달라지니 확인이 필요합니다.\n- **끝까지 안 내면** 의결O+미공시 5,000만 / 의결X+미공시 7,000만이 기본금액입니다.\n- **비상장사**는 기한이 의결일 후 7영업일이라 지연일수가 달라질 수 있습니다. 의결일을 알려주시면 다시 계산합니다.\n\n**면제 가능성 (자진시정 골든타임)**\n\n기한 만료 다음 날부터 10영업일, 즉 **2026-09-17까지** 스스로 공시하면 면제 심사 대상이 됩니다. 단 도구가 밝힌 주의사항 그대로 전달합니다. 10영업일 내 자진시정은 면제의 필요조건일 뿐이고, 신규 지정·편입 통지 30일 이내 위반이거나 단순 계산 실수·오기 같은 사소한 부주의로 인정되는 등 고시 Ⅴ의 사유가 함께 있어야 하며, 요건을 갖춰도 면제는 공정위 재량(\"면제할 수 있다\")입니다. 과태료 체납 중이면 면제되지 않습니다.\n\n**정확한 금액을 원하시면** 다음 네 가지를 알려주세요. 공시 유형(대규모내부거래인지 기업집단현황·비상장사 중요사항인지), 상장 여부, 이사회 의결일과 의결 여부, 거래금액과 자본총계·자본금.\n\n위 산정은 공정위 고시 기준 단순 계산값이며 공식 유권해석이 아닙니다. 실제 부과액은 공정위 재량과 개별 사정에 따라 달라질 수 있습니다.",
-  "raw_head": null
+  "answer": "## 결론부터: 네, 지금 당장 내세요. 오늘 내는 것과 내일 내는 것이 금액이 다릅니다\n\n먼저 용어 하나 — **벌금이 아니라 과태료**입니다(형벌 아님, 전과 안 남음).\n\n### 1. 자진시정 골든타임이 아직 열려 있습니다\n\n기한 만료일 **다음 날부터 10영업일 이내**에 스스로 공시하면 과태료 **면제 가능성**이 생깁니다. 3일 지난 지금은 그 창 안입니다.\n\n다만 도구가 붙인 주의사항을 그대로 전달합니다:\n\n> 10영업일 내 자진시정은 **면제의 필요조건일 뿐**입니다 — 신규 지정·계열편입 30일 이내 위반이거나 사소한 부주의(계산 실수·오기)로 인정되는 등 고시 Ⅴ의 사유가 함께 성립해야 하며, 요건을 갖춰도 면제는 **공정위 재량**(\"면제할 수 있다\")입니다. 과태료 체납 중이면 면제되지 않습니다.\n\n즉 \"10영업일 안에 내면 무조건 면제\"가 아닙니다.\n\n### 2. 면제가 안 되더라도 — 지연일수 감경이 계단식으로 떨어집니다\n\n| 지연 (달력일) | 감경률 |\n|---|---|\n| **3일 이하** | **75%** |\n| 7일 이하 | 50% |\n| 15일 이하 | 30% |\n| 30일 이하 | 20% |\n\n같은 사안을 지연 3일과 4일로 각각 돌려본 실제 계산값입니다(아래 가정 기준):\n\n- 지연 **3일** → `500만 + 30만 − 감경 397.5만 =` **132만원**\n- 지연 **4일** → `500만 + 40만 − 감경 270만 = ` **270만원**\n\n**하루 차이로 2배가 됩니다.** 오늘 중으로 접수하는 게 유리한 이유입니다.\n\n### 3. 정확한 금액은 지금 정보로는 못 냅니다\n\n도구가 `insufficient_data`를 돌려줬습니다. 다음 4가지가 있어야 확정 계산이 됩니다:\n\n1. **어떤 공시**인가요 — 대규모내부거래(J001)인지 / 비상장사 중요사항인지 / 기업집단현황(J004)인지. **과태료 체계가 완전히 다릅니다** (§26 계열은 기본 500만~7,000만, §27·§28 계열은 기본 100만~1,000만)\n2. **이사회 의결은 거쳤나요** — 대규모내부거래에서 *의결 O + 기한초과*는 기본 500만원이지만, *의결 X + 미공시*는 **7,000만원**입니다. 자릿수가 다릅니다\n3. **상장 / 비상장** — 기한이 3영업일 vs 7영업일\n4. **거래금액과 자본총계·자본금** — 기준금액 `min(100억, max(5억, 자본×5%))` 판정 + 거래금액별 적용비율(100억 미만이면 90~50%로 감액)\n\n### 4. 위 예시 계산의 가정 (참고값입니다)\n\n상장사 / 대규모내부거래 / 이사회 의결 O / 거래금액 100억 / 자본총계 1,000억 → 기준금액 50억 → 공시대상. 의결일 9/1, 기한 9/4.\n\n> 공정위 고시 기준에 따른 단순 산정값입니다. 실제 부과액은 공정위 재량과 개별 사정에 따라 달라질 수 있으며 **확정액이 아닙니다.**\n\n⚠️ 그리고 **\"3일 지났다\"가 정확히 며칠인지 확인이 필요합니다.** 9/5(토)·9/6(일)이 끼어 있어서, 기한이 9/4(금)이었다면 오늘 내면 **지연 4일**(50% 구간), 9/7(월)이었다면 **지연 1일**(75% 구간)입니다. 감경 계단이 갈리는 지점이라 원래 기한 날짜를 알려주시면 정확히 계산해 드리겠습니다.\n\n---\n\n**지금 알려주실 것**: ① 공시 종류 ② 이사회 의결 여부 ③ 상장 여부 ④ 원래 기한 날짜(또는 의결일) ⑤ 거래금액. 회사명을 주시면 자본총계·자본금은 제가 조회하겠습니다.\n\n*(참고: 공정위 공식 문답 430건에서 \"자진시정 면제\" 관련 문답을 검색했으나 하도급 분야 문답만 걸렸습니다 — 위 면제 요건은 문답이 아니라 과태료 부과기준 고시 Ⅴ 원문 기준입니다.)*",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty,mcp__gongsi__calc_business_days,mcp__gongsi__search_ftc_qna,mcp__gongsi__assess_correction_risk\",\"max_results\":4}"
+    },
+    {
+      "name": "mcp__gongsi__calc_business_days",
+      "input": "{\"date\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"기한 경과 후 자진시정 재공시 과태료 면제\",\"limit\":5}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"listing\":\"listed\",\"boardDate\":\"20260901\",\"disclosureStatus\":\"not_disclosed\",\"boardResolution\":true,\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"listing\":\"unlisted\",\"boardDate\":\"20260826\",\"disclosureStatus\":\"not_disclosed\",\"boardResolution\":true,\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"unlisted_material\",\"materialItem\":\"capital_change\",\"occurredDate\":\"20260826\",\"disclosureStatus\":\"not_disclosed\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"listing\":\"listed\",\"boardDate\":\"20260901\",\"actualDisclosureDate\":\"20260908\",\"amount\":10000000000,\"totalEquity\":100000000000,\"paidInCapital\":10000000000,\"boardResolution\":true,\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"listing\":\"listed\",\"boardDate\":\"20260901\",\"amount\":10000000000,\"totalEquity\":100000000000,\"paidInCapital\":10000000000,\"boardResolution\":false,\"disclosureStatus\":\"not_disclosed\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"listing\":\"listed\",\"boardDate\":\"20260901\",\"actualDisclosureDate\":\"20260907\",\"amount\":10000000000,\"totalEquity\":100000000000,\"paidInCapital\":10000000000,\"boardResolution\":true,\"today\":\"20260908\"}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__calc_business_days\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__se"
+    },
+    {
+      "name": "mcp__gongsi__calc_business_days",
+      "is_error": false,
+      "head": "{\n  \"baseDate\": {\n    \"date\": \"20260908\",\n    \"dayOfWeek\": \"화\",\n    \"isBusinessDay\": true,\n    \"holidays\": []\n  },\n  \"operation\": \"inspect\",\n  \"result\": {\n    \"effectiveDeadline\": \"20260908\",\n    \"eff"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"기한 경과 후 자진시정 재공시 과태료 면제\",\n  \"results\": [\n    {\n      \"id\": \"sub-048\",\n      \"category\": \"subcontract\",\n      \"question\": \"공휴일로 인해 지급기한 익일에 대금을 지급한 경우, 공시상 지급기간 구분은 어떻게 해야하는지?\",\n      \"an"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"insufficient_data\",\n  \"summary\": \"자본총계 또는 자본금이 없어 기준금액을 계산할 수 없습니다. get_financials 로 해당 회사의 자본총계·자본금을 먼저 조회하세요.\",\n  \"deadline\": {\n    \"deadline\""
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"insufficient_data\",\n  \"summary\": \"자본총계 또는 자본금이 없어 기준금액을 계산할 수 없습니다. get_financials 로 해당 회사의 자본총계·자본금을 먼저 조회하세요.\",\n  \"deadline\": {\n    \"deadline\""
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"unlisted_material\",\n  \"verdict\": \"required\",\n  \"summary\": \"증자 또는 감자에 관한 결정은(는) 금액과 무관하게 결정(사유 발생) 자체로 공시 대상입니다 (고시 제5조의2제1항제2호바목).\",\n  \"deadline\": {\n    \"deadline\": \"20260904\",\n    \"rule\""
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 100억원 ≥ 기준금액 50억원. 이사회 사전 의결이 필요합니다. 실제 공시 20260908 — 기한(20260904) 대비 **4일 지연**입니다.\",\n  \"threshold\": {\n "
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 100억원 ≥ 기준금액 50억원. 이사회 사전 의결이 필요합니다.\",\n  \"threshold\": {\n    \"amount\": 5000000000,\n    \"formula\": \"max(자본"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 100억원 ≥ 기준금액 50억원. 이사회 사전 의결이 필요합니다. 실제 공시 20260907 — 기한(20260904) 대비 **3일 지연**입니다.\",\n  \"threshold\": {\n "
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 155635,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__check_disclosure_duty"
+  ]
 }

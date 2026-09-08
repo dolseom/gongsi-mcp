@@ -3,9 +3,137 @@
   "type": "여러 질문 뭉치",
   "question": "우리 계열사 거래 중에 공시 빠진거 있는지 보고싶고 기한도 알고싶고 과태료도 궁금하고 아 그리고 정정하면 불이익 있나요",
   "watch": "4개 질문을 다 다루는가, 하나만 답하고 마는가, 회사 특정 없이 미공시 탐지를 시도하는가",
-  "elapsed_s": "74.8",
+  "elapsed_s": "96.3",
   "is_error": false,
   "num_turns": 9,
-  "answer": "**미공시 점검은 회사·기업집단명이 있어야 돌릴 수 있어서 아직 실행하지 못했습니다.** 나머지 셋(기한·과태료·정정)은 도구로 확인했습니다.\n\n**1. 미공시 점검 — 기업집단명 하나만 알려주세요.**\n소속 기업집단명(예: \"미래에셋\")을 주면 `detect_undisclosed_transactions` 가 대표회사의 기업집단현황공시(J004) 거래내역과 대규모내부거래공시(J001)를 대조해 후보를 뽑습니다. 자금차입·대여, 상품·용역, 유가증권 거래를 봅니다. 결과는 \"확정\"이 아니라 후보와 확인 대상이며, 조인 실패·예산 초과 건은 판정 보류로 따로 표시됩니다. 처음 실행은 계열사 법인등록번호를 자동으로 채우느라 시간이 조금 더 걸립니다.\n\n**2. 공시기한 (고시 제6조제1항·2항, 도구 출력)**\n- 상장회사는 이사회 의결일 다음 날부터 3영업일, 비상장·공익법인은 7영업일 이내입니다.\n- 마지막 날이 비영업일이면 다음 영업일까지입니다.\n- 예시로 오늘(2026-09-06) 의결했다면 기한은 아래와 같습니다.\n\n| 구분 | 기한 |\n|---|---|\n| 상장 | 2026-09-09 |\n| 비상장·공익법인 | 2026-09-15 |\n\n실제 의결일·상장 여부·거래금액·자본총계를 주면 대상 여부까지 판정합니다. 기준금액은 min(100억, max(5억, 자본×5%))이며, 흔히 아는 50억 기준은 폐지된 옛 기준입니다.\n\n**3. 과태료 (대규모내부거래·공익법인 기준, 도구 설명·고시)**\n- 의결하고 미공시하면 기본 5,000만원, 의결 없이 미공시면 7,000만원입니다.\n- 의결하고 기한만 넘겼으면 500만원에 하루당 10만원 가산, 상한 5,000만원입니다.\n- 거래금액이 100억 미만이면 적용비율(90~50%)로 줄고, 지연일수가 짧으면 감경(3일 이내 75% 등)이 있습니다. 실제 금액은 지연일수와 거래금액을 넣어야 계산됩니다.\n\n**4. 정정하면 불이익 있나 — 정정 자체는 위반행위가 아닙니다.**\n과태료 고시의 위반행위 열거에 정정은 없고, 문제는 원 공시의 상태입니다.\n- 단순 오기(명칭·날짜·금액 오타)는 오인 가능성이 거의 없으면 재공시 없이도 면제 사유입니다. 정정해도 불이익 근거가 없습니다.\n- 주요내용 누락이나 거짓 기재는 원 공시 시점에 이미 위반이 성립해 있습니다. 기한 만료 후 10영업일 내 자진시정 재공시가 면제의 필요조건이고, 정정을 미루면 정기 점검에서 적발될 때 면제·감경 여지가 모두 사라집니다.\n- 거래 내용 자체가 바뀐 경우는 정정이 아니라 재의결·재공시 의무입니다.\n- 면제·감경은 모두 공정위 재량이라 확정이 아닌 판단 재료입니다.\n\n다음 단계로 기업집단명(또는 대표회사 J004 접수번호)과, 기한·과태료를 정확히 계산하고 싶은 거래의 의결일·상장 여부·거래금액·자본총계를 알려주세요.",
-  "raw_head": null
+  "answer": "네 가지 중 **4번(정정 불이익)은 회사 정보 없이 답할 수 있어 먼저 확인했습니다.** 나머지 셋은 입력이 필요해 아래에 무엇이 필요한지 적었습니다.\n\n---\n\n## ④ \"정정하면 불이익 있나요\" — 도구 결론: **정정 자체는 과태료 대상 행위가 아닙니다**\n\n과태료 고시 Ⅱ(적용범위)의 위반행위 열거는 다음 6가지이고, **정정(재공시)은 여기에 없습니다.**\n\n> 공시하지 아니한 자 / 지연하여 공시한 자 / 주요내용을 누락하여 공시한 자 / 거짓으로 공시한 자 / 이사회 의결을 거치지 아니한 자 / 주요내용 변경 시 재의결·재공시하지 아니한 자\n\n문제가 되는 건 정정이 아니라 **원 공시의 상태**입니다. 원 공시에 위반이 있었으면 정정 여부와 무관하게 이미 성립해 있고, 정정을 미룬다고 사라지지 않습니다. 원 공시 오류의 성격에 따라 갈립니다:\n\n| 오류 성격 | 원 공시 위반 성립 | 도구 권고 |\n|---|---|---|\n| **단순 오기·누락**(명칭·날짜·금액 등, 오인 가능성 거의 없음) | `depends` | 고시 **Ⅴ.2** — 재공시 안 해도 면제 가능. **정정으로 불이익 받을 근거는 고시에 없습니다** |\n| **주요내용 누락** | **`true` (이미 성립)** | 즉시 자진시정 재공시가 유일하게 손실을 줄이는 선택. 미정정 상태로 공정위 점검(연 1회 이상)에 적발되면 **면제·자진시정 정상참작 여지가 모두 사라집니다** |\n| **거래 내용 자체가 변경됨** | 원 공시 오류가 아님 | 이건 정정이 아니라 **새 공시의무**입니다 — 변경 의결일 기준으로 재의결·재공시. 방치하면 그 자체가 별도 위반(고시 Ⅱ.라) |\n\n도구가 붙인 notes 그대로: **공정위 공식 위반 원인 1위는 \"신규 담당자의 업무 미숙\"이고 위반의 94~95%가 기한 유형입니다 — 정정 자체를 두려워해 공시를 미루는 것이 통계적으로 가장 흔한 실수 경로입니다.**\n\n⚠️ 도구가 붙인 단서: 면제·감경은 전부 **공정위 재량**(\"면제할 수 있다\")이라 확정이 아닌 판단 재료입니다. 이 진단은 과태료 고시 원문 기반 참고 정보이지 공정위 공식 유권해석이 아닙니다.\n⚠️ 공정위 공식 문답 430건을 검색했지만 **정정공시 자체를 다룬 문답은 없었습니다** (검색된 건 분할거래 문답). 위 근거는 고시 원문입니다.\n\n---\n\n## ①②③ — 다음이 있어야 돌립니다\n\n**① 공시 빠진 거 있는지** (`detect_undisclosed_transactions`)\n→ **기업집단명**만 주시면 됩니다 (예: \"미래에셋\"). 또는 J004 접수번호.\n기업집단현황공시(J004) 대표회사 연1회 서식의 실제 거래내역을 J001 공시와 대조합니다 — **미공시를 보는 유일한 경로**입니다. 자금차입·자금대여·상품용역·유가증권 4종을 봅니다.\n※ 결과는 **후보이지 확정이 아닙니다.** 조인 실패·예산 초과 건은 \"후보 아님\"이 아니라 `not_judged`(확인 못 함)로 나옵니다.\n\n**② 기한** (`check_disclosure_duty`) — 도구가 `boardDate(이사회 의결일)가 필요합니다`로 거절했습니다.\n→ 필요: **이사회 의결일 + 상장/비상장**. (상장 3영업일 / 비상장 7영업일, 의결일 다음 날 기산. 널리 퍼진 \"1일 이내\"는 오정보입니다)\n\n**③ 과태료** — ②에 더해 **의결을 실제로 거쳤는지 + 거래금액**이 필요합니다. 의결 없이 미공시한 건은 별표 9의 \"의결 X\" 칸이 적용돼 금액이 크게 달라집니다.\n→ 그리고 **거래금액 산정 방식**을 먼저 정해야 합니다: 담보제공=담보한도액 / 부동산임대차=연간임대료+보증금환산 / 보험=보험료총액 / 상품·용역=**분기 합계액**. 틀리면 판정이 뒤집힙니다.\n→ 기준금액은 `min(100억원, max(5억원, max(자본총계, 자본금) × 5%))`. **\"50억 기준\"은 폐지된 옛 기준**입니다.\n\n---\n\n## 덤 — 지금 남은 정기공시 기한 (회사 무관, 달력 고정)\n\n| 기한 | 공시 | 성격 |\n|---|---|---|\n| **2026-10-16** (D-38, 24영업일) | 약관에 의한 금융거래 3분기 일괄 | 조건부(고시 §9③·§9⑤ 두 경로만) |\n| **2026-11-16** (D-69) | 상품·용역 실제거래금액 20%↑ **감소** 3분기 | 조건부 (법정일 11/14가 비영업일이라 조정됨) |\n| **2026-11-30** (D-83) | **기업집단현황공시 3분기** | **무조건** |\n| **2026-11-30** (D-83) | 비상장 **주요주주** 지분 1%p 변동 3분기 | 조건부 |\n\n11/30에 두 건이 겹칩니다.\n\n⚠️ 도구 notes 그대로: **캘린더가 비어 있다고 공시할 것이 없다는 뜻이 아닙니다.** 대규모내부거래 개별거래(의결 후 3/7영업일), 비상장 중요사항 중 **최대주주** 변동(사유 발생 후 7영업일 — 주요주주 분기공시와 기한이 완전히 다릅니다), 공익법인, §9④ 약관 금융거래는 사유 발생형이라 달력에 올릴 수 없습니다.\n\n---\n\n**어느 기업집단인지 알려주시면 ①부터 바로 돌리겠습니다.** ②③은 문제되는 거래 건의 의결일·상장여부·금액이 나오는 대로요. ④ 관련해 지금 실제로 정정을 고민 중인 건이 있다면, 그 오류가 위 표의 어느 줄인지만 말씀해 주시면 골든타임(기한 만료 후 10영업일)과 지연 감경 축소 일정(75%→50%→30%→20%)까지 날짜로 계산해 드립니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__assess_correction_risk,mcp__gongsi__check_disclosure_duty,mcp__gongsi__detect_undisclosed_transactions,mcp__gongsi__resolve_entity,mcp__gongsi__search_ftc_qna\",\"max_results\":5}"
+    },
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__calc_business_days,mcp__gongsi__server_info,mcp__gongsi__disclosure_calendar\",\"max_results\":3}"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "input": "{\"errorType\":\"trivial_error\",\"regime\":\"art26_29\"}"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "input": "{\"errorType\":\"content_omission\",\"regime\":\"art26_29\"}"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "input": "{\"errorType\":\"transaction_changed\",\"regime\":\"art26_29\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\"}"
+    },
+    {
+      "name": "mcp__gongsi__disclosure_calendar",
+      "input": "{\"include_past\":false}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"정정공시 과태료 자진시정\",\"category\":\"internal_transaction\",\"limit\":5}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__assess_correction_risk\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi"
+    },
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__calc_business_days\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__server_info\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__disclosure_c"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "is_error": false,
+      "head": "{\n  \"coreAnswer\": \"정정공시 자체는 과태료 부과 대상 행위가 아닙니다. 과태료 고시의 위반행위 열거(Ⅱ)에 정정은 없으며, 문제가 되는 것은 정정이 아니라 **원 공시의 상태**(누락·거짓·지연)입니다. 원 공시에 위반이 있었다면 정정 여부와 무관하게 이미 성립해 있고, 정정을 미룬다고 사라지지 않습니다.\",\n  \"originalViolati"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "is_error": false,
+      "head": "{\n  \"coreAnswer\": \"정정공시 자체는 과태료 부과 대상 행위가 아닙니다. 과태료 고시의 위반행위 열거(Ⅱ)에 정정은 없으며, 문제가 되는 것은 정정이 아니라 **원 공시의 상태**(누락·거짓·지연)입니다. 원 공시에 위반이 있었다면 정정 여부와 무관하게 이미 성립해 있고, 정정을 미룬다고 사라지지 않습니다.\",\n  \"originalViolati"
+    },
+    {
+      "name": "mcp__gongsi__assess_correction_risk",
+      "is_error": false,
+      "head": "{\n  \"coreAnswer\": \"정정공시 자체는 과태료 부과 대상 행위가 아닙니다. 과태료 고시의 위반행위 열거(Ⅱ)에 정정은 없으며, 문제가 되는 것은 정정이 아니라 **원 공시의 상태**(누락·거짓·지연)입니다. 원 공시에 위반이 있었다면 정정 여부와 무관하게 이미 성립해 있고, 정정을 미룬다고 사라지지 않습니다.\",\n  \"originalViolati"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__disclosure_calendar",
+      "is_error": false,
+      "head": "{\n  \"scope\": {\n    \"year\": 2026,\n    \"today\": \"20260908\",\n    \"basis\": \"기한 도래 기준 (해당 연도에 마감일이 오는 공시)\",\n    \"filters\": {\n      \"include_past\": false\n    }\n  },\n  \"summary\": {\n    \"total\": 4,\n    \"past\""
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"정정공시 과태료 자진시정\",\n  \"results\": [\n    {\n      \"id\": \"lit26-045\",\n      \"category\": \"internal_transaction\",\n      \"question\": \"이사회 의결 및 공시의 의무를 회피할 목적으로 동일 거래대상과의 동일 거래를 수차례 분할하여 거래하는 경우 처리 "
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 92021,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__search_ftc_qna"
+  ]
 }

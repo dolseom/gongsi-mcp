@@ -169,6 +169,20 @@ export function readLabeledTables(sectionMarkdown: string): LabeledTable[] {
         if (u) unit = u;
         continue;
       }
+      // ★ 실물에 **2열 캡션**이 있다 (카카오 20260610000659):
+      //   `| 표 | (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |`
+      //   1열만 캡션으로 보면 이 줄이 표 헤더로 섞여 들어가고 단위는 null 이 되어,
+      //   "단위를 모르면 표를 통째로 건너뛴다" 불변식에 걸려 표가 전부 버려진다
+      //   (그 문서에서 (5) 12표·(3) 2표가 통째로 사라졌다).
+      //   ⚠️ 2열은 **단위가 실제로 읽힐 때만** 캡션으로 본다 — 무조건 건너뛰면
+      //   2열짜리 진짜 데이터 표가 조용히 사라진다.
+      if (cells.length === 2) {
+        const u = unitOf(cells.join(' '));
+        if (u) {
+          unit = u;
+          continue;
+        }
+      }
       if (sawSeparator) buf.push(cells);
       else header.push(cells);
       continue;

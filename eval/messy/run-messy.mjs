@@ -30,7 +30,13 @@ for (const line of readFileSync(path.join(process.env.USERPROFILE ?? process.env
  *   가져온다 (실측: m06 의 첫 호출이 `ToolSearch{select:mcp__gongsi__search_ftc_qna}`).
  *   이걸 막으면 MCP 도구를 아예 부를 수 없다.
  */
-const DISALLOWED = 'WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent';
+// ⚠️ 2026-09-08 재실행에서 m07 이 `Monitor`·`TaskOutput` 을 호출했다 — 백그라운드 작업 도구까지
+//   살아 있었다. 답을 지어내는 경로는 아니지만, 이 평가가 재는 것은 **우리 MCP 만으로 답이
+//   되는가**이므로 우리 도구가 아닌 것은 전부 막는다.
+const DISALLOWED =
+  'WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent,' +
+  'Monitor,TaskOutput,TaskStop,NotebookEdit,Artifact,Skill,Workflow,CronCreate,CronList,CronDelete,' +
+  'SendMessage,ListAgents,AskUserQuestion,ScheduleWakeup,SendUserFile';
 
 function runOne(q) {
   return new Promise((resolve) => {

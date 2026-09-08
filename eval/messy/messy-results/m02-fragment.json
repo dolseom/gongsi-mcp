@@ -3,9 +3,125 @@
   "type": "정보 조각만",
   "question": "계열사한테 30억 빌려줬는데요",
   "watch": "자본 규모를 물어보는가(기준금액이 자본에 달렸다), 30억을 곧바로 대상/비대상으로 단정하는가",
-  "elapsed_s": "36.8",
+  "elapsed_s": "86.9",
   "is_error": false,
-  "num_turns": 3,
-  "answer": "판정에 필요한 입력이 부족해 도구가 결과를 내지 못했습니다. 아래만 알려주시면 바로 판정합니다.\n\n**필요한 정보**\n1. **빌려준 회사(귀사)의 자본총계와 자본금** — 최근 사업연도말 재무제표 기준. 모르면 회사명만 주셔도 `get_financials`로 조회합니다.\n2. **상장 여부** — 상장 3영업일 / 비상장 7영업일로 기한이 갈립니다.\n3. **이사회 의결일** — 의결을 안 거쳤다면 그것도 알려주세요. 과태료 기본금액이 달라집니다.\n4. **아직 공시 전인지, 이미 공시했으면 공시일**\n\n**미리 확인할 전제 2가지**\n- 귀사가 **공시대상기업집단 소속 국내 회사**인지. 아니면 이 의무 자체가 없습니다.\n- 상대방 계열사가 **국외 계열회사**인지. 국외 계열회사와의 거래는 이사회 의결·공시의무가 없습니다. 단 국외 계열회사를 통해 다른 특수관계인을 위한 거래면 의무가 있습니다.\n\n**참고로 미리 말씀드리면**, 기준금액은 `min(100억, max(5억, max(자본총계, 자본금) × 5%))`입니다. 자본이 600억 이상이면 30억은 기준 미달이고, 그 아래면 대상입니다. 널리 알려진 \"50억 기준\"은 폐지된 옛 기준입니다. 그리고 자금대여는 **대여회사(귀사)와 차입회사 각각** 자기 자본 기준으로 의무를 따로 판정하므로, 귀사가 미달이어도 상대방은 대상일 수 있습니다.",
-  "raw_head": null
+  "num_turns": 8,
+  "answer": "자금대여는 **대규모내부거래(법 §26)** 유형이라, 30억이 공시대상인지는 금액만으로는 안 갈리고 **귀사 자본 규모**에서 갈립니다.\n\n## 기준금액 산식과 30억의 갈림길\n\n```\n기준금액 = min(100억원, max(5억원, max(자본총계, 자본금) × 5%))\n```\n\n도구 판정 3건(이사회 의결일 2026-09-01 가정):\n\n| 가정 | 기준금액 | 30억 판정 |\n|---|---|---|\n| 자본총계 600억 · 자본금 100억 (상장) | **30억원** | 공시 **대상** (30억 ≥ 30억) |\n| 자본총계 700억 · 자본금 100억 (상장) | 35억원 | 대상 **아님** (30억 < 35억) |\n| 자본총계 100억 · 자본금 50억 (비상장) | 5억원 | 공시 **대상** |\n\n→ 갈림선은 **자본총계·자본금 중 큰 값이 600억**입니다. 600억 이하면 30억은 거의 확실히 대상, 600억 초과면 미달입니다.\n\n※ 자본총계 = 주총 승인된 최근 사업연도말 재무제표 기준 / 자본금 = 이사회 의결일 **직전일** 기준. 두 시점이 다릅니다.\n※ 흔히 도는 \"50억 이상만 공시\" 기준은 **폐지된 옛 기준**입니다.\n\n## 기한 (고시 §6①)\n\n이사회 의결일 **다음 날부터** 상장 3영업일 / 비상장 7영업일. 위 예시에서 9/1 의결이면 상장은 9/4, 비상장은 9/10이 기한입니다.\n\n## ⚠️ 빌려준 쪽만의 문제가 아닙니다\n\n거래 한 건에 공시의무자가 둘일 수 있습니다(공정위 매뉴얼 lit26-001: \"거래규모가 거래당사자 **모두에게** 해당되면 의무도 모두에게 있음\"). 귀사는 '특수관계인에 대한 자금대여', 상대 계열사는 '자금차입'으로 각각 판단하며, **기준금액은 각자 자기 자본으로 따로 계산**합니다. 귀사가 미달이어도 자본이 작은 상대 계열사는 대상일 수 있습니다.\n\n## 확인이 필요한 것\n\n정확히 판정하려면 다음이 필요합니다:\n\n1. **회사명** (또는 자본총계·자본금) — 회사명을 주시면 `get_financials`로 수치를 뽑아 다시 판정하겠습니다\n2. **상장 여부** (기한이 3영업일 vs 7영업일로 갈립니다)\n3. **이사회 의결일** — 이미 의결하셨는지, 아직 안 하셨는지\n4. **공시 여부와 30억의 성격** — 동일 계열사에 분할 대여한 것이라면 목적·조건·상환일이 같으면 **합산 1건(전체 금액)**으로 봅니다(공정위 매뉴얼)\n\n기한이 이미 지났다면 **기한 만료 다음 날부터 10영업일 안**에 자진시정 재공시하는 것이 과태료 면제의 필요조건입니다 — 날짜를 주시면 골든타임이 남았는지 계산해 드리겠습니다.\n\n> 본 판정은 공개된 법령·고시에 기반한 참고 정보이며 공정거래위원회의 공식 유권해석이 아닙니다. 실제 신고 전 소관 부서 확인을 권장합니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty,mcp__gongsi__calc_business_days,mcp__gongsi__resolve_entity\",\"max_results\":3}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"situation\":\"계열회사에 자금 30억원을 대여함. 대여한 회사(자금을 빌려준 쪽) 관점에서 공시의무를 확인하려 함\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"totalEquity\":60000000000,\"paidInCapital\":10000000000}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"totalEquity\":70000000000,\"paidInCapital\":10000000000}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"totalEquity\":60000000000,\"paidInCapital\":10000000000,\"boardDate\":\"20260901\",\"listing\":\"listed\",\"situation\":\"계열회사에 자금 30억원 대여. 자금을 빌려준 대여회사 관점\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"totalEquity\":70000000000,\"paidInCapital\":10000000000,\"boardDate\":\"20260901\",\"listing\":\"listed\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":3000000000,\"totalEquity\":10000000000,\"paidInCapital\":5000000000,\"boardDate\":\"20260901\",\"listing\":\"unlisted\",\"disclosureStatus\":\"not_disclosed\"}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__calc_business_days\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__re"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 30억원 ≥ 기준금액 30억원. 이사회 사전 의결이 필요합니다.\",\n  \"threshold\": {\n    \"amount\": 3000000000,\n    \"formula\": \"max(자본총"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"not_required\",\n  \"summary\": \"공시 대상이 아닙니다. 거래금액 30억원 < 기준금액 35억원.\",\n  \"threshold\": {\n    \"amount\": 3500000000,\n    \"formula\": \"max(자본총계 700억원, 자본"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 30억원 ≥ 기준금액 5억원. 이사회 사전 의결이 필요합니다.\",\n  \"threshold\": {\n    \"amount\": 500000000,\n    \"formula\": \"max(자본총계 "
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 81662,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__check_disclosure_duty"
+  ]
 }

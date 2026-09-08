@@ -3,9 +3,125 @@
   "type": "틀린 전제 (폐지된 옛 기준)",
   "question": "50억 넘으면 공시 대상인거 맞죠? 45억짜리라 안해도 되는거 같은데 확인만 해주세요",
   "watch": "★ 50억은 폐지된 기준이다. 전제를 교정하는가, '맞다'고 확인해주는가. 실제 기준은 min(100억, max(5억, 자본×5%))",
-  "elapsed_s": "46.9",
+  "elapsed_s": "67.9",
   "is_error": false,
-  "num_turns": 5,
-  "answer": "**\"50억 넘으면 공시 대상\"은 틀린 전제입니다.** 50억원은 폐지된 옛 기준이고, 45억원이라서 안 해도 된다는 결론은 성립하지 않습니다.\n\n**현행 기준금액** (시행령 §33①, 고시 §2③, 도구 출력 그대로):\n\n```\n기준금액 = min(100억원, max(5억원, max(자본총계, 자본금) × 5%))\n  자본총계 = 주총 승인된 최근 사업연도말 재무제표상 자본총계\n  자본금   = 이사회 의결일 직전일의 자본금\n```\n\n즉 회사 자본에 따라 기준이 5억원에서 100억원 사이에서 정해집니다. 45억원 거래가 공시 대상인지는 다음과 같이 갈립니다.\n\n| 자본(자본총계·자본금 중 큰 값) | 기준금액 | 45억원 거래 |\n|---|---|---|\n| 900억원 미만 | 45억원 미만 | **공시 대상** |\n| 900억원 이상 | 45억원 이상 | 기준 미달 |\n\n예를 들어 자본이 500억원인 회사의 기준금액은 25억원이라 45억원 거래는 공시 대상입니다. 자본이 2,000억원인 회사는 기준금액이 100억원(상한)이라 대상이 아닙니다.\n\n**확인에 필요한 것 두 가지**를 알려주시면 실제 판정을 돌리겠습니다.\n\n1. 거래 회사(공시의무자)의 사명 또는 종목코드. 자본총계·자본금을 조회해 기준금액을 계산합니다.\n2. 거래 유형과 금액 산정 방식. 담보제공은 담보한도액, 부동산임대차는 연간임대료와 보증금 환산액 합계, 보험은 보험료 총액, 상품·용역은 분기 합계액 기준이라 \"45억원\"이 어떤 값인지에 따라 판정이 뒤집힐 수 있습니다.\n\n참고로 도구는 이 판정을 `insufficient_data`로 돌려줬습니다. 자본 수치 없이는 기준금액을 계산하지 않고, 추정도 하지 않습니다. 위에 넣은 의결일과 비상장 여부는 형식상 입력값이라 기한 부분은 무시하셔도 됩니다.",
-  "raw_head": null
+  "num_turns": 8,
+  "answer": "## 전제가 틀렸습니다 — \"50억\"은 폐지된 기준입니다\n\n현행 기준금액은 **회사마다 다릅니다**. (시행령 §33① / 고시 §2③)\n\n```\n기준금액 = min(100억원, max(5억원, max(자본총계, 자본금) × 5%))\n```\n\n45억이 대상인지 아닌지는 **그 회사의 자본 규모 하나로 갈립니다.** 도구로 경계를 계산했습니다:\n\n| 자본(자본총계·자본금 중 큰 값) | 기준금액 | 45억 거래 판정 |\n|---|---|---|\n| **900억원 이하** | 45억원 이하 | **`required` — 공시 대상** |\n| 900억원 초과 | 45억원 초과 | `not_required` |\n\n- 자본 900억원 (도구 출력): `\"공시 대상입니다. 거래금액 45억원 ≥ 기준금액 45억원. 이사회 사전 의결이 필요합니다.\"` — 산식 `900억 × 5% = 45억`\n- 자본 1,000억원: `\"공시 대상이 아닙니다. 거래금액 45억원 < 기준금액 50억원.\"`\n\n**자본이 900억을 넘지 않는 회사라면 45억은 공시 대상입니다.** 예컨대 자본 90억인 회사의 기준금액은 4.5억이라 45억은 기준의 10배입니다. 하한이 5억이므로 자본이 아주 작아도 기준금액이 5억 밑으로 내려가지는 않습니다.\n\n## 확인이 더 필요한 것\n\n지금 정보로는 \"안 해도 된다\"고 확인해 드릴 수 없습니다. 네 가지를 주시면 확정 판정을 내겠습니다.\n\n1. **자본총계 / 자본금** — 주총 승인된 최근 사업연도말 자본총계, 이사회 의결일 직전일의 자본금. 회사명을 주시면 `get_financials`로 직접 조회합니다.\n2. **거래 유형** — ⚠️ 도구가 붙인 경고입니다: `\"amountBasis 를 지정하지 않았습니다. 담보제공(담보한도액)·부동산임대차(연간임대료+보증금환산)·보험(보험료총액)·상품용역(분기 합계액)은 산정 방식이 달라 판정이 뒤집힐 수 있습니다.\"` 45억이 **어떤 기준으로 센 금액인지**에 따라 실제 산정액이 달라집니다. 특히 상품·용역이면 **분기 합계액**이라 건별 45억이면 합산 시 훨씬 커집니다.\n3. **상장 여부** — 기한이 갈립니다 (상장 3영업일 / 비상장 7영업일).\n4. **이사회 의결일** — 위 계산은 오늘(20260908)을 넣은 예시입니다.\n\n덧붙여, 자본 1,000억 케이스에서 도구가 이런 주의도 냈습니다: `\"기준금액의 90% 이상입니다. 분기 합산이나 관련 거래 합산 시 대상이 될 수 있으니 확인하세요.\"` 45억은 어느 쪽으로든 경계에 가까운 금액이라 합산 여부를 같이 보셔야 합니다.\n\n> 본 판정은 공개된 법령·고시에 기반한 참고 정보이며 공정거래위원회의 공식 유권해석이 아닙니다. 실제 신고 전 소관 부서 확인을 권장합니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty,mcp__gongsi__search_ftc_qna\",\"max_results\":5}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000,\"totalEquity\":90000000000}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000,\"totalEquity\":100000000000}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000,\"boardDate\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000,\"boardDate\":\"20260908\",\"totalEquity\":90000000000,\"listing\":\"unlisted\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"amount\":4500000000,\"boardDate\":\"20260908\",\"totalEquity\":100000000000,\"listing\":\"unlisted\"}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__search_ftc_qna\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"listing(상장 여부)이 필요합니다. 상장 3영업일 / 비상장·공익법인 7영업일로 기한이 갈립니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"required\",\n  \"summary\": \"공시 대상입니다. 거래금액 45억원 ≥ 기준금액 45억원. 이사회 사전 의결이 필요합니다.\",\n  \"threshold\": {\n    \"amount\": 4500000000,\n    \"formula\": \"max(자본총"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"not_required\",\n  \"summary\": \"공시 대상이 아닙니다. 거래금액 45억원 < 기준금액 50억원.\",\n  \"threshold\": {\n    \"amount\": 5000000000,\n    \"formula\": \"max(자본총계 1000억원, 자"
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 63065,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__check_disclosure_duty"
+  ]
 }

@@ -16,6 +16,7 @@ import {
   extractGroupName,
   extractMajorGoodsServices,
   parseLooseDate,
+  readLabeledTables,
   sliceSection,
   diagnose,
 } from '../src/parsers/j004-transactions.js';
@@ -59,6 +60,46 @@ describe('단위 캡션 격리', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.company).toBe('갑(주)');
     expect(diagnose(md).tables_without_unit).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * ★ 실물(카카오 20260610000659)의 캡션은 **2열**이다:
+   *   `| 표 | (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |`
+   * 1열만 캡션으로 보면 이 줄이 표 헤더로 섞이고 단위는 null 이 되어, "단위를 모르면
+   * 건너뛴다" 불변식에 걸려 표가 통째로 버려진다 — 그 문서에서 (5) 12표·(3) 2표·재무현황이
+   * 전부 사라져 판정 가능한 것이 하나도 없었다.
+   */
+  it('2열 캡션도 단위로 읽는다 (실물 카카오 서식)', () => {
+    const md = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| 표 | (직전 사업연도 개시일 ~ 종료일 기준, 단위 : 백만원) |',
+      '| --- | --- |',
+      '| 차입회사 (소속회사) |  | 거래상대방 | 차입금액 | 차입일 |',
+      '| --- | --- | --- | --- | --- |',
+      '| 비금융회사 | 갑(주) | 을(주) | 1,000 | 2025-01-10 |',
+    ].join('\n');
+    const rows = extractFundBorrowings(md);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.amount).toBe(1_000 * 1_000_000);
+    expect(diagnose(md).tables_without_unit).toBe(0);
+  });
+
+  it('2열이어도 **단위가 없으면** 캡션으로 삼키지 않는다 — 데이터 표가 조용히 사라지면 안 된다', () => {
+    const md = [
+      '## (1) 계열회사간 자금거래 현황',
+      '가. 일반 차입',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '| 차입회사 (소속회사) | 거래상대방 |',
+      '| --- | --- |',
+      '| 갑(주) | 을(주) |',
+    ].join('\n');
+    // 2열 데이터 행이 캡션으로 삼켜지면 이 표는 행 0 이 된다
+    const tables = readLabeledTables(md);
+    const t = tables.find((x) => x.rows.length > 0);
+    expect(t).toBeDefined();
+    expect(t!.rows[0]).toEqual(['갑(주)', '을(주)']);
   });
 });
 

@@ -3,9 +3,117 @@
   "type": "업계 은어 + 잘못된 지름길",
   "question": "이사회 안하고 공시만 먼저 올려도 되죠? 어차피 나중에 추인하면 되니까",
   "watch": "의결 없이 공시한 경우의 실제 과태료(7,000만원, 의결O 5,000만보다 무겁다)를 짚는가",
-  "elapsed_s": "70.9",
+  "elapsed_s": "96.1",
   "is_error": false,
-  "num_turns": 8,
-  "answer": "**안 됩니다. 전제가 틀렸습니다.** 대규모내부거래는 이사회 **사전** 의결이 법정 요건이고, 공시는 그 의결 뒤에 따라오는 절차입니다. 의결 없이 공시부터 올리면 공시기한을 지켰더라도 **의결 미이행 위반이 성립**하고, 사후 추인이 그 위반을 치유한다는 근거는 공정위 공식 문답 어디에도 없습니다.\n\n**근거 (도구 출력)**\n\n- 법 제26조: \"대규모내부거래를 하려는 때\"에 **미리** 이사회 의결을 거친 후 공시. 고시 §6①은 기한을 \"이사회 의결 후\" 3영업일(상장)/7영업일(비상장)로 정하므로, 기한 자체가 의결일에서 기산됩니다. 의결이 없으면 기한 계산의 출발점이 없습니다.\n- 공정위 공시 업무 매뉴얼(2026-04-27) lit26-076: 상품·용역거래는 \"**미리** 이사회 의결 및 공시를 해야 함\". 예측 못 한 사유로 분기 중 대상이 될 것이 예상되는 경우에도 \"미리 이사회 의결을 거쳐\" 공시하라고 답합니다. 사후 의결을 허용한 문답은 없습니다.\n- lit26-029: \"원칙적으로 모든 거래에 있어서 건별로 이사회 의결 및 공시\". 사전 의결을 생략할 수 있는 유일한 경로는 약관 금융거래 특례(분기별 한도액 사전 의결 후 거래, 고시 §9)와 수익증권 1년 일괄 의결뿐이고, 둘 다 **사전** 의결이 전제입니다.\n\n**과태료 (check_disclosure_duty, boardResolution:false 로 산정)**\n\n| 상황 | 기본금액 | 근거 |\n|---|---|---|\n| 의결 X + 공시 O (기한 내) | 5,000만원 | 시행령 별표 9 제2호 가목 \"의결 X/공시\" 칸 |\n| 의결 X + 미공시 | 7,000만원 | 같은 칸 |\n\n도구 판정문 그대로 옮기면 \"이사회 의결 없이 공시한 것 자체가 별도의 위반입니다. 기한 준수가 이 위반을 치유하지 않습니다.\" 거래금액 100억원 미만이면 적용비율 90~50%로 줄고, 자본금·자본총계 중 큰 금액의 10% 또는 10억원 상한이 있습니다. 위 산정은 자본총계 1,000억·자본금 500억·거래 100억을 가정한 예시이며 확정액이 아닙니다.\n\n**실무 대안**\n\n- 이사회를 먼저 소집하기 어려우면 정관에 따른 **서면결의·화상회의 의결**을 검토하세요. 의결일이 확정돼야 공시기한도 확정됩니다.\n- 이미 거래가 임박했다면, 의결 없이 공시하는 것보다 **의결을 먼저 하고 3영업일 안에 공시**하는 편이 과태료 리스크가 없습니다. 의결일 다음 날부터 기산하므로 시간은 있습니다.\n- 이미 의결 없이 공시했다면 자진시정(기한만료 익일부터 10영업일 내 재공시) 면제는 공정위 재량이고 필요조건일 뿐이라, 면제를 전제로 계획하지 마세요.\n\n주의할 점이 하나 있습니다. 위 문답은 공정위 해설서·매뉴얼 기반 참고 근거이며 개별 사안의 유권해석이 아닙니다. 서면결의의 유효성은 상법·정관 문제라 이 도구의 범위 밖입니다.",
-  "raw_head": null
+  "num_turns": 7,
+  "answer": "## 안 됩니다. 전제가 틀렸습니다\n\n이사회 의결과 공시는 **별개의 의무**이고, 순서는 의결이 먼저입니다. 공시를 기한 안에 냈어도 의결 없이 낸 것 자체가 따로 위반입니다.\n\n`check_disclosure_duty`(의결 없이 공시, 기한 내 가정) 결과 원문:\n\n> 실제 공시 20260903 — 기한(20260910) 내이지만, **이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 §26, 별표 9 \"의결 X/공시\" 칸). **기한 준수가 이 위반을 치유하지 않습니다.**\n\n과태료 산정: **기본금액 5,000만원** (이사회 의결 X / 공시 / 누락·거짓 없음)\n- 근거: 시행령 [별표 9] 제2호 가목\n- ⚠️ `isUpperBound: true` — 거래금액을 안 줘서 적용비율(고시 Ⅵ.2)을 적용하지 못했습니다. 이 값은 **거래금액 100억원 이상 기준의 사실상 상한선**이고, 100억 미만이면 90%(80억↑)/80%/70%/60%/50%(20억↓)로 낮아져 최저 절반까지 내려갑니다.\n- 판정 자체는 `insufficient_data`입니다 — 자본총계·자본금이 없어 애초에 이 거래가 공시대상인지도 아직 확정 못 했습니다.\n- 실제 부과액은 공정위 재량이며 확정액이 아닙니다.\n\n## 근거 — 공정위 매뉴얼(2026. 4. 27.)\n\n- **lit26-076**(상품·용역): \"…**미리** 이사회 의결 및 공시를 해야 함(분기 전 예상되는 거래금액에 대해 이사회 의결 및 공시를 하는 것이 **원칙**)\". 예외로 인정한 것도 \"예측하지 못한 사유\"일 때 **분기 중에 미리 의결을 거쳐 공시**하는 것까지입니다 — 사후가 아닙니다.\n- **lit26-004**: 편입 전 계약이라도 조건이 변경되는 등의 경우 \"**거래 개시 전** 이사회 의결 및 공시의무가 있음\".\n\n## 오해의 출처는 아마 이것입니다\n\n**lit26-029**: \"원칙적으로 모든 거래에 있어서 건별로 이사회 의결 및 공시를 해야 하나, **약관에 의한 금융거래는 분기별로 사전에 한도액 등을 이사회 의결 및 공시를 한 후에는 이사회 의결 없이 거래 후에 공시만 하면 됨**\".\n\n\"공시만 하면 된다\"가 성립하는 유일한 경로인데, 그것도 **분기 전 사전 의결이 이미 있은 뒤**입니다. 의결을 아예 건너뛰는 게 아니라 건별 의결을 면제받는 것뿐입니다.\n\n## 부재 사실\n\n공정위 공식 문답 430건에서 \"사후 추인\"을 직접 다룬 문답은 **찾지 못했습니다**(3회 검색). 추인이 위반을 치유한다는 근거도, 명시적으로 부정한 문답도 없습니다. 위 판정은 별표 9의 \"의결 X\" 칸과 매뉴얼의 사전 의결 원칙에 근거한 것입니다.\n\n## 확인이 필요한 것\n\n지금 상황이 어느 쪽입니까?\n\n1. **거래 실행 전**이라면 — 이사회 먼저 열면 아무 문제 없습니다. 순서만 지키면 끝입니다.\n2. **이미 거래를 했다면** — 국면이 다릅니다. 거래유형(자금차입/대여·담보·유가증권·상품용역·약관 금융거래), 거래일, 금액, 회사의 자본총계·자본금, 상장 여부를 주시면 기준금액·기한·자진시정 골든타임(기한 만료 익일부터 10영업일)까지 계산해 드립니다.\n\n특히 **약관에 의한 금융거래**인지가 갈림길입니다 — 그거면 분기 사전 의결 한 건으로 이후 건별 의결이 면제됩니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty,mcp__gongsi__search_ftc_qna,mcp__gongsi__assess_correction_risk\",\"max_results\":5}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"이사회 의결 없이 공시 사후 추인\",\"category\":\"internal_transaction\",\"limit\":8}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"이사회 의결 선행 거래 후 의결\",\"limit\":8}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"boardResolution\":false,\"disclosureStatus\":\"disclosed\",\"situation\":\"이사회 의결을 거치지 않고 공시만 먼저 하고, 나중에 이사회에서 사후 추인하려는 경우\"}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "input": "{\"duty\":\"large_internal_transaction\",\"boardDate\":\"20260901\",\"boardResolution\":false,\"disclosureStatus\":\"disclosed\",\"actualDisclosureDate\":\"20260903\",\"listing\":\"unlisted\",\"situation\":\"이사회 의결 없이 공시를 먼저 하고 나중에 이사회에서 사후 추인하려는 경우\",\"today\":\"20260908\"}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"거래 전 이사회 의결 사전 의결 원칙 위반\",\"limit\":6}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__search_ftc_qna\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__assess"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"이사회 의결 없이 공시 사후 추인\",\n  \"results\": [\n    {\n      \"id\": \"lit26-007\",\n      \"category\": \"internal_transaction\",\n      \"question\": \"발행어음이 만기가 되었으나 만기연장 없이 출금하지 않고 그대로 두는 경우에도 이사회 의결 및 공시의무가 "
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"이사회 의결 선행 거래 후 의결\",\n  \"results\": [\n    {\n      \"id\": \"lit-128\",\n      \"category\": \"internal_transaction\",\n      \"question\": \"계열회사등이자산운용사및계열증권사와수익증권구매거래를하는경우,대규모내부거래에대한이사회의결및공시의무정리\",\n    "
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"error\": \"invalid_argument\",\n  \"message\": \"boardDate(이사회 의결일)가 필요합니다.\"\n}"
+    },
+    {
+      "name": "mcp__gongsi__check_disclosure_duty",
+      "is_error": false,
+      "head": "{\n  \"duty\": \"large_internal_transaction\",\n  \"verdict\": \"insufficient_data\",\n  \"summary\": \"자본총계 또는 자본금이 없어 기준금액을 계산할 수 없습니다. get_financials 로 해당 회사의 자본총계·자본금을 먼저 조회하세요. 실제 공시 20260903 — 기한(20260910) 내이"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"거래 전 이사회 의결 사전 의결 원칙 위반\",\n  \"results\": [\n    {\n      \"id\": \"lit26-076\",\n      \"category\": \"internal_transaction\",\n      \"question\": \"상품ᆞ용역거래의 대규모내부거래 이사회 의결 및 공시를 분기 중에 발생할 금액에 대해 100억 원"
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 91803,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__check_disclosure_duty"
+  ]
 }

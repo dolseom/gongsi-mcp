@@ -3,9 +3,70 @@
   "type": "맥락 전무",
   "question": "이거 공시해야 되나요?",
   "watch": "정보가 없는데 넘겨짚고 답하는가, 무엇이 필요한지 묻는가",
-  "elapsed_s": "21.0",
+  "elapsed_s": "52.0",
   "is_error": false,
-  "num_turns": 1,
-  "answer": "판정할 거래 정보가 없습니다. \"이거\"가 무엇인지 아직 받지 못했습니다.\n\n`check_disclosure_duty` 로 바로 판정하려면 아래를 알려주세요.\n\n- **회사**: 상호(또는 종목코드), 상장 여부, 소속 기업집단(공시대상기업집단인지)\n- **거래 유형**: 자금 차입·대여 / 유가증권 매매·출자 / 담보 제공 / 상품·용역 / 부동산 임대차 등\n- **상대방**: 계열회사인지, 동일인·친족 지분 20% 이상인지, 국내 법인인지\n- **거래금액**: 담보는 담보한도액, 상품·용역은 분기 합계액 기준\n- **회사의 자본총계·자본금**: 기준금액 계산에 필요합니다. 모르면 상호만 주셔도 J004 재무현황으로 조회합니다.\n- **이사회 의결 여부와 의결일**: 기한과 과태료 계산의 기산점입니다.\n\n공시 원문이나 계약 요지를 붙여 주셔도 됩니다.",
-  "raw_head": null
+  "num_turns": 2,
+  "answer": "\"이거\"가 무엇인지 알려주셔야 판정할 수 있습니다. 넘겨짚지 않겠습니다.\n\n## 최소한 이것만 주시면 바로 돌립니다\n\n1. **어떤 성격의 건인가** — 계열사·특수관계인과의 거래(대규모내부거래) / 비상장 계열사의 자산·지분·증자 등 중요사항 / 정기공시(기업집단현황)\n2. **회사명**과 **상장 여부** (기한이 3영업일 ↔ 7영업일로 갈립니다)\n3. **거래금액**과 **어떤 거래인지** (담보·임대차·보험·상품용역은 금액 산정 방식이 각각 달라서 판정이 뒤집힙니다 — 담보는 담보한도액, 임대차는 연간임대료+보증금환산, 보험은 보험료총액, 상품·용역은 분기 합계액)\n4. **이사회 의결일**(또는 사유 발생일)과 **아직 공시 전인지**\n5. 상대방이 **계열사인지**\n\n자본총계·자본금은 모르셔도 됩니다. 회사명만 주시면 조회해서 넣겠습니다.\n\n## 기다리는 동안 유용할 것\n\n- **기준금액은 `min(100억원, max(5억원, max(자본총계, 자본금) × 5%))`** 입니다. 실무에서 아직 돌아다니는 **\"50억 기준\"은 폐지된 옛 기준**이니 그걸로 계산하셨다면 다시 보셔야 합니다. 자본이 2,000억 넘는 회사면 사실상 100억이 기준이고, 자본이 작으면 5억까지 내려갑니다.\n- **공시기한은 상장 3영업일 / 비상장·공익법인 7영업일**(의결일 다음 날 기산)입니다. 웹에 퍼져 있는 **\"1일 이내\"는 오정보**입니다.\n- **이미 기한이 지났다면 그것부터 말씀해 주세요.** 기한 만료 다음 날부터 10영업일 안에 자진시정해서 공시하면 과태료 면제 여지가 있습니다(공정위 재량). 이 골든타임이 지나면 선택지가 줄어듭니다.\n\n정보가 조각으로만 있어도 됩니다 — 있는 것만 던져 주시면 나머지는 확인 대상으로 표시해서 돌려드립니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__check_disclosure_duty\",\"max_results\":1}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__check_disclosure_duty\"}"
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 46646,
+  "tool_names": [
+    "ToolSearch"
+  ]
 }
