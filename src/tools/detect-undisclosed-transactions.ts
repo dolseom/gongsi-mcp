@@ -1405,6 +1405,68 @@ const ACTION_STATUS_PRIORITY: Record<string, number> = {
   candidate_aggregate_only: 3,
 };
 
+/**
+ * **닫힌 판정** 배열을 압축한다 — 모든 항목에서 값이 **완전히 같은** 필드만 배열 밖으로 올린다.
+ *
+ * ★ 왜 (실물 측정, 2026-09-08): 케이티 detect 응답 1,015KB 중 554KB(55%)가
+ * `goods_services_matrix_below_threshold` 421건이었다. 1건 1,347바이트인데 고유 정보는
+ * 60바이트뿐이고 나머지는 **전건 동일한 문구**다 (caveat 378B · reason 109B).
+ * 같은 문장을 421번 읽히는 것은 답을 조립하는 시간만 늘린다 (m07 은 도구 대기 58초에
+ * 모델 생성 302초였다).
+ *
+ * ⚠️ **정보를 버리지 않는다.** 값이 하나라도 다르면 올리지 않고 각 항목에 그대로 둔다.
+ * 올린 값은 `shared` 로 같은 자리에 실어, 사람이 근거를 잃지 않게 한다.
+ */
+function hoistSharedFields<T extends Record<string, unknown>>(
+  items: T[],
+  fields: string[],
+): { items: Array<Record<string, unknown>>; shared: Record<string, unknown> } {
+  const shared: Record<string, unknown> = {};
+  if (items.length < 2) return { items: items as Array<Record<string, unknown>>, shared };
+  for (const f of fields) {
+    const first = items[0]?.[f];
+    if (first === undefined) continue;
+    const enc = JSON.stringify(first);
+    if (items.every((it) => JSON.stringify(it[f]) === enc)) shared[f] = first;
+  }
+  const keys = Object.keys(shared);
+  if (keys.length === 0) return { items: items as Array<Record<string, unknown>>, shared };
+  return {
+    items: items.map((it) => {
+      const copy: Record<string, unknown> = { ...it };
+      for (const k of keys) delete copy[k];
+      return copy;
+    }),
+    shared,
+  };
+}
+
+/**
+ * 닫힌 판정 배열 하나를 payload 조각으로 만든다 — 공통 문구는 `<이름>_shared` 로 한 번만 낸다.
+ *
+ * `status` 는 **올리지 않는다.** action_items 수집과 외부 소비자가 항목별로 읽는 값이라,
+ * 배열 이름이 같은 뜻을 담고 있어도 각 항목에 남겨 두는 편이 안전하다.
+ */
+const CLOSED_SHARED_FIELDS = ['caveat', 'reason', 'source', 'quarterly_logic', 'counterparty_qualification'];
+
+function closedBucket(name: string, items: readonly object[]): Record<string, unknown> {
+  if (items.length === 0) return {};
+  const h = hoistSharedFields(items as Array<Record<string, unknown>>, CLOSED_SHARED_FIELDS);
+  return {
+    [name]: h.items,
+    ...(Object.keys(h.shared).length
+      ? {
+          [`${name}_shared`]: {
+            note:
+              `아래 ${name} 의 **모든 항목에 공통인 값**입니다 — 같은 문장을 항목마다 반복하지 ` +
+              '않으려고 한 번만 실었습니다. 각 항목을 읽을 때 이 값이 함께 붙어 있다고 보세요.',
+            ...h.shared,
+          },
+        }
+      : {}),
+  };
+}
+
 /** `action_items` 한 줄 — 어느 바구니에서 왔는지(source)를 반드시 남겨 원문 근거로 되돌아갈 수 있게 한다 */
 interface ActionItem {
   priority: number;
@@ -5071,9 +5133,9 @@ export async function detectUndisclosedTransactions(
             ...gmFilingExists,
             ...gmNotJudged,
           ],
-          ...(gmBelow.length ? { goods_services_matrix_below_threshold: gmBelow } : {}),
+          ...closedBucket('goods_services_matrix_below_threshold', gmBelow),
           /** 국외 계열회사 상대 — 공시의무 자체가 없다 (버리지 않고 근거와 함께 남긴다) */
-          ...(gmForeign.length ? { goods_services_matrix_foreign_affiliate: gmForeign } : {}),
+          ...closedBucket('goods_services_matrix_foreign_affiliate', gmForeign),
         }
       : {}),
     /**
@@ -5083,8 +5145,8 @@ export async function detectUndisclosedTransactions(
     ...(judgedSecurities.length
       ? {
           securities_signals: [...secCandidates, ...secFilingExists, ...secNotJudged],
-          ...(secBelow.length ? { securities_below_threshold: secBelow } : {}),
-          ...(secForeign.length ? { securities_foreign_affiliate: secForeign } : {}),
+          ...closedBucket('securities_below_threshold', secBelow),
+          ...closedBucket('securities_foreign_affiliate', secForeign),
         }
       : {}),
     ...(joinFailures.length ? { join_failures: joinFailures } : {}),

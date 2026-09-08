@@ -1662,8 +1662,13 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     const m = findPair(r, '와이케이 디벨롭먼트(주)', '미래에셋 금융서비스(주)')!;
     expect(m['annual_amount']).toBe(505 * 백만);
     expect(m['threshold'].value).toBe(10 * 억);
-    expect(m['quarterly_logic']).toBe('annual_below_threshold');
     expect(m['status']).toBe('below_threshold');
+    // 전건 공통인 문구·논리는 `_shared` 로 한 번만 실린다 (같은 문장을 항목마다 반복하지 않는다).
+    // 정보는 버리지 않는다 — 값이 하나라도 다르면 항목에 그대로 남는다.
+    const shared = r['goods_services_matrix_below_threshold_shared'];
+    expect(shared['quarterly_logic']).toBe('annual_below_threshold');
+    expect(m['quarterly_logic']).toBeUndefined();
+    expect(String(shared['reason'])).toContain('annual_total_below_threshold');
     expect(r['summary'].goods_services_matrix_below_threshold).toBe(7);
   });
 
@@ -1732,8 +1737,10 @@ describe('상품·용역 총괄 (5) 매트릭스 보완', () => {
     expect(m['annual_amount']).toBe(10_439 * 백만);
     expect(m['status']).toBe('not_applicable_foreign_affiliate');
     expect(m['column_group']).toContain('해외계열사');
-    expect(String(m['reason'])).toContain('국외 계열회사는 제외한다');
-    expect(String(m['reason'])).toContain('간접적으로');
+    // 근거 조문은 전건 공통이라 `_shared` 에 한 번 실린다 (버려지지 않는다)
+    const fShared = r['goods_services_matrix_foreign_affiliate_shared'];
+    expect(String(fShared['reason'])).toContain('국외 계열회사는 제외한다');
+    expect(String(fShared['reason'])).toContain('간접적으로');
     // 실물 (5)의 해외계열사 열은 9개다 — 국내 열은 하나도 섞이지 않아야 한다
     expect(r['summary'].goods_services_matrix_foreign_affiliate).toBe(9);
     expect(r['goods_services_matrix_foreign_affiliate']).toHaveLength(9);
