@@ -199,11 +199,33 @@ describe('check_disclosure_duty', () => {
     expect(r.notes.join(' ')).toContain('amountBasis');
   });
 
-  it('필수 인자가 없으면 규격 에러를 돌려준다 (예외를 던지지 않는다)', () => {
+  // ★ **의도적 계약 변경** (2026-09-13): 종전에는 duty 단독 입력이 invalid_argument 였다.
+  //   그러면 "자본 1,200억에 80억 거래인데 공시 대상이야?" 처럼 **아직 날짜가 없는 첫 질문**에
+  //   응답 전체가 사라진다. 없는 입력은 오류가 아니라 그 계산의 미확정 사유로 바꿨다.
+  //   ⚠️ 제공했지만 **잘못된** 값(실존하지 않는 날짜·분기말 아님·공시일 역전)은 그대로 오류다
+  //   — 이 파일의 다른 invalid_argument 테스트는 한 글자도 바꾸지 않았다.
+  it('duty 단독 입력은 오류가 아니라 양쪽 미확정 + 필요한 입력 목록이다 (의도적 재규정)', () => {
     const r = checkDisclosureDuty({ duty: 'large_internal_transaction' });
-    expect('error' in r).toBe(true);
-    if (!('error' in r)) return;
-    expect(r.error).toBe('invalid_argument');
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.components.duty.status).toBe('insufficient_data');
+    expect(r.components.deadline.status).toBe('insufficient_data');
+
+    const fields = r.missing_inputs.map((m) => m.field);
+    expect(fields).toContain('boardDate');
+    expect(fields).toContain('listing');
+    expect(fields).toContain('amount');
+    // 자본은 **대안 관계**다 — 둘 다 필수라고 요구하지 않는다
+    expect(fields).toContain('totalEquity');
+    expect(fields).not.toContain('paidInCapital');
+    const capital = r.missing_inputs.find((m) => m.field === 'totalEquity');
+    expect(capital?.alternatives).toEqual(['paidInCapital']);
+
+    // 기한이 없으면 지연·과태료·자진시정을 만들지 않는다
+    expect(r.deadline).toBeUndefined();
+    expect(r.compliance).toBeUndefined();
+    expect(r.penalty).toBeUndefined();
+    expect(r.selfCorrection).toBeUndefined();
   });
 
   it('약관 금융거래는 이사회 의결이 불요임을 알린다 — 고시 §9', () => {

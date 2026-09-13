@@ -35,6 +35,22 @@ export type ErrorCode =
    * 조용히 섞어 쓰지 않고 거절한다 — 토큰 없이 처음부터 다시 실행하면 된다.
    */
   | 'continuation_invalid'
+  /**
+   * 결과가 너무 커서 상세를 **보관**하지 못했다 (detect 요약 → read_detection_result 경로).
+   * ⚠️ 탐지·판정 자체는 수행된 것이다 — 오류 응답에 `summary` 를 동봉해 그 둘을 구분한다.
+   */
+  | 'resource_limit'
+  /**
+   * `result_id` 로 보관된 상세가 없다 — 수명(30분) 만료·개수 상한 회수·서버 재시작 중 하나다.
+   * 서버는 세 경우를 구분할 수 없으므로 한 어휘로 알리고 **다시 탐지하라**고 안내한다.
+   * 조용히 다른 snapshot 을 돌려주지 않는다.
+   */
+  | 'result_unavailable'
+  /**
+   * 클라이언트가 요청을 취소했다(MCP `notifications/cancelled`). SDK 는 취소된 요청의 응답을
+   * 전송하지 않는다 — 이 코드는 "결과를 보관·반환하지 않았다" 를 내부에서 구분하려고 둔다.
+   */
+  | 'request_cancelled'
   | 'internal_error';
 
 export interface ErrorResponse {

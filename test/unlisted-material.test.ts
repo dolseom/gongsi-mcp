@@ -166,7 +166,10 @@ describe('check_disclosure_duty — 비상장사 중요사항 확장', () => {
     expect(r.notes.some((n) => n.includes('대상회사임을 전제'))).toBe(true);
   });
 
-  it('shareholderType 미지정 지분변동은 에러다 — 유형에 따라 기한이 완전히 달라진다', () => {
+  // ★ **의도적 계약 변경** (2026-09-13): 종전에는 shareholderType 부재가 invalid_argument 였다.
+  //   기한은 유형에 따라 완전히 달라지므로 **여전히 추정하지 않는다** — 다만 지분 변동폭만으로
+  //   되는 대상 판정은 돌려준다. 기한만 미확정이고, 그 사실이 필드로 드러난다.
+  it('shareholderType 미지정 지분변동은 대상 판정만 하고 기한은 미확정이다 (의도적 재규정)', () => {
     const r = checkDisclosureDuty({
       duty: 'unlisted_material',
       materialItem: 'shareholding_change',
@@ -174,8 +177,15 @@ describe('check_disclosure_duty — 비상장사 중요사항 확장', () => {
       occurredDate: '20260722',
       totalAssets: 200 * 억,
     });
-    expect('error' in r).toBe(true);
-    if ('error' in r) expect(r.message).toContain('shareholderType');
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.verdict).toBe('required');
+    expect(r.components.duty.status).toBe('evaluated');
+    expect(r.components.deadline.status).toBe('insufficient_data');
+    expect(r.components.deadline.missing_fields).toContain('shareholderType');
+    // 기한을 추정하지 않았으므로 기한·지연·과태료가 없다
+    expect(r.deadline).toBeUndefined();
+    expect(r.penalty).toBeUndefined();
+    expect(r.review.unresolved.join(' ')).toContain('shareholderType');
   });
 
   it('지분 감소(음수 입력)도 절댓값으로 판정한다', () => {

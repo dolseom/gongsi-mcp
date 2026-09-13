@@ -43,6 +43,15 @@ import { toYMD, toDate, isValidYMD } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
 import { searchQna, type QnaCategory } from '../kb/qna.js';
+import {
+  buildReview,
+  missingFieldsFor,
+  missingLabelList,
+  type ComponentStatus,
+  type DutyComponents,
+  type MissingInput,
+  type ReviewMemo,
+} from './disclosure-review.js';
 
 const YMD = z
   .string()
@@ -196,6 +205,19 @@ interface DutyResult {
   duty: string;
   verdict: Verdict;
   summary: string;
+  /**
+   * 지금 질문에 답하려면 무엇이 더 필요한가 — **오류가 아니다.**
+   * 각 항목의 `purpose` 가 duty(대상 판정)인지 deadline(기한)인지 갈라 주므로, 모델은
+   * 현재 질문에 필요한 것만 되물을 수 있다 (대상만 물었으면 의결일을 캐묻지 않는다).
+   */
+  missing_inputs: MissingInput[];
+  /**
+   * 대상 판정과 기한 계산의 **독립적인** 수행 상태.
+   * 한쪽이 insufficient_data 여도 다른 쪽은 evaluated 일 수 있다 — 그것이 이 필드의 존재 이유다.
+   */
+  components: DutyComponents;
+  /** 결론 → 전제 → 근거 → 미확인 → 다음 행동 순서의 검토 메모 (원본 근거는 아래 필드에 그대로 남는다) */
+  review: ReviewMemo;
   threshold?: {
     amount: number;
     formula: string;
@@ -290,68 +312,88 @@ export function checkDisclosureDuty(
   }
 
   // ── 기한 계산 ──
+  //
+  // ★ **없는 입력은 오류가 아니다.** 의결일·상장 여부·분기말을 아직 모르는 첫 질문
+  //   ("자본 1,200억에 80억 거래인데 공시 대상이야?")에도 대상 판정은 나가야 한다.
+  //   → 부족한 입력은 `missingInputs` 에 기한 목적으로 적고 이 계산만 건너뛴다.
+  //   ⚠️ **제공했지만 잘못된 값은 종전대로 오류다** (분기말 아님·실존하지 않는 날짜·
+  //      공시일이 기준일보다 앞섬). 부족과 오류를 뭉개면 오타가 조용히 통과한다.
+  const missingInputs: MissingInput[] = [];
   let deadline: DeadlineResult | undefined;
   switch (input.duty) {
     case 'large_internal_transaction':
     case 'public_interest_corp': {
       if (!input.boardDate) {
-        return errorResponse('invalid_argument', 'boardDate(이사회 의결일)가 필요합니다.');
+        missingInputs.push({
+          field: 'boardDate',
+          purpose: 'deadline',
+          label: '이사회 의결일 — 공시기한의 기산일입니다 (의결일 다음 날부터 기산)',
+        });
       }
       if (!input.listing) {
-        return errorResponse(
-          'invalid_argument',
-          'listing(상장 여부)이 필요합니다. 상장 3영업일 / 비상장·공익법인 7영업일로 기한이 갈립니다.',
-        );
+        missingInputs.push({
+          field: 'listing',
+          purpose: 'deadline',
+          label: '상장 여부 — 상장 3영업일 / 비상장·공익법인 7영업일로 기한이 갈립니다',
+        });
       }
-      deadline = litDeadline(input.boardDate, input.listing);
+      if (input.boardDate && input.listing) {
+        deadline = litDeadline(input.boardDate, input.listing);
+      }
       break;
     }
     case 'unlisted_material': {
       if (!input.occurredDate) {
-        return errorResponse('invalid_argument', 'occurredDate(사유 발생일)가 필요합니다.');
+        missingInputs.push({
+          field: 'occurredDate',
+          purpose: 'deadline',
+          label: '사유 발생일 — 공시기한의 기산일입니다',
+        });
       }
       // 주요주주 지분변동만 분기별 공시 — 최대주주 변동·그 외 사유는 전부 7영업일 (§5의2④)
       // 유형에 따라 기한이 완전히 달라지므로 미지정 추정은 위험하다 (Codex 3차: 지연·과태료가 뒤집힌다)
-      if (input.materialItem === 'shareholding_change') {
-        if (!input.shareholderType) {
-          return errorResponse(
-            'invalid_argument',
-            'shareholding_change 는 shareholderType(largest=최대주주/major=주요주주)이 필수입니다. ' +
-              '최대주주 변동은 7영업일, 주요주주 변동은 분기 종료 후 2개월로 기한이 완전히 다릅니다 (고시 §5의2④ 단서).',
-          );
+      if (input.materialItem === 'shareholding_change' && !input.shareholderType) {
+        missingInputs.push({
+          field: 'shareholderType',
+          purpose: 'deadline',
+          label:
+            '최대주주(largest)인지 주요주주(major)인지 — 최대주주 변동은 7영업일, 주요주주 변동은 ' +
+            '분기 종료 후 2개월로 기한이 완전히 다릅니다 (고시 §5의2④ 단서). 추정하지 않습니다',
+        });
+      }
+      if (input.occurredDate) {
+        if (input.materialItem === 'shareholding_change') {
+          if (input.shareholderType) {
+            deadline =
+              input.shareholderType === 'major'
+                ? unlistedMajorShareholderDeadline(input.occurredDate)
+                : unlistedMaterialDeadline(input.occurredDate);
+          }
+        } else {
+          deadline = unlistedMaterialDeadline(input.occurredDate);
         }
-        deadline =
-          input.shareholderType === 'major'
-            ? unlistedMajorShareholderDeadline(input.occurredDate)
-            : unlistedMaterialDeadline(input.occurredDate);
-      } else {
-        deadline = unlistedMaterialDeadline(input.occurredDate);
       }
       break;
     }
-    case 'omnibus_financial': {
-      if (!input.quarterEnd) {
-        return errorResponse('invalid_argument', 'quarterEnd(분기 종료일)가 필요합니다.');
-      }
-      if (!isQuarterEndYMD(input.quarterEnd)) {
-        return errorResponse(
-          'invalid_argument',
-          `quarterEnd(${input.quarterEnd})가 분기 종료일이 아닙니다. 3/31·6/30·9/30·12/31 중 하나를 넣으세요 — ` +
-            '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
-        );
-      }
-      deadline = omnibusQuarterlyDeadline(input.quarterEnd);
-      notes.push(
-        '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다. ' +
-          '단, 사모사채 인수 등 당사자간 계약으로 특정 거래조건을 부기한 금융거래는 특례에서 제외되어 ' +
-          '이사회 의결을 거쳐야 합니다 (§9① 단서 — 이 경우 large_internal_transaction 으로 판정하세요).',
-      );
-      break;
-    }
+    case 'omnibus_financial':
     case 'goods_services_reduced': {
-      if (!input.quarterEnd) {
-        return errorResponse('invalid_argument', 'quarterEnd(분기 종료일)가 필요합니다.');
+      // 약관특례 안내는 **기한 계산과 무관한 이 의무 자체의 성질**이다 — 분기말을 아직 몰라도 알린다.
+      if (input.duty === 'omnibus_financial') {
+        notes.push(
+          '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다. ' +
+            '단, 사모사채 인수 등 당사자간 계약으로 특정 거래조건을 부기한 금융거래는 특례에서 제외되어 ' +
+            '이사회 의결을 거쳐야 합니다 (§9① 단서 — 이 경우 large_internal_transaction 으로 판정하세요).',
+        );
       }
+      if (!input.quarterEnd) {
+        missingInputs.push({
+          field: 'quarterEnd',
+          purpose: 'deadline',
+          label: '분기 종료일 — 3/31·6/30·9/30·12/31 중 하나입니다 (2분기는 7월 말이 아닙니다)',
+        });
+        break;
+      }
+      // 값을 주기는 했는데 분기말이 아니면 **오류다** — 기한이 밀려 지연이 "적법"으로 뒤집힌다.
       if (!isQuarterEndYMD(input.quarterEnd)) {
         return errorResponse(
           'invalid_argument',
@@ -359,10 +401,14 @@ export function checkDisclosureDuty(
             '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
         );
       }
-      deadline = goodsServicesReducedDeadline(input.quarterEnd);
+      deadline =
+        input.duty === 'omnibus_financial'
+          ? omnibusQuarterlyDeadline(input.quarterEnd)
+          : goodsServicesReducedDeadline(input.quarterEnd);
       break;
     }
     case 'group_status': {
+      // 기존 기본값 유지 — 연도 생략은 올해, 분기 생략은 연1회(5/31)다.
       const year = input.year ?? Number(today.slice(0, 4));
       deadline = input.quarter
         ? groupStatusQuarterlyDeadline(year, input.quarter)
@@ -381,6 +427,22 @@ export function checkDisclosureDuty(
       { totalEquity: input.totalEquity, paidInCapital: input.paidInCapital },
       { entity: input.duty === 'public_interest_corp' ? 'public_interest_corp' : 'company' },
     );
+    // 대상 판정에 부족한 입력을 **먼저** 적는다 — 기준금액을 못 구해 조기 종료해도 목록은 온전해야 한다.
+    if (!t) {
+      missingInputs.push({
+        field: 'totalEquity',
+        purpose: 'duty',
+        label: '자본총계 (원) — 기준금액 계산의 기준. 자본금(paidInCapital)만 있어도 계산됩니다',
+        alternatives: ['paidInCapital'],
+      });
+    }
+    if (input.amount === undefined) {
+      missingInputs.push({
+        field: 'amount',
+        purpose: 'duty',
+        label: '거래금액 (원) — 기준금액과 비교해 대상 여부를 판정합니다',
+      });
+    }
     if (!t) {
       verdict = 'insufficient_data';
       summary =
@@ -446,6 +508,11 @@ export function checkDisclosureDuty(
 
       if (!input.materialItem) {
         verdict = 'insufficient_data';
+        missingInputs.push({
+          field: 'materialItem',
+          purpose: 'duty',
+          label: '어떤 사유인지 (고정자산 취득·타법인 주식·증여·담보·지분변동·증자 등)',
+        });
         summary =
           'materialItem(세부 항목)이 필요합니다. 금액 무관 공시 대상도 있습니다: ' +
           UNLISTED_MATERIAL_UNCONDITIONAL.join(' / ');
@@ -461,6 +528,11 @@ export function checkDisclosureDuty(
         // ── 지분 변동 — 금액이 아니라 발행주식총수 대비 변동폭(%p)으로 판정 ──
         if (input.shareChangePct === undefined) {
           verdict = 'insufficient_data';
+          missingInputs.push({
+            field: 'shareChangePct',
+            purpose: 'duty',
+            label: '발행주식총수 대비 지분 변동 크기 (%p) — 1%p 이상이면 공시 대상입니다',
+          });
           summary =
             '최대주주·주요주주 지분변동은 발행주식총수 대비 1%p 이상 변동 시 공시 대상입니다. ' +
             'shareChangePct(변동폭 %p)를 주면 판정합니다.';
@@ -495,12 +567,31 @@ export function checkDisclosureDuty(
 
         if (base === undefined) {
           verdict = 'insufficient_data';
+          missingInputs.push(
+            spec.base === 'totalAssets'
+              ? {
+                  field: 'totalAssets',
+                  purpose: 'duty',
+                  label: `자산총액 (원) — ${spec.label} 임계값(자산총액의 ${spec.rate * 100}%) 계산의 기준`,
+                }
+              : {
+                  field: 'totalEquity',
+                  purpose: 'duty',
+                  label: `자기자본 (원) — ${spec.label} 임계값(자기자본의 ${spec.rate * 100}%) 계산의 기준`,
+                  alternatives: ['paidInCapital'],
+                },
+          );
           summary = `${spec.label} 판정에는 ${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}이 필요합니다.`;
           notes.push(
             '신설 회사로 최근 사업연도 대차대조표가 없으면 설립 당시 납입자본금을 기준으로 합니다 (고시 §5의2②).',
           );
         } else if (input.amount === undefined) {
           verdict = 'insufficient_data';
+          missingInputs.push({
+            field: 'amount',
+            purpose: 'duty',
+            label: `거래금액 (원) — ${spec.label} 임계값과 비교해 대상 여부를 판정합니다`,
+          });
           summary = `${spec.label}: 임계값은 ${fmtWon(base * spec.rate)} (${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}의 ${spec.rate * 100}%)입니다. amount 를 주면 판정합니다.`;
         } else {
           const limit = base * spec.rate;
@@ -531,10 +622,17 @@ export function checkDisclosureDuty(
         notes.push(CAPITAL_MARKET_OVERLAP_NOTE);
       }
     }
-  } else {
-    // 기한만 계산하는 유형
+  } else if (deadline) {
+    // 기한만 계산하는 유형 — 기한이 **실제로 계산된** 경우에만 required 라고 말한다
     verdict = 'required';
     summary = '해당 의무의 공시기한을 계산했습니다.';
+  } else {
+    // ★ 기한을 계산하지 못했는데 "required · 기한을 계산했습니다" 를 내면 그 문장 자체가 거짓이다.
+    //   기한 전용 유형은 기한이 곧 이 도구의 답이므로, 못 구했으면 판정도 미확정이다.
+    verdict = 'insufficient_data';
+    summary =
+      `공시기한을 계산할 수 없습니다 — ${missingLabelList(missingInputs, 'deadline')} 가 필요합니다. ` +
+      '이 유형은 기한이 달력으로 고정돼 있어 금액 기준 대상 판정이 따로 없습니다.';
   }
 
   // ── 기한 준수·과태료 ──
@@ -678,10 +776,95 @@ export function checkDisclosureDuty(
     }
   }
 
+  // ── 부분 판정 계약 ──
+  // 대상 판정(duty)과 기한(deadline)의 상태를 **따로** 보고한다. 한쪽이 미확정이어도
+  // 다른 쪽 결과는 그대로 유효하다는 것을 모델·사용자가 필드로 확인할 수 있어야 한다.
+  const deadlineOnlyDuty =
+    input.duty === 'omnibus_financial' ||
+    input.duty === 'goods_services_reduced' ||
+    input.duty === 'group_status';
+  const deadlineStatus: ComponentStatus = deadline ? 'evaluated' : 'insufficient_data';
+  const dutyStatus: ComponentStatus = deadlineOnlyDuty
+    ? 'not_applicable'
+    : verdict === 'insufficient_data'
+      ? 'insufficient_data'
+      : 'evaluated';
+  const components: DutyComponents = {
+    duty: { status: dutyStatus, missing_fields: missingFieldsFor(missingInputs, 'duty') },
+    deadline: { status: deadlineStatus, missing_fields: missingFieldsFor(missingInputs, 'deadline') },
+  };
+
+  // 대상 판정이 미확정인데 지연·과태료를 계산했다 — 게이트(verdict !== 'not_required')와 금액·산식은
+  // 그대로 두고 **조건**만 밝힌다 (Fable goal 레인 발견 2).
+  if (verdict === 'insufficient_data' && (compliance !== undefined || penalty !== undefined)) {
+    notes.push(
+      '※ 대상 판정이 확정되지 않았습니다(verdict=insufficient_data). compliance·penalty 는 ' +
+        '**공시 대상으로 확정될 경우**의 값입니다 — 대상이 아니면 지연도 과태료도 없습니다. ' +
+        '기한·지연일수·산식 계산 자체는 입력대로입니다.',
+    );
+  }
+
+  // 실제 공시일을 줬는데 기한을 못 구한 경우 — 준수 여부를 만들지 않았다는 사실을 밝힌다.
+  // (가짜 기한·가짜 지연일을 만들지 않는다. today 로 의결일을 대신하지도 않는다.)
+  if (!deadline && input.actualDisclosureDate) {
+    notes.push(
+      `actualDisclosureDate(${input.actualDisclosureDate})를 받았지만 기한을 계산하지 못해 ` +
+        '준수 여부·지연일수·과태료를 산정하지 않았습니다 — "기한 내"도 "지연"도 아닙니다. ' +
+        `${missingLabelList(missingInputs, 'deadline')} 를 주면 판정합니다.`,
+    );
+  }
+
+  const review = buildReview({
+    duty: input.duty,
+    verdict,
+    summary,
+    components,
+    missingInputs,
+    notes,
+    ...(threshold?.formula ? { thresholdFormula: threshold.formula } : {}),
+    ...(threshold?.amountBasisNote ? { amountBasisNote: threshold.amountBasisNote } : {}),
+    ...(deadlineOut
+      ? {
+          deadline: {
+            deadline: deadlineOut.deadline,
+            rule: deadlineOut.rule,
+            ...(deadlineOut.dDay !== undefined ? { dDay: deadlineOut.dDay } : {}),
+            legalBasis: deadlineOut.legalBasis,
+          },
+        }
+      : {}),
+    ...(compliance ? { compliance } : {}),
+    ...(isPenaltyResult(penalty)
+      ? {
+          penalty: {
+            amount: penalty.amount,
+            formula: penalty.formula,
+            isUpperBound: penalty.isUpperBound,
+          },
+        }
+      : {}),
+    ...(selfCorrection
+      ? {
+          selfCorrection: {
+            status: selfCorrection.status,
+            windowEnd: selfCorrection.windowEnd,
+            ...(selfCorrection.businessDaysRemaining !== undefined
+              ? { businessDaysRemaining: selfCorrection.businessDaysRemaining }
+              : {}),
+          },
+        }
+      : {}),
+    ...(relatedOfficialQna ? { relatedQnaCount: relatedOfficialQna.length } : {}),
+    hasSituation: input.situation !== undefined,
+  });
+
   return {
     duty: input.duty,
     verdict,
     summary,
+    missing_inputs: missingInputs,
+    components,
+    review,
     ...(threshold ? { threshold } : {}),
     ...(deadlineOut ? { deadline: deadlineOut } : {}),
     ...(compliance ? { compliance } : {}),
@@ -691,6 +874,19 @@ export function checkDisclosureDuty(
     notes,
     disclaimer: DISCLAIMER,
   };
+}
+
+/** penalty 는 `unknown` 으로 들고 다니므로 검토 메모에 옮길 때 형태를 확인한다 */
+function isPenaltyResult(
+  x: unknown,
+): x is { amount: number; formula: string; isUpperBound: boolean } {
+  if (!x || typeof x !== 'object') return false;
+  const p = x as Record<string, unknown>;
+  return (
+    typeof p['amount'] === 'number' &&
+    typeof p['formula'] === 'string' &&
+    typeof p['isUpperBound'] === 'boolean'
+  );
 }
 
 function fmtWon(n: number): string {

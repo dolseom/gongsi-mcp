@@ -10,6 +10,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadDotEnv, getConfig, unknownEnvVars, VERSION } from './lib/config.js';
 import { getLogger } from './lib/logger.js';
 import { ToolError, toErrorResponse } from './lib/errors.js';
+import { serializeToolResult } from './lib/tool-output.js';
+import { SERVER_INSTRUCTIONS } from './server-instructions.js';
 import {
   checkDisclosureDuty,
   checkDisclosureDutyInput,
@@ -38,11 +40,16 @@ import {
   checkJ004ConsistencyInput,
 } from './tools/check-j004-consistency.js';
 import {
-  detectUndisclosedTransactions,
   detectUndisclosedTransactionsInput,
   TIME_BUDGET_MS,
   MAX_COMPANIES_TO_SEARCH,
 } from './tools/detect-undisclosed-transactions.js';
+import { detectReview } from './tools/detect-review.js';
+import {
+  readDetectionResult,
+  readDetectionResultInput,
+  MAX_READ_CHARS,
+} from './tools/read-detection-result.js';
 import { calcBusinessDays, calcBusinessDaysInput } from './tools/calc-business-days.js';
 import {
   disclosureCalendar,
@@ -64,59 +71,40 @@ function detectBudgetSeconds(): string {
   return Number.isInteger(s) ? String(s) : s.toFixed(1);
 }
 
-/**
- * 서버 수준 안내문 (initialize 응답의 instructions).
- *
- * 도구 설명마다 흩어져 있던 ① 다른 도구로 보내는 라우팅 문장 ② "…를 사용자에게 전달하세요"
- * 반복 ③ 인증키 문장을 여기 한 곳으로 모은다. 도구 설명에는 그 도구 고유의 일·입력·출력 어휘·
- * 법령 수치만 남긴다 (tools/list 페이로드는 도구 수만큼 곱해지지만 이 안내문은 1회다).
- */
-const INSTRUCTIONS = `공정거래위원회 기업집단 공시(J공시) 실무 도구입니다. 답변에는 도구가 준 근거 조문·계산식을 함께 제시하세요.
-
-[질문 → 도구]
-- 공시 대상인가 / 기한 언제까지 / 지연 과태료 얼마 → check_disclosure_duty
-- 그날이 영업일인가, 공휴일 언제, N영업일 뒤는 며칠 → calc_business_days
-- 올해 정기공시를 언제 무엇을 내야 하나 → disclosure_calendar
-- 회사·기업집단 특정(사명·종목코드·법인코드·법인등록번호·집단명) → resolve_entity
-- 공시 원문 읽기 → read_disclosure / 공시 찾기·기간 전수 수집 → search_disclosures
-- 다른 회사는 이 항목을 어떻게 썼나(문안 참고) → find_precedents
-- 집단 소속회사 전수·계열 재무 → get_group_structure / 단일회사 재무제표 → get_financials
-- 규칙만으로 안 풀리는 경계사례에 공정위 공식 답변 → search_ftc_qna
-- 정정하면 과태료가 나오나 → assess_correction_risk
-- J004 제출 전후 수치 자가점검(항등식·소계·단위) → check_j004_consistency
-- 키가 인식되나 / 호출 한도·캐시·공휴일 데이터 범위 → server_info
-- 점검 3종은 보는 것이 다릅니다:
-  audit_group_disclosures = J001 접수분의 의결일↔접수일 기한 지연 (접수된 것만 봄)
-  audit_periodic_disclosures = J004·J009 정기공시를 냈는지·기한을 지켰는지 (미제출도 탐지)
-  detect_undisclosed_transactions = J004 거래내역↔J001 대조로 미공시 후보 (미공시를 보는 유일한 경로)
-
-[결과 전달 규칙]
-- caveats·scope_caveats·coverage·not_judged·warnings·diagnostics·isUpperBound 는 요약하지 말고 그대로 전달하세요.
-- "0건"·"후보 없음"을 "문제 없음"·"이행 완료"로 바꾸지 마세요. 도구가 보지 못한 범위는 도구가 스스로 밝힙니다.
-- 후보(candidate)는 확정이 아닙니다. 단정 표현 금지.
-- 날짜·영업일·공휴일은 모델이 직접 계산하지 말고 calc_business_days 결과만 쓰세요.
-- 법령 수치·조문은 도구 출력만 인용하고 기억으로 보충하지 마세요.
-
-[자주 틀리는 전제]
-- 대규모내부거래 기준금액 = min(100억원, max(5억원, max(자본총계, 자본금) × 5%)). 널리 퍼진 "50억"은 폐지된 옛 기준입니다.
-- 공시기한 = 상장 3영업일 / 비상장·공익법인 7영업일(의결일 다음 날 기산). "1일 이내"는 오정보입니다.
-- 지연 판정은 정정 이전 원본 접수분 기준입니다. 최종본만 보면 지연이 사라집니다.
-- 기업집단포털 소속회사·재무는 매년 5월 1일 기준 연 1회 스냅샷입니다.`;
-
 const server = new McpServer(
   { name: 'gongsi-mcp', version: VERSION },
-  { instructions: INSTRUCTIONS },
+  { instructions: SERVER_INSTRUCTIONS },
 );
+
+/** MCP SDK 가 도구 콜백에 넘기는 요청 맥락 중 우리가 쓰는 부분 */
+interface ToolCallContext {
+  /** 클라이언트가 `notifications/cancelled` 를 보내면 abort 된다 */
+  signal?: AbortSignal;
+}
 
 /**
  * 도구 핸들러 공통 래퍼.
  * **도구는 예외를 밖으로 던지지 않는다** — 규격 에러 응답으로 바꿔 돌려준다.
  */
 function wrap<T>(name: string, fn: (input: T) => unknown | Promise<unknown>) {
-  return async (input: T) => {
+  // 두 번째 인자(의존성 주입 등)를 받는 도구에 요청 맥락을 실수로 넘기지 않는다 — 입력만 전달한다
+  return wrapWithContext<T>(name, (input) => fn(input));
+}
+
+/**
+ * 요청 맥락(취소 신호)이 필요한 도구용 래퍼 — 지금은 detect 어댑터만 쓴다.
+ * ★ 2026-09-13 live 실측: 취소된 탐지가 끝까지 돌아 snapshot 을 저장하고 앞 result_id 를 회수시켰다.
+ */
+function wrapWithContext<T>(
+  name: string,
+  fn: (input: T, ctx: ToolCallContext) => unknown | Promise<unknown>,
+) {
+  return async (input: T, extra?: ToolCallContext) => {
     try {
-      const result = await fn(input);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+      const result = await fn(input, extra?.signal ? { signal: extra.signal } : {});
+      // 직렬화는 **한 함수**로만 한다 — 어댑터·상세 읽기 도구가 재는 바이트와 실제 전송
+      // 문자열이 달라지면 크기 예산이 무의미해진다 (src/lib/tool-output.ts).
+      return { content: [{ type: 'text' as const, text: serializeToolResult(result) }] };
     } catch (err) {
       // 도메인 에러(회사 없음·한도 도달 등)는 예상된 흐름이다 — 스택 없이 짧게 남긴다.
       // 스택트레이스는 진짜 예상 밖 예외에만 쓴다.
@@ -126,9 +114,7 @@ function wrap<T>(name: string, fn: (input: T) => unknown | Promise<unknown>) {
         log.error(`${name} 실패`, err instanceof Error ? err.stack : String(err));
       }
       return {
-        content: [
-          { type: 'text' as const, text: JSON.stringify(toErrorResponse(err), null, 2) },
-        ],
+        content: [{ type: 'text' as const, text: serializeToolResult(toErrorResponse(err)) }],
         isError: true,
       };
     }
@@ -367,8 +353,9 @@ server.registerTool(
   {
     title: '기업집단현황공시(J004) 정합성 자가점검',
     description:
-      '기업집단현황공시(J004) 원문에서 기계적으로 재검산 가능한 항목을 전부 다시 계산해 불일치를 찾습니다 ' +
-      '(제출 전 자가점검 또는 제출본 사후 점검).\n\n' +
+      '기업집단현황공시(J004) 원문에서 기계적으로 재검산 가능한 항목을 전부 다시 계산해 불일치를 찾습니다.\n' +
+      '- ⚠️ **이미 DART 에 접수된 공시의 접수번호(rcept_no)** 로만 점검합니다 — 아직 제출하지 않은 ' +
+      '초안 파일(엑셀·HWP 등)은 읽지 못합니다. 제출본을 점검해 정정할 곳을 찾는 용도입니다\n\n' +
       '- 재무현황: 유동+비유동=총계(자산·부채), 자산=부채+자본 항등식, 부채비율 재계산, 금융/비금융 소계·합계 재합산\n' +
       '- 차이가 약 1,000배면 단위(원/천원/백만원) 오기 힌트를 답니다\n' +
       '- **문서 내적 정합성만** 봅니다 — 원천 회계 데이터와의 일치(진실성)는 판정하지 않습니다\n' +
@@ -385,7 +372,14 @@ server.registerTool(
     description:
       '기업집단현황공시(J004) 대표회사 연1회 서식의 **실제 거래내역**을 대규모내부거래(J001) 공시와 ' +
       '대조해 "거래는 했는데 공시가 없는" **미공시 후보**를 찾습니다.\n' +
-      '- ★ **응답은 `action_items` 부터 읽으세요.** 조치가 필요한 판정을 상태별 배열을 **가로질러** ' +
+      '- ★ **응답은 요약입니다 — 상세는 `read_detection_result` 로 이어서 읽습니다.** 완전한 결과는 ' +
+      '실물에서 22만자~1MB라 그대로는 전달되지 않아, 첫 응답에 `detail_access.result_id` 와 ' +
+      '`available_sections` 를 싣습니다. `required_warnings`·`summary_incomplete`·`details_required` 는 ' +
+      '**그대로 전달**하고, 근거를 물으면 상세를 실제로 읽어 인용하세요 — ' +
+      '**읽지 않은 상세를 "확인했다"고 말하지 마세요**\n' +
+      '- 요청을 취소하면 결과를 보관하지 않고 result_id 도 주지 않습니다. 다만 **이미 시작된 DART 조회는 ' +
+      '끝까지 진행될 수 있습니다**(엔진이 중간 취소를 지원하지 않습니다)\n' +
+      '- ★ **요약은 `action_items_preview` 부터 읽으세요.** 조치가 필요한 판정을 상태별 배열을 **가로질러** ' +
       '우선순위대로 모아 둔 목록입니다. 아래 배열 이름은 매출(매도)회사 관점이라, 같은 거래가 ' +
       '매출회사 기준으로는 미달인데 **매입회사 자본 기준으로는 후보**인 경우 ' +
       '`goods_services_matrix_below_threshold` 같은 "기준 미달" 배열 안에 묻힙니다(실측: 케이티 421건 ' +
@@ -440,7 +434,32 @@ server.registerTool(
       '5,000만~7,000만원은 지연보다 무거워 오판의 대가가 큽니다.',
     inputSchema: detectUndisclosedTransactionsInput.shape,
   },
-  wrap('detect_undisclosed_transactions', detectUndisclosedTransactions),
+  // ★ MCP 등록은 **요약 어댑터**를 통한다 (엔진 함수는 그대로 — 직접 호출 테스트·내부 소비자
+  //   는 종전 전체 출력을 받는다). 완전한 결과는 실물에서 222,709자~1MB라 그대로 내보내면
+  //   호스트가 전달하지 못해 판정이 하나도 도달하지 않는다.
+  wrapWithContext('detect_undisclosed_transactions', detectReview),
+);
+
+server.registerTool(
+  'read_detection_result',
+  {
+    title: '탐지 결과 상세 이어 읽기',
+    description:
+      'detect_undisclosed_transactions 요약이 준 result_id 로 **판정 근거·caveat 전문**을 읽습니다 ' +
+      '(키 불요, 탐지 엔진을 다시 돌리지 않습니다).\n\n' +
+      '- `section` 에 요약의 available_sections 중 하나를 넣으세요 (예: goods_services_signals · coverage · ' +
+      'scope_caveats · notes · action_items). 생략하면 결과 전체를 읽습니다\n' +
+      `- 한 번에 최대 ${MAX_READ_CHARS}자이고 응답 크기 예산에 맞춰 더 짧게 올 수도 있습니다. ` +
+      '`next_offset` 을 그대로 다시 넣으면 이어집니다 — 조각을 순서대로 이어붙이면 **원본과 정확히 ' +
+      '같습니다**. 중간 조각은 그 자체로 유효한 JSON 이 아닙니다\n' +
+      '- `offset`·`total_chars` 는 **UTF-16 코드 단위**입니다 (바이트가 아닙니다 — 한글 1자 = 1 단위)\n' +
+      '- ⚠️ 상세는 **서버 프로세스 메모리에만 30분** 보관됩니다. 만료·회수·서버 재시작 뒤에는 ' +
+      'result_unavailable 로 거절하고 다시 탐지해야 합니다 — 다른 결과를 대신 돌려주지 않습니다\n' +
+      '- ⚠️ **읽지 않은 상세를 "확인했다"고 말하지 마세요.** 요약의 details_required 는 아직 안 읽은 ' +
+      '근거가 있다는 뜻입니다',
+    inputSchema: readDetectionResultInput.shape,
+  },
+  wrap('read_detection_result', readDetectionResult),
 );
 
 server.registerTool(
