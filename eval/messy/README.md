@@ -45,8 +45,10 @@ WebFetch·WebSearch·Bash·Task 가 전부 들어 있었다. 그러면 이 평�
 유용한가"가 아니라 "모델이 웹을 잘 뒤지는가"가 된다 — 게다가 이 프로젝트의 작업 원칙은
 **웹 검색 결과를 근거로 쓰지 않는 것**이다.
 
-→ 러너가 `--disallowedTools "WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent"`
-로 막는다. `tools_available` 로 매 실행마다 실제로 무엇이 붙었는지 확인할 것.
+→ 러너가 `--disallowedTools` 로 막는다. 목록은 **`eval/disallowed-tools.mjs` 하나**를 e2e 러너와
+공유한다(2026-09-13 — 둘로 두면 한쪽만 고쳐진다. m07 init 에 남아 있던 PushNotification·RemoteTrigger
+등도 여기서 막았다). `tools_available` 로 매 실행마다 실제로 무엇이 붙었는지 확인할 것 — e2e 채점기는
+목록 밖 도구가 init 에 있으면 그 실행을 `env_error`(격리 실패)로 거절한다.
 
 ★ **`ToolSearch` 는 일부러 남겼다.** MCP 도구가 지연 로드라 모델이 ToolSearch 로 스키마를
 먼저 가져온다 (실측: m06 의 첫 호출이 `ToolSearch{select:mcp__gongsi__search_ftc_qna}`).

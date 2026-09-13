@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { parseStream, toolNames } from './parse-stream.mjs';
+import { DISALLOWED_TOOLS } from '../disallowed-tools.mjs';
 
 const REPO = 'C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp';
 const HERE = process.cwd();
@@ -33,10 +34,8 @@ for (const line of readFileSync(path.join(process.env.USERPROFILE ?? process.env
 // ⚠️ 2026-09-08 재실행에서 m07 이 `Monitor`·`TaskOutput` 을 호출했다 — 백그라운드 작업 도구까지
 //   살아 있었다. 답을 지어내는 경로는 아니지만, 이 평가가 재는 것은 **우리 MCP 만으로 답이
 //   되는가**이므로 우리 도구가 아닌 것은 전부 막는다.
-const DISALLOWED =
-  'WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent,' +
-  'Monitor,TaskOutput,TaskStop,NotebookEdit,Artifact,Skill,Workflow,CronCreate,CronList,CronDelete,' +
-  'SendMessage,ListAgents,AskUserQuestion,ScheduleWakeup,SendUserFile';
+// ★ 목록은 e2e 러너와 **공유**한다 (eval/disallowed-tools.mjs) — 둘로 두면 한쪽만 고쳐진다.
+const DISALLOWED = DISALLOWED_TOOLS;
 
 function runOne(q) {
   return new Promise((resolve) => {

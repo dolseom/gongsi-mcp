@@ -7,19 +7,30 @@
 //
 // 전제: 리포 루트에서 `npm run build` 로 dist/src/cli.js 가 만들어져 있어야 한다
 //       (eval/e2e/mcp-config.json 이 상대경로로 이 파일을 가리킨다).
+//
+// 채점 규칙은 eval/e2e/grade.mjs (부작용 없는 모듈, test/eval-e2e-grade.test.mjs 로 고정).
 
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// ★ 도구 호출 기록이 없으면 "무슨 근거로 답했는지" 를 사후에 확정할 수 없다 (2026-09-07 m06 사고).
+//   messy 게이트의 파서를 그대로 재사용한다 — 파서가 하나여야 과거 실행도 다시 읽을 수 있다.
+import { parseStream, toolNames } from '../eval/messy/parse-stream.mjs';
+import { grade, environmentProblem, toolSearchProbes, EVAL_SERVER } from '../eval/e2e/grade.mjs';
+import { DISALLOWED_TOOLS } from '../eval/disallowed-tools.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(SCRIPT_DIR);
 const QUESTIONS_PATH = join(REPO_ROOT, 'eval', 'e2e', 'questions.json');
-const MCP_CONFIG_REL = 'eval/e2e/mcp-config.json';
+const CLI_PATH = join(REPO_ROOT, 'dist', 'src', 'cli.js');
 const RESULTS_DIR = join(REPO_ROOT, 'eval', 'e2e', 'results');
 
+/** 문항 기본 타임아웃 — 문항에 `timeout_ms` 가 있으면 그것을 쓴다 (집단 탐지처럼 긴 문항) */
 const ITEM_TIMEOUT_MS = 240_000;
+/** 타임아웃 뒤 프로세스 트리가 닫히기를 기다리는 상한 */
+const KILL_WAIT_MS = 15_000;
 const RAW_KEEP_CHARS = 1000;
 
 /** 인자 파싱 */
@@ -51,99 +62,113 @@ function parseArgs(argv) {
   return opts;
 }
 
-/** 콤마·공백 제거 정규화 (금액 표기 차이 흡수) */
-function normalize(text) {
-  return String(text).replace(/[\s,]/g, '');
+/**
+ * 우리가 띄운 프로세스 **트리만** 종료한다.
+ *
+ * ⚠️ Windows 에서 shell:true 로 띄우면 `child.pid` 는 cmd.exe 다. `child.kill()` 은 cmd.exe 만
+ *   죽이고 그 아래 claude(와 그 claude 가 띄운 MCP 서버 node)는 **살아 남는다** — 다음 문항과
+ *   세션 한도를 계속 잡아먹는다. 그래서 정확히 이 PID 를 루트로 한 트리를 끊는다.
+ *   ★ 프로세스 **이름**으로 종료하지 않는다 (taskkill /IM claude.exe 는 사용자의 다른 세션까지 죽인다).
+ */
+function killTree(child) {
+  if (process.platform === 'win32' && child.pid) {
+    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    killer.on('error', () => child.kill());
+  } else {
+    child.kill('SIGTERM');
+  }
 }
 
-/** 원문 포함 또는 정규화 포함이면 매치 */
-function contains(answer, needle) {
-  if (answer.includes(needle)) return true;
-  return normalize(answer).includes(normalize(needle));
+/**
+ * 문항마다 **빈 임시 작업 디렉터리**를 만든다.
+ *
+ * ⚠️ 2026-09-13 1차 실행은 저장소를 cwd 로 claude 를 띄워, 프로젝트 CLAUDE.local.md(법령 수치·개발 기록)가
+ *   세션에 섞였다 — 답변이 "프로젝트 기록(과태료 부과기준 고시 Ⅴ)에서 가져왔다" 고 적고 "도구 결함(개발 관점)"
+ *   절까지 붙였다. 도구 근거와 개발자 메모를 가를 수 없으면 이 평가는 무효다.
+ *   → cwd 를 빈 임시 디렉터리로, MCP 설정은 절대경로로 생성한다.
+ */
+function makeWorkDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'gongsi-eval-'));
+  const config = join(dir, 'mcp.json');
+  writeFileSync(
+    config,
+    JSON.stringify({ mcpServers: { [EVAL_SERVER]: { command: process.execPath, args: [CLI_PATH] } } }),
+    'utf8',
+  );
+  return { dir, config };
 }
 
-/** 그룹(OR 후보 배열) 중 하나라도 답변에 있으면 true */
-function matchGroup(answer, group) {
-  return group.some((alt) => contains(answer, alt));
-}
-
-/** 문항 1건 채점 — 결정적 */
-function grade(item, answer, numTurns) {
-  const failures = [];
-  let signalMisses = 0;
-
-  for (const group of item.expect ?? []) {
-    if (!matchGroup(answer, group)) {
-      failures.push(`expect: ${group.join('|')}`);
+/** 작업 디렉터리의 조상에 CLAUDE.md 가 있으면 그것도 세션에 섞인다 — 실행 전에 거절한다 */
+function contextFilesAbove(dir) {
+  const found = [];
+  let d = dir;
+  for (;;) {
+    for (const name of ['CLAUDE.md', 'CLAUDE.local.md']) {
+      if (existsSync(join(d, name))) found.push(join(d, name));
     }
+    const parent = dirname(d);
+    if (parent === d) return found;
+    d = parent;
   }
-  for (const group of item.signals ?? []) {
-    if (!matchGroup(answer, group)) {
-      failures.push(`signal: ${group.join('|')}`);
-      signalMisses += 1;
-    }
-  }
-  for (const banned of item.forbid ?? []) {
-    if (contains(answer, banned)) {
-      failures.push(`forbid: ${banned}`);
-    }
-  }
-  // 기본은 도구 사용 필수(자체 지식 답변 = #52 유형 실패). 도구 설명 자체에 근거가 있는
-  // 개념 교정 문항만 require_tool:false 로 예외.
-  if ((item.require_tool ?? true) && typeof numTurns === 'number' && numTurns < 2) {
-    failures.push('tool_not_used');
-  }
-  return { failures, signalMisses };
 }
 
 /** claude CLI 헤드리스 1회 실행 — 질문은 stdin 으로 넘긴다(한글 인용부호 문제 회피) */
-function runClaude(question) {
+function runClaude(question, timeoutMs, work) {
   return new Promise((resolve) => {
+    const configArg = process.platform === 'win32' ? `"${work.config}"` : work.config;
     const args = [
       '-p',
-      '--mcp-config', MCP_CONFIG_REL,
+      '--mcp-config', configArg,
       '--strict-mcp-config',
+      // ★ 사용자 설정(플러그인·훅·auto 권한 모드)을 읽지 않는다. 1차 실행 init 에는 플러그인 14개가 붙고
+      //   SessionStart 훅이 additionalContext 를 주입했다. 인증(OAuth)은 설정 파일이 아니라 그대로 된다.
+      //   ⚠️ 한계: 사용자 전역 ~/.claude/CLAUDE.md 는 이 설정에서도 로드된다(2026-09-13 탐침) — 프로젝트·
+      //   플러그인·훅 격리이지 완전히 깨끗한 환경이 아니다 (eval/e2e/README.md "맥락 격리").
+      '--setting-sources', 'project,local',
       '--allowedTools', 'mcp__gongsi',
-      // ⚠️ **auto 모드에서는 `--allowedTools` 가 허용 목록으로 동작하지 않는다.**
-      // 사용자 설정이 `defaultMode: auto` 면 내장 도구가 그대로 살아 있다 — 2026-09-07
-      // stream-json 으로 확인한 결과 init 이벤트의 tools 45개에 WebFetch·WebSearch·Bash 가
-      // 전부 들어 있었다. 그러면 이 평가가 재는 것이 "우리 MCP 가 유용한가"가 아니라
-      // "모델이 웹을 잘 뒤지는가"가 되고, 웹 근거는 이 프로젝트가 쓰지 않기로 한 것이다
-      // (작업 원칙: 웹 검색 결과는 근거로 쓰지 않는다). 게다가 위 tool_not_used 판정이
-      // num_turns 로 도구 사용을 재는데, 웹 도구로 채운 턴도 똑같이 세어 통과시켜 버린다.
-      // → 차단이 필요하다. ★ ToolSearch 는 남긴다 (MCP 도구가 지연 로드라 스키마를
-      //   ToolSearch 로 먼저 가져온다 — 막으면 MCP 도구를 아예 못 부른다).
-      '--disallowedTools', 'WebFetch,WebSearch,Bash,PowerShell,Read,Glob,Grep,Edit,Write,Task,Agent',
-      '--output-format', 'json',
-      '--max-turns', '12',
+      // ⚠️ **auto 모드에서는 `--allowedTools` 가 허용 목록으로 동작하지 않는다** (2026-09-07 실측).
+      //   차단 목록이 유일한 격리 수단이고, messy 러너와 같은 목록을 쓴다 (eval/disallowed-tools.mjs).
+      //   ★ ToolSearch 는 남긴다 (MCP 도구가 지연 로드라 막으면 MCP 도구를 아예 못 부른다).
+      '--disallowedTools', DISALLOWED_TOOLS,
+      // stream-json + verbose 라야 도구 호출 이벤트가 나온다 (json 은 최종 결과만 준다)
+      '--output-format', 'stream-json', '--verbose',
+      '--max-turns', '16',
     ];
     // 인자는 전부 ASCII 상수라 문자열 결합이 안전하다 (DEP0190 회피 — 질문은 stdin 으로만)
     const child = process.platform === 'win32'
-      ? spawn(`claude ${args.join(' ')}`, { cwd: REPO_ROOT, shell: true })
-      : spawn('claude', args, { cwd: REPO_ROOT });
+      ? spawn(`claude ${args.join(' ')}`, { cwd: work.dir, shell: true, windowsHide: true })
+      : spawn('claude', args, { cwd: work.dir });
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let settled = false;
+    const finish = (extra) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killWait);
+      resolve({ timedOut, stdout, stderr, pid: child.pid ?? null, ...extra });
+    };
 
+    let killWait;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
-    }, ITEM_TIMEOUT_MS);
+      killTree(child);
+      // 트리가 닫히지 않으면(파이프를 쥔 손자 프로세스) 무한 대기하지 않고 그 사실을 기록한다
+      killWait = setTimeout(() => finish({ spawnError: null, exitCode: null, killConfirmed: false }), KILL_WAIT_MS);
+    }, timeoutMs);
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
 
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ timedOut: false, spawnError: err.message, stdout, stderr });
-    });
-    child.on('close', () => {
-      clearTimeout(timer);
-      resolve({ timedOut, spawnError: null, stdout, stderr });
-    });
+    child.on('error', (err) => finish({ spawnError: err.message, exitCode: null, killConfirmed: true }));
+    child.on('close', (code) => finish({ spawnError: null, exitCode: code, killConfirmed: true }));
 
     child.stdin.setDefaultEncoding('utf8');
     child.stdin.write(question);
@@ -151,92 +176,126 @@ function runClaude(question) {
   });
 }
 
-/** 문항 1건 실행 + 채점 */
-async function runItem(item) {
-  const started = Date.now();
-  const { timedOut, spawnError, stdout, stderr } = await runClaude(item.question);
-  const elapsedMs = Date.now() - started;
-
-  if (timedOut) {
-    return {
-      id: item.id,
-      category: item.category,
-      status: 'timeout',
-      failures: [`timeout: ${ITEM_TIMEOUT_MS / 1000}초 초과`],
-      signalMisses: 0,
-      num_turns: null,
-      cost_usd: null,
-      elapsed_ms: elapsedMs,
-      answer: '',
-      raw: stdout.slice(0, RAW_KEEP_CHARS),
-    };
-  }
-  if (spawnError) {
-    return {
-      id: item.id,
-      category: item.category,
-      status: 'error',
-      failures: [`실행 실패: ${spawnError}`],
-      signalMisses: 0,
-      num_turns: null,
-      cost_usd: null,
-      elapsed_ms: elapsedMs,
-      answer: '',
-      raw: (stderr || stdout).slice(0, RAW_KEEP_CHARS),
-    };
-  }
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch (err) {
-    return {
-      id: item.id,
-      category: item.category,
-      status: 'error',
-      failures: [`응답 JSON 파싱 실패: ${err.message}`],
-      signalMisses: 0,
-      num_turns: null,
-      cost_usd: null,
-      elapsed_ms: elapsedMs,
-      answer: '',
-      raw: stdout.slice(0, RAW_KEEP_CHARS),
-    };
-  }
-
-  if (parsed.is_error) {
-    return {
-      id: item.id,
-      category: item.category,
-      status: 'error',
-      failures: ['claude 응답이 is_error 로 반환됨'],
-      signalMisses: 0,
-      num_turns: parsed.num_turns ?? null,
-      cost_usd: parsed.total_cost_usd ?? null,
-      elapsed_ms: elapsedMs,
-      answer: typeof parsed.result === 'string' ? parsed.result : '',
-      raw: stdout.slice(0, RAW_KEEP_CHARS),
-    };
-  }
-
-  const answer = typeof parsed.result === 'string' ? parsed.result : '';
-  const { failures, signalMisses } = grade(item, answer, parsed.num_turns);
-
+/** 결과 파일에 남길 도구 흔적 */
+function traceOf(rec) {
   return {
-    id: item.id,
-    category: item.category,
-    status: failures.length === 0 ? 'pass' : 'fail',
-    failures,
-    signalMisses,
-    num_turns: parsed.num_turns ?? null,
-    cost_usd: parsed.total_cost_usd ?? null,
-    elapsed_ms: elapsedMs,
-    answer,
+    tools_used: toolNames(rec),
+    tool_calls: rec.tool_calls,
+    tool_results: (rec.tool_results ?? []).map((r) => ({
+      tool_use_id: r.tool_use_id ?? null,
+      name: r.name,
+      is_error: r.is_error,
+      result_chars: r.chars ?? null,
+      head: (r.head ?? '').slice(0, 200),
+    })),
+    permission_denials: rec.permission_denials ?? [],
+    toolsearch_probes: toolSearchProbes(rec),
+    /** 도구 밖 맥락 — cwd·권한 모드·모델·플러그인·훅 수·메모리 경로 */
+    context: rec.context ?? null,
+    mcp_servers: rec.mcp_servers ?? null,
+    tools_available: rec.tools_available ?? null,
   };
 }
 
+/** 문항 1건 실행 + 채점 */
+async function runItem(item, streamsDir) {
+  const timeoutMs = item.timeout_ms ?? ITEM_TIMEOUT_MS;
+  const work = makeWorkDir();
+  const started = Date.now();
+  const run = await runClaude(item.question, timeoutMs, work);
+  const elapsedMs = Date.now() - started;
+  // 우리가 만든 임시 디렉터리만 지운다 (Windows 파일 잠금이면 남았다고 기록한다)
+  let workDirRemoved = true;
+  try {
+    rmSync(work.dir, { recursive: true, force: true });
+  } catch {
+    workDirRemoved = false;
+  }
+
+  // 원본 스트림은 그대로 남긴다 — 채점기를 고쳤을 때 과거 실행을 다시 읽을 수 있어야 한다
+  const streamPath = join(streamsDir, `${item.id}.stream.jsonl`);
+  writeFileSync(streamPath, run.stdout, 'utf8');
+  const base = {
+    id: item.id,
+    category: item.category,
+    question: item.question,
+    elapsed_ms: elapsedMs,
+    stream_path: relative(REPO_ROOT, streamPath).replace(/\\/g, '/'),
+    claude_pid: run.pid,
+    exit_code: run.exitCode ?? null,
+    work_dir: work.dir,
+    work_dir_removed: workDirRemoved,
+  };
+
+  if (run.timedOut) {
+    return {
+      ...base,
+      status: 'timeout',
+      failures: [`timeout: ${timeoutMs / 1000}초 초과`],
+      kill_confirmed: run.killConfirmed,
+      signalMisses: 0,
+      answer: '',
+      ...traceOf(parseStream(run.stdout)),
+      raw: run.stdout.slice(-RAW_KEEP_CHARS),
+    };
+  }
+  if (run.spawnError) {
+    return {
+      ...base,
+      status: 'runner_error',
+      failures: [`실행 실패: ${run.spawnError}`],
+      signalMisses: 0,
+      answer: '',
+      raw: (run.stderr || run.stdout).slice(0, RAW_KEEP_CHARS),
+    };
+  }
+
+  const rec = parseStream(run.stdout);
+  if (!rec.result_seen) {
+    return {
+      ...base,
+      status: 'runner_error',
+      failures: [
+        `stream-json 에 result 이벤트가 없습니다 (파싱 ${rec.events_parsed}건 / 실패 ${rec.lines_unparsed}줄)`,
+      ],
+      signalMisses: 0,
+      answer: '',
+      ...traceOf(rec),
+      raw: (run.stderr || run.stdout).slice(0, RAW_KEEP_CHARS),
+    };
+  }
+
+  const common = {
+    ...base,
+    num_turns: rec.num_turns,
+    cost_usd: rec.cost_usd,
+    answer: rec.answer ?? '',
+    ...traceOf(rec),
+  };
+
+  // 서버가 안 떴거나 격리가 샜으면 "우리 MCP 만으로 답이 되는가" 를 잰 것이 아니다 — 통과도 실패도 아니다
+  const env = environmentProblem(rec);
+  if (env) {
+    return { ...common, status: 'env_error', failures: [env], signalMisses: 0 };
+  }
+  // 세션 한도·API 오류 등 호스트 가용성 문제 — 제품 실패와 구분해 센다
+  if (rec.is_error) {
+    return {
+      ...common,
+      status: 'host_error',
+      failures: [
+        `claude 응답이 is_error 로 반환됨 (subtype=${rec.subtype ?? '?'}, api_error_status=${rec.api_error_status ?? 'null'})`,
+      ],
+      signalMisses: 0,
+    };
+  }
+
+  const { failures, signalMisses } = grade(item, common.answer, rec);
+  return { ...common, status: failures.length === 0 ? 'pass' : 'fail', failures, signalMisses };
+}
+
 /** 동시 실행 풀 */
-async function runPool(items, concurrency, onDone) {
+async function runPool(items, concurrency, streamsDir, onDone) {
   const results = new Array(items.length);
   let cursor = 0;
 
@@ -245,7 +304,7 @@ async function runPool(items, concurrency, onDone) {
       const index = cursor;
       cursor += 1;
       if (index >= items.length) return;
-      const result = await runItem(items[index]);
+      const result = await runItem(items[index], streamsDir);
       results[index] = result;
       onDone(result);
     }
@@ -281,44 +340,66 @@ async function main() {
   if (items.length === 0) {
     throw new Error('실행할 문항이 없습니다.');
   }
+  if (!existsSync(CLI_PATH)) {
+    throw new Error(`빌드 산출물이 없습니다: ${CLI_PATH} — npm run build 를 먼저 실행하세요.`);
+  }
+  const above = contextFilesAbove(tmpdir());
+  if (above.length > 0) {
+    throw new Error(
+      `임시 디렉터리 조상에 CLAUDE 파일이 있어 세션 맥락이 오염됩니다: ${above.join(', ')} — TMP/TEMP 를 다른 곳으로 지정하세요.`,
+    );
+  }
 
-  console.log(`[eval] 문항 ${items.length}건 · 동시성 ${opts.concurrency} · 문항당 타임아웃 ${ITEM_TIMEOUT_MS / 1000}초`);
+  const runId = `eval-${timestamp(new Date())}`;
+  const streamsDir = join(RESULTS_DIR, runId);
+  mkdirSync(streamsDir, { recursive: true });
 
-  const results = await runPool(items, opts.concurrency, (result) => {
+  console.log(
+    `[eval] 문항 ${items.length}건 (${items.map((i) => i.id).join(', ')}) · 동시성 ${opts.concurrency} · ` +
+      `기본 타임아웃 ${ITEM_TIMEOUT_MS / 1000}초`,
+  );
+
+  const results = await runPool(items, opts.concurrency, streamsDir, (result) => {
     const mark = result.status === 'pass' ? '✓' : '✗';
-    const reason = result.status === 'pass' ? '' : ` — ${result.failures.join(' / ')}`;
-    console.log(`${mark} ${result.id}${reason}`);
+    const reason = result.status === 'pass' ? '' : ` [${result.status}] ${result.failures.join(' / ')}`;
+    const tools = (result.tools_used ?? []).join(',') || '(도구 없음)';
+    console.log(`${mark} ${result.id} (${(result.elapsed_ms / 1000).toFixed(1)}s · ${tools})${reason}`);
   });
 
-  const passed = results.filter((r) => r.status === 'pass').length;
-  const failed = results.filter((r) => r.status === 'fail').length;
-  const timeouts = results.filter((r) => r.status === 'timeout').length;
-  const errors = results.filter((r) => r.status === 'error').length;
+  const count = (s) => results.filter((r) => r.status === s).length;
   const signalMisses = results.reduce((sum, r) => sum + (r.signalMisses ?? 0), 0);
   const totalCost = results.reduce((sum, r) => sum + (typeof r.cost_usd === 'number' ? r.cost_usd : 0), 0);
 
   const summary = {
     version: suite.version,
+    run_id: runId,
     ran_at: new Date().toISOString(),
     total: results.length,
-    passed,
-    failed,
-    timeouts,
-    errors,
+    passed: count('pass'),
+    failed: count('fail'),
+    timeouts: count('timeout'),
+    /** 제품 실패가 아닌 것 — 서버 미기동·격리 누출 / 세션 한도·API 오류 / 러너 자체 오류 */
+    env_errors: count('env_error'),
+    host_errors: count('host_error'),
+    runner_errors: count('runner_error'),
     signal_misses: signalMisses,
     total_cost_usd: Number(totalCost.toFixed(4)),
   };
 
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  const outPath = join(RESULTS_DIR, `eval-${timestamp(new Date())}.json`);
+  const outPath = join(RESULTS_DIR, `${runId}.json`);
   writeFileSync(outPath, JSON.stringify({ summary, results }, null, 2), 'utf8');
 
   console.log('');
-  console.log(`통과 ${passed}/${results.length} · 실패 ${failed} · 타임아웃 ${timeouts} · 오류 ${errors} · 신호누락 ${signalMisses}건`);
+  console.log(
+    `통과 ${summary.passed}/${summary.total} · 실패 ${summary.failed} · 타임아웃 ${summary.timeouts} · ` +
+      `환경 ${summary.env_errors} · 호스트 ${summary.host_errors} · 러너 ${summary.runner_errors} · ` +
+      `신호누락 ${signalMisses}건`,
+  );
   console.log(`총 비용 $${totalCost.toFixed(4)}`);
   console.log(`결과 저장: ${outPath}`);
+  console.log(`스트림 원본: ${streamsDir}`);
 
-  if (passed !== results.length) {
+  if (summary.passed !== results.length) {
     process.exitCode = 1;
   }
 }
