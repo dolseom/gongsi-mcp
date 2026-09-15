@@ -35,7 +35,7 @@ claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 
 다른 클라이언트(Claude Desktop·Cursor 등)는 아래 [설치 상세](#설치-상세) 참고.
 
-> **버전 표시** — 이 README 는 **0.3.0** 기준입니다. 아래에 **(0.3.0+)** 로 표시한 기능 — 일부 입력만으로 되는 계산부터 돌려주는 판정, 미공시 탐지 요약과 `read_detection_result` 등 — 은 npm 0.2.0(2026-08-30) 이하에는 없습니다. `npx` 는 npm 에 올라간 버전을 받으므로, npm 최신이 아직 0.2.0 이면(`npm view gongsi-mcp version`) 이 기능은 [소스로 설치](#버전별-차이)해야 쓸 수 있습니다. 실행 중인 버전은 `server_info` 로 확인하세요.
+> **버전 표시** — 이 README 는 **0.3.0** 기준입니다. 아래에 **(0.3.0+)** 로 표시한 기능 — 일부 입력만으로 되는 계산부터 돌려주는 판정, 미공시 탐지 요약과 `read_detection_result` 등 — 은 npm 0.2.0(2026-08-30) 이하에는 없습니다. 0.3.0 은 2026-09-15 npm 에 배포됐으므로 `npx -y gongsi-mcp` 가 받는 최신이 0.3.0 입니다. 이미 떠 있는 서버는 옛 버전일 수 있으니 실행 중인 버전은 `server_info` 로 확인하세요.
 
 ---
 
@@ -191,9 +191,9 @@ claude mcp add gongsi-mcp -- npx -y gongsi-mcp
 | 버전 | Node.js | 들어 있는 것 |
 |---|---|---|
 | **0.2.0** (npm 배포 2026-08-30) | 22.5+ | 도구 16개 |
-| **0.3.0** | **22.13+** | 도구 17개 — 위에 더해 일부 입력만으로 되는 판정(`missing_inputs`·`components`·`review`), 미공시 탐지 요약 + `read_detection_result`, 탐지 이어보기(`continuation_token`)·시간 예산, 탐지 취소 시 결과 미보관, 0.2.0 이후 미공시 탐지 정확도 개선 |
+| **0.3.0** (npm 배포 2026-09-15) | **22.13+** | 도구 17개 — 위에 더해 일부 입력만으로 되는 판정(`missing_inputs`·`components`·`review`), 미공시 탐지 요약 + `read_detection_result`, 탐지 이어보기(`continuation_token`)·시간 예산, 탐지 취소 시 결과 미보관, 0.2.0 이후 미공시 탐지 정확도 개선 |
 
-`main` 에 올라간 변경이 곧 npm 배포는 아닙니다 — npm 배포는 버전 태그로 따로 하고, npm 에 올라간 최신 버전은 `npm view gongsi-mcp version` 으로 확인합니다. npm 최신이 0.2.0 인 동안에는 방법 1·2(`npx -y gongsi-mcp`)가 0.2.0 을, 방법 3(소스 클론)이 0.3.0 을 실행합니다. 어느 쪽이든 실행 중인 버전은 `server_info` 의 `version` 에 표시됩니다.
+`main` 에 올라간 변경이 곧 npm 배포는 아닙니다 — npm 배포는 버전 태그로 따로 하고, npm 에 올라간 최신 버전은 `npm view gongsi-mcp version` 으로 확인합니다. 2026-09-15 이후 방법 1·2(`npx -y gongsi-mcp`)와 방법 3(소스 클론) 모두 0.3.0 입니다. 어느 쪽이든 실행 중인 버전은 `server_info` 의 `version` 에 표시됩니다.
 
 **0.2.0 에서 올릴 때** — Node.js 22.13 이상이 필요하고, 이미 떠 있는 서버는 옛 버전이므로 MCP 클라이언트를 다시 시작해야 새 버전이 적용됩니다. `detect_undisclosed_transactions` 의 첫 응답은 전체 결과가 아니라 **요약**으로 바뀌었습니다 — 전문은 요약의 `detail_access.result_id` 를 `read_detection_result` 의 입력 `result_id` 에 넣어 읽습니다. `check_disclosure_duty` 는 입력이 일부 빠져도 오류로 끝내지 않고 **계산할 수 있는 부분을 돌려주며**, 확정하지 못한 계산은 `missing_inputs`·`components` 로 표시합니다 — 예: 금액·자본 등 대상 요건이 충족된 경우, 이사회 의결일이 없으면 대상 판정은 `verdict: required` 로 나오고 기한만 `components.deadline.status: insufficient_data` 입니다(의결일이 없다는 것만으로 `required` 가 되지는 않습니다). 응답을 직접 파싱하는 연동이 있다면 [0.3.0 릴리스 노트](https://github.com/dolseom/gongsi-mcp/blob/main/docs/releases/v0.3.0.md)의 호환성 절을 먼저 보세요.
 
