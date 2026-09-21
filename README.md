@@ -209,8 +209,9 @@ Cursor·MS 스토어판 Claude Desktop·Windows 에서 `npx` 를 못 찾는 경�
 |---|---|---|
 | **0.2.0** (npm 배포 2026-08-30) | 22.5+ | 도구 16개 |
 | **0.3.0** (npm 배포 2026-09-15) | **22.13+** | 도구 17개 — 위에 더해 일부 입력만으로 되는 판정(`missing_inputs`·`components`·`review`), 미공시 탐지 요약 + `read_detection_result`, 탐지 이어보기(`continuation_token`)·시간 예산, 탐지 취소 시 결과 미보관, 0.2.0 이후 미공시 탐지 정확도 개선 |
+| **0.3.1** | 22.13+ | 도구 17개(변동 없음) — 미공시 탐지의 **매트릭스 파서 수정**: 거래상대방이 `금융회사`·`비금융회사` 같은 묶음 이름으로 읽히던 문제, 상대방이 1개사뿐인 표가 통째로 빠지던 문제. 점검하지 않은 자금거래 표(한도 약정 차입·리스 부채)를 표 수·행 수로 표시. 기업집단포털 목록을 끝까지 못 받으면 부분 목록 대신 오류. 0.3.0 사용자는 올리는 것을 권합니다 — [릴리스 노트](https://github.com/dolseom/gongsi-mcp/blob/main/docs/releases/v0.3.1.md) |
 
-`main` 에 올라간 변경이 곧 npm 배포는 아닙니다 — npm 배포는 버전 태그로 따로 하고, npm 에 올라간 최신 버전은 `npm view gongsi-mcp version` 으로 확인합니다. 2026-09-15 이후 방법 1·2(`npx -y gongsi-mcp`)와 방법 3(소스 클론) 모두 0.3.0 입니다. 어느 쪽이든 실행 중인 버전은 `server_info` 의 `version` 에 표시됩니다.
+`main` 에 올라간 변경이 곧 npm 배포는 아닙니다 — npm 배포는 버전 태그로 따로 하고, npm 에 올라간 최신 버전은 `npm view gongsi-mcp version` 으로 확인합니다. 어느 쪽이든 실행 중인 버전은 `server_info` 의 `version` 에 표시됩니다.
 
 **0.2.0 에서 올릴 때** — Node.js 22.13 이상이 필요하고, 이미 떠 있는 서버는 옛 버전이므로 MCP 클라이언트를 다시 시작해야 새 버전이 적용됩니다. `detect_undisclosed_transactions` 의 첫 응답은 전체 결과가 아니라 **요약**으로 바뀌었습니다 — 전문은 요약의 `detail_access.result_id` 를 `read_detection_result` 의 입력 `result_id` 에 넣어 읽습니다. `check_disclosure_duty` 는 입력이 일부 빠져도 오류로 끝내지 않고 **계산할 수 있는 부분을 돌려주며**, 확정하지 못한 계산은 `missing_inputs`·`components` 로 표시합니다 — 예: 금액·자본 등 대상 요건이 충족된 경우, 이사회 의결일이 없으면 대상 판정은 `verdict: required` 로 나오고 기한만 `components.deadline.status: insufficient_data` 입니다(의결일이 없다는 것만으로 `required` 가 되지는 않습니다). 응답을 직접 파싱하는 연동이 있다면 [0.3.0 릴리스 노트](https://github.com/dolseom/gongsi-mcp/blob/main/docs/releases/v0.3.0.md)의 호환성 절을 먼저 보세요.
 
@@ -278,7 +279,7 @@ claude mcp add gongsi-mcp -- node <절대경로>/dist/src/cli.js
 - **법령 세부는 원문으로만** — 웹에 퍼진 "공시기한 1일"·"50억 기준" 같은 오정보를 원문 대조로 걸러냄
 - **자동 제출 기능은 만들지 않는다** — 초안·판정·근거까지만. 최종 제출은 담당자의 몫
 
-검증(0.3.0 소스, 2026-09-14): 테스트 743개(32파일) · 패키징한 설치본 stdio 스모크 9종 · 공휴일 데이터 공식 공고 대조(2026·2027) · 실제 공시 사례 재현 · 3자 교차검토(치명 경로 전수 수정) · 자연어 종단 평가([eval/e2e](eval/e2e/README.md)).
+검증(0.3.1 소스, 2026-09-22): 테스트 759개(32파일) · 실물 J004 44문서 파서 전수 스캔 · 패키징한 설치본 stdio 스모크 9종 · 공휴일 데이터 공식 공고 대조(2026·2027) · 실제 공시 사례 재현 · 3자 교차검토(치명 경로 전수 수정) · 자연어 종단 평가([eval/e2e](eval/e2e/README.md)).
 
 ---
 
