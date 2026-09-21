@@ -20,6 +20,14 @@ const log = getLogger('egroup');
 const BASE = 'https://apis.data.go.kr/1130000';
 
 /**
+ * 전 페이지 수집 상한.
+ * 페이지당 numOfRows 는 100~500 이라 20페이지면 2,000~10,000건이고, 실측 최대
+ * (집단 102개·에스케이 151개사·재무 151행)보다 한참 크다 — 상한에 닿으면 서식이나
+ * 데이터 규모가 바뀐 것이므로 조용히 끊지 않고 실패로 알린다 (아래 `call`).
+ */
+const MAX_PAGES = 20;
+
+/**
  * fetch 가 던진 오류의 **실제 원인**을 사람이 읽을 문구와 코드로 뽑는다.
  *
  * ★ `err.name` 만 남기면 사용자에게는 "TypeError" 넉 자만 간다 — 키 문제인지 방화벽인지
@@ -195,13 +203,48 @@ export class EgroupClient {
     return { items: parsed.items, totalCount: parsed.totalCount };
   }
 
-  /** 전 페이지 수집 — totalCount 에 도달할 때까지 pageNo 를 올린다 */
+  /**
+   * 전 페이지 수집 — totalCount 에 도달할 때까지 pageNo 를 올린다.
+   *
+   * ★ **부분 목록을 성공으로 돌려주지 않는다.** 페이지 상한에 닿거나 중간 페이지가 빈 응답으로
+   *   오면 `out.length < totalCount` 인데, 종전에는 그것을 아무 표시 없이 반환했다. 호출부는
+   *   그걸 **완전한 소속회사 명단**으로 받아 연 단위(1년) 캐시에 넣고, 감사·탐지 도구의 모집단이
+   *   조용히 줄어든다 — "지연 0건"·"미공시 0건"이 되는 거짓 안심이다.
+   *   페이지당 500건이라 실제 빈도는 낮지만, 한 번 캐시되면 1년짜리 오진이고 이 클라이언트는
+   *   이미 "빈 목록이 연 단위 캐시에 들어간" 사고를 한 번 겪었다 (함정 11번).
+   */
   private async call<T>(service: ServiceName, params: Record<string, unknown>): Promise<T[]> {
     const out: T[] = [];
-    for (let pageNo = 1; pageNo <= 20; pageNo++) {
-      const { items, totalCount } = await this.callPage<T>(service, params, pageNo);
-      out.push(...items);
-      if (items.length === 0 || out.length >= totalCount) break;
+    // totalCount 는 페이지마다 같아야 하지만, 뒤 페이지가 0 으로 오면 절단이 완주로 보인다 —
+    // 본 값 중 가장 큰 것을 기준으로 삼아 기준선이 낮아지지 않게 한다.
+    let totalCount = 0;
+    let stoppedBy: 'page_limit' | 'empty_page' | null = null;
+    for (let pageNo = 1; ; pageNo++) {
+      if (pageNo > MAX_PAGES) {
+        stoppedBy = 'page_limit';
+        break;
+      }
+      const page = await this.callPage<T>(service, params, pageNo);
+      totalCount = Math.max(totalCount, page.totalCount);
+      out.push(...page.items);
+      // 완주. totalCount 0(정상적인 빈 목록)이면 첫 페이지에서 여기로 끝난다 —
+      // 빈 목록 자체의 처리는 호출부 몫이다 (캐시 금지·미소속 단정 금지).
+      if (out.length >= totalCount) break;
+      if (page.items.length === 0) {
+        stoppedBy = 'empty_page';
+        break;
+      }
+    }
+    if (stoppedBy !== null) {
+      throw new ToolError(
+        'egroup_incomplete_collection',
+        `기업집단포털 목록을 끝까지 받지 못했습니다 (${out.length}/${totalCount}건, 중단 사유: ` +
+          `${stoppedBy === 'page_limit' ? `페이지 상한 ${MAX_PAGES} 도달` : '중간 페이지가 빈 응답'}). ` +
+          '부분 목록을 성공으로 돌려주면 완전한 목록처럼 연 단위 캐시에 들어가 1년짜리 오진이 되므로 ' +
+          '실패로 알립니다 — 시간을 두고 다시 시도하세요. ' +
+          '(이 결과는 계열사 수·소속 여부·공시의무 모집단의 근거가 아닙니다.)',
+        { service, received: out.length, total_count: totalCount, stopped_by: stoppedBy },
+      );
     }
     return out;
   }

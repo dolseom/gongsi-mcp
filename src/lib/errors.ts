@@ -22,6 +22,14 @@ export type ErrorCode =
   | 'dart_api_error'
   | 'egroup_api_error'
   | 'egroup_parse_error'
+  /**
+   * 기업집단포털 목록을 `totalCount` 까지 받지 못했다 (페이지 상한·중간 빈 페이지).
+   * ★ 부분 목록을 성공으로 돌려주면 호출부가 그것을 **완전한 소속회사 명단**으로 받아
+   * 연 단위 캐시에 넣는다 — 모집단이 조용히 줄어든 1년짜리 오진이 된다.
+   * 상류가 오류를 준 것은 아니므로 `egroup_api_error` 와 가르고, 응답 구조가 깨진
+   * `egroup_parse_error` 와도 다르다 (구조는 정상인데 수집이 끊긴 것이다).
+   */
+  | 'egroup_incomplete_collection'
   | 'upstream_forbidden'
   /**
    * 도구의 시간 예산(60초 벽 대비)이 남지 않아 상류 호출을 시작하지 않았다.

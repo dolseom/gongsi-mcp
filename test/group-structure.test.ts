@@ -8,6 +8,7 @@ import { isGroupCode, toWon } from '../src/tools/get-group-structure.js';
 import { inferYearMonth } from '../src/tools/resolve-entity.js';
 import { EgroupClient, describeFetchFailure, parsePortalXml } from '../src/clients/egroup.js';
 import { Store, __setStore } from '../src/lib/store.js';
+import type { ToolError } from '../src/lib/errors.js';
 
 describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
   it('항목 태그는 서비스명에서 List 를 뗀 이름이다 — <item> 이 아니다', () => {
@@ -116,6 +117,97 @@ describe('EgroupClient — 파싱 실패 가드 (Codex 3차 백로그)', () => {
     );
     const client = new EgroupClient('test-key');
     await expect(client.groups('202605')).rejects.toMatchObject({ code: 'egroup_parse_error' });
+  });
+});
+
+describe('EgroupClient — 수집 완전성 (부분 목록을 성공으로 돌려주지 않는다)', () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store(':memory:');
+    __setStore(store);
+  });
+
+  afterEach(() => {
+    __setStore(null);
+    store.close();
+    vi.unstubAllGlobals();
+  });
+
+  /** pageNo → 그 페이지의 항목 수를 주면 그대로 응답하는 포털 스텁 */
+  function stubAffiliatePages(totalCount: number, itemsOnPage: (pageNo: number) => number) {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const pageNo = Number(new URL(String(url)).searchParams.get('pageNo'));
+      const items = Array.from(
+        { length: itemsOnPage(pageNo) },
+        (_, i) =>
+          `<appnGroupAffi><entrprsNm>회사${pageNo}-${i}</entrprsNm>` +
+          `<jurirno>11011100${pageNo}${i}</jurirno></appnGroupAffi>`,
+      ).join('');
+      return new Response(
+        '<appnGroupAffiList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+          `<totalCount>${totalCount}</totalCount>${items}</appnGroupAffiList>`,
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('중간 페이지가 빈 응답이면 받은 만큼을 성공으로 돌려주지 않는다', async () => {
+    // 부분 목록이 반환되면 호출부가 연 단위 캐시에 넣어 모집단이 1년간 줄어든다
+    const fetchMock = stubAffiliatePages(5, (p) => (p === 1 ? 2 : 0));
+    const client = new EgroupClient('test-key');
+    const err = (await client
+      .affiliates('202605', 'K1000032')
+      .catch((e: unknown) => e)) as ToolError;
+    expect(err).toMatchObject({
+      code: 'egroup_incomplete_collection',
+      details: {
+        service: 'appnGroupAffiList',
+        received: 2,
+        total_count: 5,
+        stopped_by: 'empty_page',
+      },
+    });
+    // 인증키·URL 은 메시지에 담지 않는다
+    expect(err.message).not.toContain('test-key');
+    expect(err.message).not.toContain('apis.data.go.kr');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('페이지 상한에 닿아도 조용히 끝내지 않는다', async () => {
+    const fetchMock = stubAffiliatePages(100, () => 1);
+    const client = new EgroupClient('test-key');
+    await expect(client.affiliates('202605', 'K1000032')).rejects.toMatchObject({
+      code: 'egroup_incomplete_collection',
+      details: { received: 20, total_count: 100, stopped_by: 'page_limit' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(20); // 상한 초과 페이지는 부르지 않는다
+  });
+
+  it('정상 다중 페이지는 전 페이지를 이어 붙여 돌려준다 (종전 동작)', async () => {
+    const fetchMock = stubAffiliatePages(3, (p) => (p === 1 ? 2 : p === 2 ? 1 : 0));
+    const client = new EgroupClient('test-key');
+    const rows = await client.affiliates('202605', 'K1000032');
+    expect(rows.map((r) => r.entrprsNm)).toEqual(['회사1-0', '회사1-1', '회사2-0']);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // 완주하면 3페이지는 부르지 않는다
+  });
+
+  it('단일 페이지 정상은 한 번만 호출한다 (종전 동작)', async () => {
+    const fetchMock = stubAffiliatePages(2, (p) => (p === 1 ? 2 : 0));
+    const client = new EgroupClient('test-key');
+    const rows = await client.affiliates('202605', 'K1000032');
+    expect(rows.length).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('totalCount 0 인 빈 목록은 완주로 본다 — 빈 목록 처리는 호출부 몫이다', async () => {
+    // 이 경로가 에러가 되면 resolve_entity 의 "빈 목록 미캐시·미소속 단정 금지" 판정이 바뀐다
+    const fetchMock = stubAffiliatePages(0, () => 0);
+    const client = new EgroupClient('test-key');
+    await expect(client.affiliates('202605', 'K1000032')).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
