@@ -192,3 +192,125 @@ describe('j004 매트릭스 파서 — 안전장치', () => {
     expect(r.droppedColumns).toContain('동일인,배우자,혈족 1촌');
   });
 });
+
+/**
+ * 회사명 헤더 줄을 **값 열 앵커**로 고르는 규칙의 실물 회귀 (2026-09-21 44문서 전수 스캔).
+ *
+ * 종전 규칙("고유 비집계 라벨이 가장 많은 줄, 3개 이상")은 세 가지 모양으로 깨졌고, 그 결과가
+ * 전부 **조용한 손실**이었다 — 상대방 이름이 묶음 이름으로 바뀌거나(25셀), 표가 통째로
+ * 사라지거나(4표), 집계값이 거래로 둔갑했다(1셀). 되돌리면 이 describe 가 깨진다.
+ */
+describe('j004 매트릭스 파서 — 회사명 줄 선택 (실물 서식 변형)', () => {
+  const load = (name: string): string => readFileSync(join(HERE, 'fixtures', name), 'utf8');
+
+  it('그룹 헤더 줄과 동점이어도 회사명 줄을 고른다 (미래에셋 20260609000355)', () => {
+    const r = extractSecuritiesMatrix(load('j004-matrix-tiebreak.md'));
+    expect(r.cells.map((c) => c.colCompany)).toEqual(['미래에셋컨설팅(주)', '미래에셋자산운용(주)']);
+    expect(r.cells.map((c) => c.amount)).toEqual([216_476 * MILLION, 279_551 * MILLION]);
+    // 묶음 이름이 거래상대방으로 새지 않는다
+    expect(r.cells.some((c) => /^(비금융회사|금융회사)$/.test(c.colCompany))).toBe(false);
+    expect(r.groupLabelColumns).toEqual([]);
+    expect(r.tablesUnrecognized).toBe(0);
+  });
+
+  it('거래상대방 회사가 1개뿐인 표도 읽는다 (태광 20260608000327)', () => {
+    const r = extractSecuritiesMatrix(load('j004-matrix-single-company.md'));
+    expect(r.tables).toBe(1);
+    expect(r.tablesUnrecognized).toBe(0);
+    expect(r.cells).toHaveLength(1);
+    expect(r.cells[0]?.rowCompany).toBe('흥국자산운용㈜');
+    expect(r.cells[0]?.colCompany).toBe('흥국증권㈜');
+    expect(r.cells[0]?.amount).toBe(3_508_645.1 * MILLION);
+  });
+
+  it('회사명 줄이 그룹 헤더 줄보다 라벨이 적어도 고른다 (태광 20260604000627)', () => {
+    const r = extractGoodsServicesMatrix(load('j004-matrix-sparse-name-row.md'));
+    expect(r.cells).toHaveLength(1);
+    expect(r.cells[0]?.colCompany).toBe('흥국생명보험(주)');
+    expect(r.cells[0]?.amount).toBe(3_457.8 * MILLION);
+  });
+
+  it('같은 묶음의 둘째 회사 칸이 살아남는다 (소노 20260615000445)', () => {
+    const r = extractSecuritiesMatrix(load('j004-matrix-sibling-columns.md'));
+    const byCol = new Map(r.cells.map((c) => [c.colCompany, c.amount]));
+    expect(byCol.get('(주)소노인터내셔널')).toBe(190_000 * MILLION);
+    // ★ 종전에는 이 칸이 빈 셀(그룹 헤더 줄)이라 통째로 사라졌다
+    expect(byCol.get('(주)소노스퀘어')).toBe(20_000 * MILLION);
+    expect(r.cells.every((c) => c.rowCompany === '(주)트리니티항공')).toBe(true);
+  });
+
+  it('총계 전용 페이지는 집계값을 거래로 만들지 않고 정상 스킵으로 센다 (태광 20260605000550)', () => {
+    const r = extractGoodsServicesMatrix(load('j004-matrix-total-only-page.md'));
+    // 값 열 이름이 전부 집계 라벨인 마지막 페이지는 tablesUnrecognized 가 아니라 정상 스킵이다
+    expect(r.tablesAggregateOnly).toBe(1);
+    expect(r.tablesUnrecognized).toBe(0);
+    // '국내계열사 계(매출액) 12,013.1' 이 회사와의 120.13억 거래로 둔갑하지 않는다
+    expect(r.cells.some((c) => /계열회사|계열사/.test(c.colCompany))).toBe(false);
+    expect(r.cells.some((c) => c.amount === 12_013.1 * MILLION)).toBe(false);
+    expect(r.cells.map((c) => c.colCompany)).toEqual([
+      '태광산업(주)',
+      '대한화섬(주)',
+      '서한물산(주)',
+      '(주)티시스',
+    ]);
+  });
+
+  /**
+   * ★ 오경보 방지선. 계열 상대방 열이 전부 '-' 라 셀이 0개인 것은 **정상 0건**이다
+   * (실물 3문서 — 매출액 총계는 비계열을 포함하므로 쌍으로 쓸 수 없다).
+   * 여기서 tablesUnrecognized 가 켜지면 detect 가 매번 헛경보를 낸다.
+   */
+  it('계열 상대방 열이 전부 "-" 인 정상 0건은 경보하지 않는다 (라인 20260602000557)', () => {
+    const r = extractGoodsServicesMatrix(load('j004-matrix-no-affiliate-columns.md'));
+    expect(r.cells).toEqual([]);
+    expect(r.tablesUnrecognized).toBe(0);
+    // 금액이 없는 묶음 이름 열('국외계열회사')은 잃는 거래가 없으므로 진단에도 올리지 않는다
+    expect(r.groupLabelColumns).toEqual([]);
+  });
+
+  /**
+   * 헤더 승격(`readLabeledTables`)은 값이 전부 '-' 인 선두 데이터 행도 헤더로 올린다.
+   * 그 행이 "마지막 헤더 줄"이 되어 회사명 줄을 가리면 안 된다 — 값 열 칸이 전부 '-' 라
+   * 집계 라벨로 걸러지고 한 줄 위(진짜 회사명 줄)가 앵커가 된다.
+   */
+  it('승격된 비데이터 행이 회사명 줄을 가리지 않는다', () => {
+    const md = [
+      '## (3) 계열회사간 유가증권거래 현황',
+      '',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '',
+      '| 매입회사 ＼매도회사(소속회사) |  | 계열회사 |  |',
+      '| --- | --- | --- | --- |',
+      '| 매입회사 ＼매도회사(소속회사) |  | 갑회사(주) | 을회사(주) |',
+      '| 비금융사 | - | - | - |',
+      '| 비금융회사 | 병회사(주) | 1,000 | 2,000 |',
+      '',
+    ].join('\n');
+    const r = extractSecuritiesMatrix(md);
+    expect(r.cells.map((c) => c.colCompany)).toEqual(['갑회사(주)', '을회사(주)']);
+    expect(r.cells.map((c) => c.amount)).toEqual([1_000 * MILLION, 2_000 * MILLION]);
+  });
+
+  /**
+   * 값 열 앵커로도 그룹 헤더 줄이 회사명 줄로 뽑히는 모르는 서식이 나오면,
+   * 틀린 이름으로 판정하지 말고 진단에 남긴다 (조용히 틀리는 것이 가장 나쁘다).
+   */
+  it('회사명이 위 헤더 줄 라벨과 같으면 거래상대방으로 쓰지 않고 진단에 남긴다', () => {
+    const md = [
+      '## (3) 계열회사간 유가증권거래 현황',
+      '',
+      '| (단위 : 백만원) |',
+      '| --- |',
+      '',
+      '| 매입회사 ＼매도회사(소속회사) |  | 비금융회사 |  |',
+      '| --- | --- | --- | --- |',
+      '| 매입회사 ＼매도회사(소속회사) |  | 비금융회사 | 갑회사(주) |',
+      '| 비금융회사 | 을회사(주) | 5,000 | 7,000 |',
+      '',
+    ].join('\n');
+    const r = extractSecuritiesMatrix(md);
+    expect(r.cells.map((c) => c.colCompany)).toEqual(['갑회사(주)']);
+    expect(r.groupLabelColumns).toEqual(['비금융회사']);
+  });
+});

@@ -2403,6 +2403,20 @@ export async function detectUndisclosedTransactions(
         '원문 확인이 필요합니다.',
     );
   }
+  // ★ 표 단위 손실은 "절은 있는데 0건" 진단에 원리상 안 걸린다 — 같은 절의 다른 표가 정상
+  //   추출되기 때문이다 (실물: 라인 20260602000556 의 `나. 한도 약정에 따른 차입` 230억이
+  //   `가. 일반 차입` 180건에 묻혔다). 그래서 표 단위로 따로 밝힌다.
+  if (parseDiag.fund_tables_without_amount_col.length > 0) {
+    const skipped = parseDiag.fund_tables_without_amount_col;
+    const rows = skipped.reduce((sum, s) => sum + s.rows, 0);
+    notes.push(
+      `⚠️ 자금거래 절에서 금액 열('차입금액')이 없어 점검하지 않은 표가 ${skipped.length}개 ` +
+        `(${rows}행) 있습니다: ${skipped.map((s) => `${s.label || '(표지 없음)'} ${s.rows}행`).join(' · ')} — ` +
+        "이 표들은 금액을 '한도금액'·'채무잔액'·'리스부채금액' 으로 적는데, 그중 무엇이 공시 금액 " +
+        '산정 기준인지 법령으로 확인되지 않아 **금액을 추측하지 않습니다**. 그 행의 거래는 ' +
+        '**점검되지 않았습니다** — 원문(source_viewer_url)에서 직접 확인하세요.',
+    );
+  }
 
   // ── ③ 회사별 기준금액 (근사) ──
   // 여기부터 조인·1차 판정 구간이다 — 순수 계산이지만 동명 판별이 기업개황을 부를 수 있다
@@ -4693,6 +4707,17 @@ export async function detectUndisclosedTransactions(
       '간접적으로** 매입하는 등 특수관계인을 **위한** 거래"에는 의무가 있다고 하는데 이 표로는 ' +
       '그런 간접거래를 구분할 수 없습니다 ② 그룹 헤더는 병합 셀을 왼쪽부터 이어받아 읽으므로 ' +
       '분류가 틀릴 수 있어, 버리지 않고 금액·기준금액과 함께 출력에 남깁니다.',
+    ...(parseDiag.fund_tables_without_amount_col.length > 0
+      ? [
+          `★ 자금거래 절의 표 ${parseDiag.fund_tables_without_amount_col.length}개` +
+            `(${parseDiag.fund_tables_without_amount_col.reduce((s, t) => s + t.rows, 0)}행)는 ` +
+            "금액 열이 '차입금액' 이 아니라(`나. 한도 약정에 따른 차입`은 '한도금액'·'채무잔액', " +
+            "`다. 리스 부채`는 '리스부채금액') **점검 대상에서 빠졌습니다.** 어느 값이 공시 금액 " +
+            '산정 기준인지 법령·매뉴얼로 확인되지 않아 금액을 추측하지 않습니다 — 그 표의 거래는 ' +
+            '"기준 미달"이 아니라 **확인하지 않은 것**입니다 (diagnostics.parse.' +
+            'fund_tables_without_amount_col 에 표지와 행수).',
+        ]
+      : []),
     '자금 차입의 대규모내부거래 해당 여부는 고시 §4③에 따라 "동일 거래상대방과의 동일 거래대상" ' +
       '기준으로 판단합니다 — J004 로는 동일 거래대상(같은 약정) 여부를 알 수 없어, 개별 건이 기준 ' +
       '미달이어도 같은 상대방 연간 합산이 기준 이상이면 below_threshold 로 단정하지 않고 not_judged' +
@@ -4952,6 +4977,36 @@ export async function detectUndisclosedTransactions(
           '표 구조가 실측 서식과 달라 파서가 못 읽은 것일 수 있습니다.',
       );
     }
+  }
+  // ★ 매트릭스 두 절((3)(5))은 위 검사에 없었다 — 셀 0건이 어떤 경고도 내지 않았다.
+  //   ⚠️ 다만 "셀 0건"만으로는 경보하지 않는다: 계열 상대방 열이 전부 '-' 인 정상 0건이 실물에
+  //   흔하다(실측 3문서 — 매출액 총계만 있고 계열사 열은 전부 '-'). 원문을 읽지 못한 표가
+  //   있을 때만(tablesUnrecognized) 알린다. 값 열 이름이 전부 집계 라벨인 총계 전용 페이지는
+  //   파서가 tablesAggregateOnly 로 따로 세므로 여기서 잡음이 되지 않는다.
+  const matrixChecks: Array<[string, { tables: number; cells: unknown[]; tablesUnrecognized: number }]> = [
+    ['(3) 유가증권', securitiesMatrix],
+    ['(5) 상품·용역 총괄', goodsMatrixSeed],
+  ];
+  for (const [section, m] of matrixChecks) {
+    if (m.tablesUnrecognized === 0) continue;
+    notes.push(
+      `⚠️ ${section} 절에서 교차표로 읽지 못한 표가 ${m.tablesUnrecognized}개 있습니다` +
+        (m.cells.length === 0 ? ' (이 절에서 추출된 거래 칸은 0건입니다)' : '') +
+        ' — 그 표의 거래는 **점검되지 않았습니다**. "거래 없음"이 아니라 확인하지 못한 것이니 ' +
+        '원문(source_viewer_url)에서 해당 표를 직접 확인하세요.',
+    );
+  }
+  // 회사명 자리에 묶음 이름('비금융회사' 등)이 들어온 열 — 실물에서 상대방이 통째로 뒤바뀌던
+  // 경로를 막은 방어선이 실제로 켜졌다는 뜻이다 (j004-matrix.ts MatrixResult.groupLabelColumns).
+  const groupLabelCols = [
+    ...new Set([...securitiesMatrix.groupLabelColumns, ...goodsMatrixSeed.groupLabelColumns]),
+  ];
+  if (groupLabelCols.length > 0) {
+    notes.push(
+      `⚠️ 매트릭스 열 이름 ${groupLabelCols.length}개가 같은 표의 위 헤더 줄 라벨과 같아 ` +
+        `(${groupLabelCols.join(', ')}) 거래상대방으로 쓰지 않았습니다 — 회사가 아니라 묶음 이름일 ` +
+        '가능성이 큽니다. 그 열의 거래는 **점검되지 않았습니다**.',
+    );
   }
   if (!input.group) {
     notes.push(
@@ -5303,6 +5358,10 @@ export async function detectUndisclosedTransactions(
         tables: goodsMatrixSeed.tables,
         cells: goodsMatrixSeed.cells.length,
         tables_unrecognized: goodsMatrixSeed.tablesUnrecognized,
+        /** 값 열 이름이 전부 집계 라벨인 총계 전용 페이지 — 정상 스킵이라 경고하지 않는다 */
+        tables_aggregate_only: goodsMatrixSeed.tablesAggregateOnly,
+        /** 회사명 자리에 위 헤더 줄 라벨이 들어와 거래상대방으로 쓰지 않은 열 이름 */
+        group_label_columns: goodsMatrixSeed.groupLabelColumns,
         tables_without_unit: goodsMatrixSeed.tablesWithoutUnit,
         unit_inherited_tables: goodsMatrixSeed.unitInheritedTables,
         duplicate_pairs: goodsMatrixSeed.duplicatePairs,
@@ -5350,6 +5409,10 @@ export async function detectUndisclosedTransactions(
         tables: securitiesMatrix.tables,
         cells: securitiesMatrix.cells.length,
         tables_unrecognized: securitiesMatrix.tablesUnrecognized,
+        /** 값 열 이름이 전부 집계 라벨인 총계 전용 페이지 — 정상 스킵이라 경고하지 않는다 */
+        tables_aggregate_only: securitiesMatrix.tablesAggregateOnly,
+        /** 회사명 자리에 위 헤더 줄 라벨이 들어와 거래상대방으로 쓰지 않은 열 이름 */
+        group_label_columns: securitiesMatrix.groupLabelColumns,
         tables_without_unit: securitiesMatrix.tablesWithoutUnit,
         unit_inherited_tables: securitiesMatrix.unitInheritedTables,
         duplicate_pairs: securitiesMatrix.duplicatePairs,

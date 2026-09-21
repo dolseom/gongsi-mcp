@@ -310,6 +310,32 @@ describe('진단', () => {
     expect(d.sections_missing).toEqual(['재무현황', '자금거래', '주요 상품·용역']);
     expect(d.fund_borrowings).toBe(0);
   });
+
+  /**
+   * 실물 라인 20260602000556 (연1회 대표회사) — `나. 한도 약정에 따른 차입` 은 금액 열이
+   * '한도금액'·'채무잔액' 이라 스킵되는데, 같은 절의 `가. 일반 차입` 이 정상 추출되므로
+   * **절 단위 "0건" 진단에 원리상 걸리지 않는다.** 표 단위로 세지 않으면 230억 차입이
+   * 아무 흔적 없이 사라진다.
+   */
+  it('금액 열이 없어 건너뛴 자금거래 표를 표 단위로 밝힌다 (라인 20260602000556)', () => {
+    const fixture = readFileSync(join(HERE, 'fixtures', 'j004-funds-no-amount-col.md'), 'utf8');
+    const d = diagnose(fixture);
+    // 일반 차입은 정상 추출된다 — 그래서 절 단위로는 0건이 아니다
+    expect(d.fund_borrowings).toBe(2);
+    expect(d.fund_tables_without_amount_col).toEqual([
+      { label: '나. 한도 약정에 따른 차입', rows: 1 },
+    ]);
+    // 한도약정 표의 거래는 borrowings 에 들어가지 않는다 (금액 기준 미확정 — 추측하지 않는다)
+    const borrowings = extractFundBorrowings(fixture);
+    expect(borrowings.some((b) => b.company.includes('일곡공원개발'))).toBe(false);
+  });
+
+  it('리스 부채 표도 금액 열이 달라 건너뛴 표로 센다', () => {
+    // 픽스처의 `다. 리스 부채` 는 금액 열이 '리스부채금액' 이라 차입으로 읽지 않는다.
+    // 의도된 제외이지만 **몇 표·몇 행을 안 봤는지는 밝힌다** — 케이티 실물은 이 표만 881행이다.
+    const d = diagnose(md);
+    expect(d.fund_tables_without_amount_col).toEqual([{ label: '다. 리스 부채', rows: 1 }]);
+  });
 });
 
 describe('기업집단명 추출 (rcept_no 경로 포털 조인용)', () => {

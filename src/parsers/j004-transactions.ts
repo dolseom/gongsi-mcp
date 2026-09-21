@@ -263,10 +263,28 @@ export interface ExtractStats {
   rowsAmountUnparsable: number;
   /** 회사와 거래상대방이 같은 이름으로 읽힌 행 수 — 열 배치 오인 신호 (교차검토 M-2) */
   rowsCompanyEqualsCounterparty: number;
+  /**
+   * 자금거래 절에서 **차입회사·거래상대방 열은 찾았는데 `차입금액` 열이 없어** 통째로 건너뛴 표.
+   *
+   * ★ 왜 세는가 (실물 44문서 전수 스캔, 2026-09-21): 이 절에는 금액 열 이름이 다른 표가 둘 있다 —
+   *   `다. 리스 부채`(`리스부채금액`, 19표 약 1,000행. 케이티 20260617000447 만 881행)와
+   *   `나. 한도 약정에 따른 차입`(`한도금액`·`채무잔액`). 후자는 라인 대표회사 20260602000556 에서
+   *   일곡공원개발(주) ← (주)라인산업 **230억**(그 회사 기준금액 6.47억의 35.5배)이 실렸는데,
+   *   같은 절의 `가. 일반 차입` 180건이 정상 추출되므로 **"절은 있는데 0건" 진단에 원리상 안 걸린다.**
+   *   표 단위로 세지 않으면 그 거래는 아무 흔적 없이 사라진다.
+   *
+   * ⚠️ 금액 열을 `한도금액`·`채무잔액`·`리스부채금액` 으로 넓히지 **않는다** — 어느 값이 공시
+   *   금액 산정 기준인지 법령·매뉴얼로 확인되지 않았다. 추측한 금액으로 판정하느니 안 본 것을 밝힌다.
+   */
+  fundTablesWithoutAmountCol: Array<{ label: string; rows: number }>;
 }
 
 export function newExtractStats(): ExtractStats {
-  return { rowsAmountUnparsable: 0, rowsCompanyEqualsCounterparty: 0 };
+  return {
+    rowsAmountUnparsable: 0,
+    rowsCompanyEqualsCounterparty: 0,
+    fundTablesWithoutAmountCol: [],
+  };
 }
 
 /**
@@ -397,7 +415,17 @@ export function extractFundBorrowings(
     const cParty = findCol(t, '거래상대방');
     const cAmount = findCol(t, '차입금액');
     const cDate = findCol(t, '차입일');
-    if (cCompany === -1 || cParty === -1 || cAmount === -1) continue;
+    if (cCompany === -1 || cParty === -1 || cAmount === -1) {
+      // 회사·상대방은 읽었는데 금액 열만 없는 표는 **버린 사실을 세어 둔다** (ExtractStats 주석).
+      // 숫자가 하나도 없는 표('해당사항 없음'·각주 표)는 잃을 거래가 없으므로 세지 않는다.
+      if (stats && cCompany !== -1 && cParty !== -1) {
+        const rows = t.rows.filter(
+          (row) => !isAggregateRow(row) && row.some((c) => parseDisclosureNumber(c) !== null),
+        ).length;
+        if (rows > 0) stats.fundTablesWithoutAmountCol.push({ label: t.label, rows });
+      }
+      continue;
+    }
     if (t.unitFactor === null) continue;
     for (const row of t.rows) {
       const party = (row[cParty] ?? '').trim();
@@ -500,6 +528,11 @@ export interface ParseDiagnostics {
   rows_amount_unparsable: number;
   /** 회사 = 거래상대방으로 읽혀 버린 행 수 — 열 배치 오인 신호 (교차검토 M-2) */
   rows_company_equals_counterparty: number;
+  /**
+   * 자금거래 절에서 금액 열(`차입금액`)이 없어 통째로 건너뛴 표 (`다. 리스 부채`·
+   * `나. 한도 약정에 따른 차입`) — 표지와 비집계 숫자행 수. 상세는 `ExtractStats` 주석 참조.
+   */
+  fund_tables_without_amount_col: Array<{ label: string; rows: number }>;
   /** 구분선 뒤 선두 행을 헤더로 승격시킨 횟수 (Codex S1 — 값이 전부 '-' 인 행도 승격된다) */
   header_promoted_rows: number;
   /** 헤더 폭과 열 수가 다른 데이터 행 수 — 병합 전개 밀림·서식 변형 신호 (Codex S1) */
@@ -544,6 +577,7 @@ export function diagnose(markdown: string): ParseDiagnostics {
     tables_without_unit: noUnit,
     rows_amount_unparsable: stats.rowsAmountUnparsable,
     rows_company_equals_counterparty: stats.rowsCompanyEqualsCounterparty,
+    fund_tables_without_amount_col: stats.fundTablesWithoutAmountCol,
     header_promoted_rows: promoted,
     ragged_rows: ragged,
     tables_with_ragged_rows: raggedTables,

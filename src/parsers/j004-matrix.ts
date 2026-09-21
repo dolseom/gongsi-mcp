@@ -64,8 +64,22 @@ export interface MatrixResult {
   cells: MatrixCell[];
   /** 매트릭스로 읽어낸 표(페이지) 수 */
   tables: number;
-  /** 축 라벨은 매트릭스인데 회사명 헤더 줄을 못 고른 표 수 */
+  /**
+   * 축 라벨은 매트릭스인데 **비정상적으로** 못 읽은 표 수 (값 열이 0개거나 회사 열이 0개).
+   *
+   * ⚠️ 값 열 헤더가 전부 집계 라벨인 '총계 전용 페이지'는 여기 넣지 않는다 —
+   * 그건 원문이 쌍 정보를 아예 싣지 않은 정상 서식이라 경보가 되면 상시 잡음이 된다.
+   * 그쪽은 `tablesAggregateOnly` 로 따로 센다.
+   */
   tablesUnrecognized: number;
+  /**
+   * 쌍 정보가 없어 건너뛴 표 수 — **정상 스킵**이다 (금액이 없거나 열 이름이 전부 집계 라벨).
+   *
+   * 실물: 카카오 20260610000659 (5) 의 마지막 페이지가 `계 | 국내 매출액 | 국외 매출액` 뿐이고
+   * 대광 20260611000663 (3) 은 '해당사항 없음'이다. 둘 다 (행회사, 열회사) 쌍 정보가 없어
+   * 평탄화할 것이 없다 — 경보로 올리면 상시 잡음이 된다.
+   */
+  tablesAggregateOnly: number;
   /** 단위 캡션이 없고 계승도 못 해 건너뛴 표 수 — 금액을 추측하지 않는다 */
   tablesWithoutUnit: number;
   /** 직전 페이지에서 단위를 이어받은 표 수 (같은 축 라벨의 연속일 때만) */
@@ -81,6 +95,16 @@ export interface MatrixResult {
    * 국외 계열사와 미처 못 거른 집계 열이 여기 모인다 — 조용히 버리지 않는다.
    */
   droppedColumns: string[];
+  /**
+   * 회사명 줄에서 읽었는데 **같은 표의 위 헤더 줄에 그대로 있는 라벨**이라 회사로 쓰지 않은 열 이름.
+   *
+   * `pickNameRow` 가 그룹 헤더 줄을 회사명 줄로 잘못 고르면 거래상대방이 '비금융회사'·'금융회사'·
+   * '국내계열회사' 로 뒤바뀐다 (실측 25셀, 최대 5,090억). 값 열 앵커로 그 경로를 막았지만,
+   * 모르는 서식에서 되살아나면 **조용히 틀린 이름으로 판정되는 것**이 가장 나쁘므로
+   * 회사로 쓰지 않고 여기 남긴다. 회사명 모양으로 추측하지 않고, 위 헤더 줄에 그대로 나온
+   * 라벨인지로만 판단한다.
+   */
+  groupLabelColumns: string[];
 }
 
 export interface MatrixOptions {
@@ -99,12 +123,14 @@ function emptyResult(): MatrixResult {
     cells: [],
     tables: 0,
     tablesUnrecognized: 0,
+    tablesAggregateOnly: 0,
     tablesWithoutUnit: 0,
     unitInheritedTables: 0,
     duplicatePairs: 0,
     headerPromotedRows: 0,
     raggedRows: 0,
     droppedColumns: [],
+    groupLabelColumns: [],
   };
 }
 
@@ -144,27 +170,38 @@ function headerColText(t: LabeledTable, col: number): string {
 }
 
 /**
- * 회사명이 실린 헤더 줄을 고른다.
- * 줄 번호로 찍지 않는 이유: 유가증권 표는 헤더 3줄, 상품·용역 표는 2줄이고,
+ * 회사명이 실린 헤더 줄을 고른다 — **값 열에 비집계 라벨이 있는 마지막 헤더 줄**.
+ *
+ * 줄 번호로 찍지 않는 이유는 그대로다: 유가증권 표는 헤더 3줄, 상품·용역 표는 2줄이고
  * `readLabeledTables` 의 헤더 승격이 데이터 아닌 선두 행을 헤더로 더 올리기도 한다.
- * 회사명 줄은 **서로 다른 비집계 라벨이 가장 많은 줄**이라는 성질로 잡는다.
+ *
+ * ★ 종전 규칙("서로 다른 비집계 라벨이 가장 많은 줄, 3개 이상")은 실물 44문서에서 **세 가지 모양**으로
+ *   깨졌다 (2026-09-21 전수 스캔). 되돌리지 말 것:
+ *
+ *   ① **동점이면 위쪽 그룹 헤더 줄이 이긴다** — 비교가 `>` 라 먼저 나온 줄이 남는다.
+ *      미래에셋 20260609000355 (3):
+ *        `| 축 |  | 비금융회사 |  | 금융회사 |  | 합계 |`            ← 고유 3, 채택돼 버렸다
+ *        `| 축 |  | 미래에셋컨설팅(주) | 소계 | 미래에셋자산운용(주) | 소계 | 합계 |`  ← 고유 3
+ *      결과: 거래상대방이 '비금융회사'·'금융회사' 로 뒤바뀌고(실측 25셀, 최대 5,090억),
+ *      그룹의 **둘째 이후 회사 칸은 빈 셀이라 통째로 사라졌다**.
+ *   ② **상대방 회사가 1개면 2점이라 표 전체가 탈락한다** — 태광 20260608000327 (3) 의
+ *      흥국자산운용㈜ → 흥국증권㈜ **35,086억**(기준금액 32.45억의 1,081배)이 조용히 사라졌다.
+ *   ③ **회사명 줄이 그룹 헤더 줄보다 고유 라벨이 적은 서식이 있다** — 태광 20260604000627 (5) 는
+ *      회사 1개 + 소계·국내계열사계·국외계열사계·계가 전부 집계라 고유 2, 위 두 줄은 고유 3이다.
+ *      최대값 방식으로는 원리상 못 잡는다.
+ *
+ * 값 열 앵커가 안전한 근거: 회사명은 **값이 실리는 열의 이름**이고, 그 열을 이름으로 가진 줄 중
+ * 가장 아래가 회사명 줄이다. 헤더 승격으로 올라온 비데이터 행(실물 `| 비금융사 | - | - | … |`)은
+ * 값 열 칸이 전부 '-' 라 `isAggregateLabel` 에 걸려 앵커가 되지 못하고 한 줄 위로 넘어간다.
+ *
+ * -1 을 돌려주는 경우 = 값 열 이름이 **전부 집계 라벨**인 총계 전용 페이지다. 이건 결함이 아니라
+ * 쌍 정보가 없는 정상 서식이라 호출부가 `tablesAggregateOnly` 로 따로 센다.
  */
-function pickNameRow(header: string[][]): number {
-  let best = -1;
-  let bestScore = 0;
-  for (let i = 0; i < header.length; i++) {
-    const seen = new Set<string>();
-    for (const cell of header[i] ?? []) {
-      if (isAggregateLabel(cell)) continue;
-      seen.add(normalizeCell(cell));
-    }
-    if (seen.size > bestScore) {
-      bestScore = seen.size;
-      best = i;
-    }
+function pickNameRow(header: string[][], valueColumns: number[]): number {
+  for (let i = header.length - 1; i >= 0; i--) {
+    if (valueColumns.some((c) => !isAggregateLabel(header[i]?.[c] ?? ''))) return i;
   }
-  // 축 라벨 1 + 회사 2 이상이어야 교차표로 인정한다
-  return bestScore >= 3 ? best : -1;
+  return -1;
 }
 
 /**
@@ -212,6 +249,7 @@ export function extractMatrix(
     ? new Set([...options.knownCompanies].map((n) => normalizeCompanyName(n)))
     : null;
   const dropped = new Set<string>();
+  const groupLabelCols = new Set<string>();
   const seenPairs = new Set<string>();
   let prevAxisKey = '';
   let prevUnit: number | null = null;
@@ -223,9 +261,24 @@ export function extractMatrix(
     if (!axis) continue;
     const axisKey = normalizeCell(axisRaw);
 
-    const nameRow = pickNameRow(t.header);
+    // ★ 값 열을 **먼저** 구한다 — 회사명 줄을 그 열들로 앵커하기 때문이다 (pickNameRow 주석).
+    const cols = valueCols(t);
+    if (cols.length === 0) {
+      // 금액이 하나도 없는 표('해당사항 없음' 등)는 잃을 거래가 없다 — 정상 스킵으로 센다.
+      // 금액은 있는데 값 열을 못 잡은 표만 경보 대상이다(각주 섞인 열 등).
+      const hasNumbers = t.rows.some(
+        (row) => !isAggregateRow(row) && row.some((c) => parseDisclosureNumber(c) !== null),
+      );
+      if (hasNumbers) res.tablesUnrecognized++;
+      else res.tablesAggregateOnly++;
+      continue;
+    }
+    const firstValueCol = Math.min(...cols);
+
+    const nameRow = pickNameRow(t.header, cols);
     if (nameRow === -1) {
-      res.tablesUnrecognized++;
+      // 값 열 이름이 전부 집계 라벨 = 총계 전용 페이지. 결함이 아니라 쌍 정보가 없는 정상 서식이다.
+      res.tablesAggregateOnly++;
       continue;
     }
 
@@ -239,13 +292,6 @@ export function extractMatrix(
       res.tablesWithoutUnit++;
       continue;
     }
-
-    const cols = valueCols(t);
-    if (cols.length === 0) {
-      res.tablesUnrecognized++;
-      continue;
-    }
-    const firstValueCol = Math.min(...cols);
 
     // 열 그룹 헤더 — 회사명 줄 **위의** 줄들만 쓴다 (회사명 줄 자체는 열 이름이다).
     // 병합 셀은 첫 칸에만 라벨이 있으므로 왼쪽 값을 이어받아 전개한다 (MatrixCell.colGroup 주석).
@@ -264,12 +310,42 @@ export function extractMatrix(
       }
     }
 
+    // 회사명 줄 **위의** 줄들에 그대로 나온 라벨 — 그룹 헤더다 (병합 전개로 같은 값이 여러 칸에 있다).
+    // 회사명으로 읽힌 값이 이 집합에 있으면 회사가 아니라 묶음 이름이므로 쓰지 않는다
+    // (MatrixResult.groupLabelColumns 주석 — 회사명 모양으로 추측하지 않는다).
+    const upperLabels = new Set<string>();
+    for (let i = 0; i < nameRow; i++) {
+      for (const cell of t.header[i] ?? []) {
+        const n = normalizeCell(cell);
+        if (n !== '' && !isAggregateLabel(n)) upperLabels.add(n);
+      }
+    }
+
     // 열 회사명 — 값 열이면서 헤더 어디에도 집계 표기가 없는 열만 쓴다
     const colNames = new Map<number, string>();
+    /** 집계·묶음 이름이 아니어서 **회사 후보였던** 열 수 (화이트리스트로 버려진 것 포함) */
+    let companyCandidates = 0;
+    /** 이 열의 데이터 행에 실제 금액이 있는가 — 잃을 것이 있을 때만 경보한다 */
+    const hasAmount = (c: number): boolean =>
+      t.rows.some((row) => {
+        if (isAggregateRow(row)) return false;
+        const v = parseDisclosureNumber(row[c] ?? '');
+        return v !== null && v > 0;
+      });
     for (const c of cols) {
       const raw = (t.header[nameRow]?.[c] ?? '').trim();
       if (isAggregateLabel(raw)) continue;
       if (/(합계|소계)/.test(headerColText(t, c))) continue;
+      if (upperLabels.has(normalizeCell(raw))) {
+        // 금액이 없는 묶음 이름 열(값이 전부 '-')은 잃는 거래가 없어 경보 대상이 아니다.
+        // 실물 (5) 총괄표의 '국외계열회사' 열이 그렇다 — 상시 경보가 되면 잡음만 된다.
+        if (hasAmount(c)) {
+          groupLabelCols.add(raw);
+          companyCandidates++;
+        }
+        continue;
+      }
+      companyCandidates++;
       if (known && !known.has(normalizeCompanyName(raw))) {
         dropped.add(raw);
         continue;
@@ -277,7 +353,10 @@ export function extractMatrix(
       colNames.set(c, raw);
     }
     if (colNames.size === 0) {
-      res.tablesUnrecognized++;
+      // 회사 후보가 애초에 없었으면(전부 집계·묶음 이름) 쌍 정보가 없는 총계 전용 표다 — 정상 스킵.
+      // 후보는 있었는데 화이트리스트에서 떨어진 것은 종전대로 '못 읽은 표'로 센다.
+      if (companyCandidates === 0) res.tablesAggregateOnly++;
+      else res.tablesUnrecognized++;
       continue;
     }
 
@@ -324,6 +403,7 @@ export function extractMatrix(
     }
   }
   res.droppedColumns = [...dropped];
+  res.groupLabelColumns = [...groupLabelCols];
   return res;
 }
 

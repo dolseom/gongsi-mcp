@@ -815,6 +815,28 @@ describe('rcept_no 경로 — 미공시 후보 판정', () => {
     expect((r['notes'] as string[]).some((n) => n.includes('절을 찾지 못했습니다'))).toBe(true);
   });
 
+  /**
+   * 표 단위 손실은 "절은 있는데 0건" 진단에 원리상 안 걸린다 — 같은 절의 다른 표가 정상
+   * 추출되기 때문이다 (실물: 라인 20260602000556 의 `나. 한도 약정에 따른 차입` 230억이
+   * `가. 일반 차입` 180건에 묻혔다). 그 사실이 notes·scope_caveats 로 올라오는지 고정한다.
+   */
+  it('금액 열이 없어 건너뛴 자금거래 표를 notes·scope_caveats 로 밝힌다', async () => {
+    const md = readFileSync(join(HERE, 'fixtures', 'j004-funds-no-amount-col.md'), 'utf-8');
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, j001: [] }),
+    )) as Record<string, any>;
+    const notes = r['notes'] as string[];
+    expect(notes.some((n) => n.includes("금액 열('차입금액')이 없어 점검하지 않은 표"))).toBe(true);
+    expect(notes.some((n) => n.includes('나. 한도 약정에 따른 차입 1행'))).toBe(true);
+    expect(
+      (r['scope_caveats'] as string[]).some((c) => c.includes('점검 대상에서 빠졌습니다')),
+    ).toBe(true);
+    expect(r['diagnostics'].parse.fund_tables_without_amount_col).toEqual([
+      { label: '나. 한도 약정에 따른 차입', rows: 1 },
+    ]);
+  });
+
   it('rcept_no 경로에는 fiscal_year 가 추정임을 알리는 안내가 붙는다 (S-2)', async () => {
     const r = (await detectUndisclosedTransactions(
       { rcept_no: '20260601001646', today: '20260827' },
