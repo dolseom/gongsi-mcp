@@ -93,6 +93,7 @@ import {
   buildThresholdMap,
   judgeOverThreshold,
   goodsQuarterlyLogic,
+  thresholdView,
   type Certainty,
 } from './detect/threshold.js';
 import {
@@ -294,6 +295,21 @@ function realDeps(client: DartClient, budget: Deadline): DetectDeps {
 
 const fmtWon = formatWon;
 
+/** 오류를 안내 문구용 한 줄로 (스택·여러 줄 메시지는 첫 줄만) */
+function errorFirstLine(err: unknown): string {
+  return err instanceof Error ? (err.message.split('\n')[0] ?? '') : String(err);
+}
+
+/** (회사, 상대방) 쌍 키 — 정규화 이름 두 개를 공백으로 잇는다. (6) 합산·(5) 매트릭스·차입 합산이 같은 형식을 쓴다 */
+function pairKey(company: string, counterparty: string): string {
+  return `${normalizeCompanyName(company)} ${normalizeCompanyName(counterparty)}`;
+}
+
+/** 상태가 `status` 인 항목만 (원래 순서 유지) */
+function byStatus<T extends { status?: string }>(items: readonly T[], status: NonNullable<T['status']>): T[] {
+  return items.filter((x) => x.status === status);
+}
+
 function continuationInvalid(why: string): ToolError {
   return new ToolError(
     'continuation_invalid',
@@ -466,7 +482,7 @@ export async function detectUndisclosedTransactions(
           indexLoaded = true;
         } catch (err) {
           // 폴백 — 워밍은 그대로 진행하고(캐시가 부분적으로 있을 수 있다) 사유만 남긴다
-          indexError = err instanceof Error ? err.message.split('\n')[0] : String(err);
+          indexError = errorFirstLine(err);
           log.warn('법인 인덱스 자동 적재 실패 — 워밍은 기존 인덱스로 진행', { error: indexError });
         }
       }
@@ -482,7 +498,7 @@ export async function detectUndisclosedTransactions(
       // 이를 "포털 목록을 못 불러왔다"로 오해해 **모집단 전체를 버린다**(종전보다 나빠진다).
       notes.push(
         '⚠️ 법인등록번호 자동 워밍이 실패해 워밍 없이 진행했습니다 ' +
-          `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — ` +
+          `(${errorFirstLine(err)}) — ` +
           '조인은 기존 캐시로만 이뤄져 미조인이 많을 수 있습니다.',
       );
       return { population: pop, warming: null };
@@ -500,7 +516,7 @@ export async function detectUndisclosedTransactions(
         notes.push(
           `⚠️ 자동 워밍으로 ${w.joined}개사의 법인등록번호를 채웠으나 소속회사 목록 재조회에 ` +
             `실패해 워밍 전 조인 상태로 판정했습니다 (${
-              err instanceof Error ? err.message.split('\n')[0] : String(err)
+              errorFirstLine(err)
             }) — 다시 실행하면 채워진 캐시로 조인됩니다.`,
         );
       }
@@ -707,7 +723,7 @@ export async function detectUndisclosedTransactions(
       } catch (err) {
         population = null;
         populationYearMonth = null;
-        const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
+        const detail = errorFirstLine(err);
         // ★ 사유 코드와 실제 원인을 맞춘다. 종전에는 **조인 0건**(포털은 정상 응답, 캐시 히트인
         //   경우까지)도 'portal_unavailable' 로 적혀 "포털을 못 불러왔다"는 오해를 낳았다.
         //   allowEmptyJoin 을 켠 지금 이 갈래는 나오지 않아야 하지만, 다른 호출 경로나 회귀로
@@ -745,7 +761,7 @@ export async function detectUndisclosedTransactions(
   // **없는 거래**가 후보로 오르므로, 이름 블랙리스트에 더해 회사명 화이트리스트를 2차 방어선으로
   // 준다. 화이트리스트는 ① 재무현황 표의 계열사 ② (group 경로면) 포털 소속회사
   // ③ 매트릭스 자신의 **행** 회사 — 행은 집계 행이 이미 제거돼 있어 회사만 남는다.
-  const securitiesSeed = extractSecuritiesMatrix(markdown);
+  const securitiesMatrix = extractSecuritiesMatrix(markdown);
   // 상품·용역 **총괄** 매트릭스 (5). (6) '주요 내역' 은 일정 규모 이상만 실리므로 그것만 보면
   // 규모 미달로 빠진 공시대상 쌍을 못 본다 — (5)는 전 쌍을 담아 그 구멍을 메운다.
   // 화이트리스트는 유가증권과 같은 이유로 **필터가 아니다** (표기 흔들림으로 진짜 거래가
@@ -1046,16 +1062,7 @@ export async function detectUndisclosedTransactions(
       date: b.date,
       ...(b.rawDate && !b.date ? { raw_date: b.rawDate } : {}),
       table_label: b.label,
-      ...(th
-        ? {
-            threshold: {
-              value: th.value,
-              value_display: fmtWon(th.value),
-              formula: th.formula,
-              source_row: th.source_row,
-            },
-          }
-        : {}),
+      ...(th ? { threshold: thresholdView(th) } : {}),
       ...(j.certainty ? { certainty: j.certainty } : {}),
       status: 'not_judged',
     };
@@ -1092,13 +1099,13 @@ export async function detectUndisclosedTransactions(
   {
     const pairTotals = new Map<string, number>();
     for (const b of judgedBorrowings) {
-      const k = `${normalizeCompanyName(b.company)} ${normalizeCompanyName(b.counterparty)}`;
+      const k = pairKey(b.company, b.counterparty);
       pairTotals.set(k, (pairTotals.get(k) ?? 0) + b.amount);
     }
     for (const b of judgedBorrowings) {
       if (b.status !== 'below_threshold') continue;
       const total = pairTotals.get(
-        `${normalizeCompanyName(b.company)} ${normalizeCompanyName(b.counterparty)}`,
+        pairKey(b.company, b.counterparty),
       )!;
       const overByCap = total >= CAP_100;
       const overByThreshold = b.threshold !== undefined && total >= b.threshold.value;
@@ -1157,7 +1164,7 @@ export async function detectUndisclosedTransactions(
     // (대여회사, 차입회사) 연간 합산 — §4③ 판단 단위는 차입회사 쪽과 같은 쌍이다
     const pairTotals = new Map<string, number>();
     for (const b of judgedBorrowings) {
-      const k = `${normalizeCompanyName(b.counterparty)} ${normalizeCompanyName(b.company)}`;
+      const k = pairKey(b.counterparty, b.company);
       pairTotals.set(k, (pairTotals.get(k) ?? 0) + b.amount);
     }
     for (const b of judgedBorrowings) {
@@ -1216,12 +1223,7 @@ export async function detectUndisclosedTransactions(
       // 기준금액은 **대여회사 자신의 자본**으로 (같은 J004 재무현황 표)
       const th = thresholds.get(key);
       if (th) {
-        side.threshold = {
-          value: th.value,
-          value_display: fmtWon(th.value),
-          formula: th.formula,
-          source_row: th.source_row,
-        };
+        side.threshold = thresholdView(th);
       }
       const j = judgeOverThreshold(b.amount, th);
       if (j.certainty) side.certainty = j.certainty;
@@ -1232,7 +1234,7 @@ export async function detectUndisclosedTransactions(
         continue;
       }
       if (j.over === false) {
-        const total = pairTotals.get(`${key} ${normalizeCompanyName(b.company)}`)!;
+        const total = pairTotals.get(pairKey(lender, b.company))!;
         if (total >= CAP_100 || total >= th!.value) {
           // 차입회사 쪽 aggregation_unknown 과 같은 근거 (고시 §4③ 동일 거래대상)
           side.same_counterparty_annual_total = total;
@@ -1271,14 +1273,8 @@ export async function detectUndisclosedTransactions(
     const itemCaveat = itemLikelyNotGoodsService(g.item);
     if (itemCaveat) {
       const th = thresholds.get(normalizeCompanyName(g.company));
-      const jl: GoodsSignal['quarterly_logic'] =
-        g.annualAmount >= 4 * CAP_100
-          ? 'annual_geq_4x_threshold'
-          : th
-            ? g.annualAmount >= 4 * th.value
-              ? 'annual_geq_4x_threshold'
-              : 'annual_below_4x_threshold'
-            : 'threshold_unknown';
+      // (6) 신호·승격 판단과 같은 자 (goodsQuarterlyLogic)
+      const jl = goodsQuarterlyLogic(g.annualAmount, th);
       caveatRows.push({
         company: g.company,
         counterparty: g.counterparty,
@@ -1286,16 +1282,7 @@ export async function detectUndisclosedTransactions(
         annual_amount: g.annualAmount,
         annual_amount_display: fmtWon(g.annualAmount),
         item_caveat: itemCaveat,
-        ...(th
-          ? {
-              threshold: {
-                value: th.value,
-                value_display: fmtWon(th.value),
-                formula: th.formula,
-                source_row: th.source_row,
-              },
-            }
-          : {}),
+        ...(th ? { threshold: thresholdView(th) } : {}),
         ...(jl === 'annual_geq_4x_threshold'
           ? {
               certainty: (g.annualAmount >= 4 * CAP_100
@@ -1307,7 +1294,7 @@ export async function detectUndisclosedTransactions(
       });
       continue;
     }
-    const key = `${normalizeCompanyName(g.company)} ${normalizeCompanyName(g.counterparty)}`;
+    const key = pairKey(g.company, g.counterparty);
     const agg = aggregates.get(key) ?? {
       company: g.company,
       counterparty: g.counterparty,
@@ -1332,7 +1319,7 @@ export async function detectUndisclosedTransactions(
   // 파서가 같은 쌍을 두 번 만나면 첫 값을 쓰므로(MatrixResult.duplicatePairs) 여기서도 첫 값이다.
   const matrixTotals = new Map<string, { amount: number; colGroup: string }>();
   for (const c of goodsMatrixSeed.cells) {
-    const key = `${normalizeCompanyName(c.rowCompany)} ${normalizeCompanyName(c.colCompany)}`;
+    const key = pairKey(c.rowCompany, c.colCompany);
     if (!matrixTotals.has(key)) matrixTotals.set(key, { amount: c.amount, colGroup: c.colGroup });
   }
   /** (5) 총괄 값이 더 커서 판정 금액을 올린 쌍 (진단용) */
@@ -1342,7 +1329,7 @@ export async function detectUndisclosedTransactions(
 
   const judgedGoods: GoodsSignal[] = [...aggregates.values()].map((a) => {
     const th = thresholds.get(normalizeCompanyName(a.company));
-    const key = `${normalizeCompanyName(a.company)} ${normalizeCompanyName(a.counterparty)}`;
+    const key = pairKey(a.company, a.counterparty);
     // 두 표에 걸친 쌍은 **더하지 않는다** — 한쪽이 다른 쪽의 부분기간이다 (isQuarterlyGoodsTable).
     const overlapped = a.quarterly > 0 && a.annual > 0;
     if (overlapped) goodsLabelOverlaps++;
@@ -1408,16 +1395,7 @@ export async function detectUndisclosedTransactions(
               '가려내지 못합니다. 차액의 성격은 원문 (5)·(6) 두 표를 대조해 확인하세요',
           }
         : { judged_on: '(6)합산' as const }),
-      ...(th
-        ? {
-            threshold: {
-              value: th.value,
-              value_display: fmtWon(th.value),
-              formula: th.formula,
-              source_row: th.source_row,
-            },
-          }
-        : {}),
+      ...(th ? { threshold: thresholdView(th) } : {}),
       quarterly_logic: 'threshold_unknown',
     };
     // 판정 강도는 goodsQuarterlyLogic 한 곳에서만 정한다 (승격 판단과 같은 자로 재기 위해).
@@ -1441,14 +1419,13 @@ export async function detectUndisclosedTransactions(
     // jurir 캐시가 비어 미조인일 뿐 소속은 포털이 보증한다. 조인분만 넣으면 캐시 상태에 따라
     // 같은 계열사가 "목록 밖 상대방"으로 표시돼 확인 우선순위가 흔들린다.
     ...(population ? [...population.corpCodes.values(), ...population.unjoined] : []),
-    ...securitiesSeed.cells.map((c) => c.rowCompany),
+    ...securitiesMatrix.cells.map((c) => c.rowCompany),
     ...goodsMatrixSeed.cells.map((c) => c.rowCompany),
   ]);
   // ★ 화이트리스트를 **필터로 쓰지 않는다.** 같은 회사가 표마다 다르게 적히기 때문이다
   //   (실측: 열 '미래에셋 파트너스 제9호…' vs 행 '미래에셋 파트너스 제구호…').
   //   목록 밖이라고 버리면 진짜 거래가 조용히 사라져 거짓 안심이 된다 — 대신 상대방이
   //   확인된 계열사인지 신호마다 표시하고, 판정은 그대로 진행한다.
-  const securitiesMatrix = securitiesSeed;
   const knownKeys = new Set([...knownCompanyNames].map((n) => normalizeCompanyName(n)));
   const judgedSecurities: SecuritySignal[] = securitiesMatrix.cells.map((c) => {
     const th = thresholds.get(normalizeCompanyName(c.rowCompany));
@@ -1458,16 +1435,7 @@ export async function detectUndisclosedTransactions(
       counterparty: c.colCompany,
       annual_amount: c.amount,
       annual_amount_display: fmtWon(c.amount),
-      ...(th
-        ? {
-            threshold: {
-              value: th.value,
-              value_display: fmtWon(th.value),
-              formula: th.formula,
-              source_row: th.source_row,
-            },
-          }
-        : {}),
+      ...(th ? { threshold: thresholdView(th) } : {}),
       ...(j.certainty ? { certainty: j.certainty } : {}),
       ...(knownKeys.has(normalizeCompanyName(c.colCompany))
         ? {}
@@ -1548,7 +1516,7 @@ export async function detectUndisclosedTransactions(
   let goodsMatrixPossibleDuplicates = 0;
   const judgedGoodsMatrix: GoodsMatrixSignal[] = [];
   for (const c of goodsMatrixSeed.cells) {
-    const key = `${normalizeCompanyName(c.rowCompany)} ${normalizeCompanyName(c.colCompany)}`;
+    const key = pairKey(c.rowCompany, c.colCompany);
     if (goodsPairKeys.has(key)) {
       goodsMatrixPairsAlsoInDetail++;
       continue;
@@ -1567,16 +1535,7 @@ export async function detectUndisclosedTransactions(
       source: '(5)총괄',
       annual_amount: c.amount,
       annual_amount_display: fmtWon(c.amount),
-      ...(th
-        ? {
-            threshold: {
-              value: th.value,
-              value_display: fmtWon(th.value),
-              formula: th.formula,
-              source_row: th.source_row,
-            },
-          }
-        : {}),
+      ...(th ? { threshold: thresholdView(th) } : {}),
       ...(j.certainty ? { certainty: j.certainty } : {}),
       ...(knownKeys.has(normalizeCompanyName(c.colCompany))
         ? {}
@@ -1696,12 +1655,7 @@ export async function detectUndisclosedTransactions(
 
     const th = thresholds.get(key);
     if (th) {
-      side.threshold = {
-        value: th.value,
-        value_display: fmtWon(th.value),
-        formula: th.formula,
-        source_row: th.source_row,
-      };
+      side.threshold = thresholdView(th);
     }
     const j = judgeOverThreshold(amount, th);
     if (j.certainty) side.certainty = j.certainty;
@@ -2742,18 +2696,16 @@ export async function detectUndisclosedTransactions(
 
   // ── ⑧ 집계·정직성 장치 ──
   budget.enter('aggregate');
-  const undisclosed = judgedBorrowings.filter((b) => b.status === 'undisclosed_candidate');
-  const nearDate = judgedBorrowings.filter((b) => b.status === 'j001_filing_near_date');
-  const windowOnly = judgedBorrowings.filter((b) => b.status === 'j001_filing_in_window_only');
-  const below = judgedBorrowings.filter((b) => b.status === 'below_threshold');
-  const noDuty = judgedBorrowings.filter((b) => b.status === 'no_duty_before_joining');
-  const notJudged = judgedBorrowings.filter((b) => b.status === 'not_judged');
-  const goodsCandidates = judgedGoods.filter(
-    (g) => g.status === 'candidate_if_counterparty_qualified',
-  );
-  const goodsFilingExists = judgedGoods.filter((g) => g.status === 'j001_filing_exists');
+  const undisclosed = byStatus(judgedBorrowings, 'undisclosed_candidate');
+  const nearDate = byStatus(judgedBorrowings, 'j001_filing_near_date');
+  const windowOnly = byStatus(judgedBorrowings, 'j001_filing_in_window_only');
+  const below = byStatus(judgedBorrowings, 'below_threshold');
+  const noDuty = byStatus(judgedBorrowings, 'no_duty_before_joining');
+  const notJudged = byStatus(judgedBorrowings, 'not_judged');
+  const goodsCandidates = byStatus(judgedGoods, 'candidate_if_counterparty_qualified');
+  const goodsFilingExists = byStatus(judgedGoods, 'j001_filing_exists');
   // 조인 실패·예산 초과로 J001 대조를 못 한 신호 — 출력에서 빠지면 "후보 아님"으로 읽힌다
-  const goodsNotJudged = judgedGoods.filter((g) => g.status === 'not_judged');
+  const goodsNotJudged = byStatus(judgedGoods, 'not_judged');
   const goodsUnjudgeable = judgedGoods.filter(
     (g) => g.quarterly_logic !== 'annual_geq_4x_threshold',
   );
@@ -2761,28 +2713,18 @@ export async function detectUndisclosedTransactions(
     (r) => r.quarterly_logic === 'annual_geq_4x_threshold',
   );
   // (5) 총괄 보완 — 비둘기집이 서는 후보와 총액만 넘은 확인 대상을 끝까지 분리해 센다
-  const gmCandidates = judgedGoodsMatrix.filter(
-    (m) => m.status === 'candidate_if_counterparty_qualified',
-  );
-  const gmAggregateOnly = judgedGoodsMatrix.filter(
-    (m) => m.status === 'candidate_aggregate_only',
-  );
-  const gmFilingExists = judgedGoodsMatrix.filter((m) => m.status === 'j001_filing_exists');
-  const gmNotJudged = judgedGoodsMatrix.filter((m) => m.status === 'not_judged');
-  const gmBelow = judgedGoodsMatrix.filter((m) => m.status === 'below_threshold');
-  const gmForeign = judgedGoodsMatrix.filter(
-    (m) => m.status === 'not_applicable_foreign_affiliate',
-  );
-  const secForeign = judgedSecurities.filter(
-    (sec) => sec.status === 'not_applicable_foreign_affiliate',
-  );
+  const gmCandidates = byStatus(judgedGoodsMatrix, 'candidate_if_counterparty_qualified');
+  const gmAggregateOnly = byStatus(judgedGoodsMatrix, 'candidate_aggregate_only');
+  const gmFilingExists = byStatus(judgedGoodsMatrix, 'j001_filing_exists');
+  const gmNotJudged = byStatus(judgedGoodsMatrix, 'not_judged');
+  const gmBelow = byStatus(judgedGoodsMatrix, 'below_threshold');
+  const gmForeign = byStatus(judgedGoodsMatrix, 'not_applicable_foreign_affiliate');
+  const secForeign = byStatus(judgedSecurities, 'not_applicable_foreign_affiliate');
 
-  const secCandidates = judgedSecurities.filter(
-    (sec) => sec.status === 'candidate_aggregate_only',
-  );
-  const secFilingExists = judgedSecurities.filter((sec) => sec.status === 'j001_filing_exists');
-  const secBelow = judgedSecurities.filter((sec) => sec.status === 'below_threshold');
-  const secNotJudged = judgedSecurities.filter((sec) => sec.status === 'not_judged');
+  const secCandidates = byStatus(judgedSecurities, 'candidate_aggregate_only');
+  const secFilingExists = byStatus(judgedSecurities, 'j001_filing_exists');
+  const secBelow = byStatus(judgedSecurities, 'below_threshold');
+  const secNotJudged = byStatus(judgedSecurities, 'not_judged');
 
   // 대여회사 쪽 집계 — 차입 건 단위다 (한 대여회사가 여러 건에 걸릴 수 있다)
   const lenderSides = judgedBorrowings
@@ -2799,7 +2741,7 @@ export async function detectUndisclosedTransactions(
     counterparty_not_company: 0,
   };
   for (const s of lenderSides) lenderCounts[s.status]++;
-  const lenderCandidates = lenderSides.filter((s) => s.status === 'undisclosed_candidate');
+  const lenderCandidates = byStatus(lenderSides, 'undisclosed_candidate');
 
   // 상대방 관점(상품·용역 매입회사 / 유가증권 매도회사) 집계 — 신호 단위다
   const counterCounts: Record<CounterpartySide['status'], number> = {
