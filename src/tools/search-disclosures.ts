@@ -8,12 +8,13 @@
  */
 
 import { z } from 'zod';
+import { ymdSchema } from '../lib/schemas.js';
 import { DartClient, viewerUrl, type Disclosure, type ListParams } from '../clients/dart.js';
 import { resolveCorp } from '../resolver/corp-index.js';
 import { collectAdaptive } from '../search/batch.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
-import { addCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { addCalendarDays, todayKstYMD } from '../rules/business-days.js';
 
 export const searchDisclosuresInput = z.object({
   query: z
@@ -26,16 +27,10 @@ export const searchDisclosuresInput = z.object({
     .regex(/^\d{8}$/, 'corp_code 는 8자리 숫자입니다')
     .optional()
     .describe('DART 법인코드 8자리 — query 대신 직접 지정'),
-  date_from: z
-    .string()
-    .regex(/^\d{8}$/, '날짜는 YYYYMMDD 형식입니다')
-    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+  date_from: ymdSchema
     .optional()
     .describe('조회 시작일 YYYYMMDD (기본: 30일 전)'),
-  date_to: z
-    .string()
-    .regex(/^\d{8}$/, '날짜는 YYYYMMDD 형식입니다')
-    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+  date_to: ymdSchema
     .optional()
     .describe('조회 종료일 YYYYMMDD (기본: 오늘)'),
   preset: z

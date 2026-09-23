@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { rceptNoSchema } from '../lib/schemas.js';
 import { DartClient, viewerUrl } from '../clients/dart.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
@@ -25,9 +26,7 @@ import {
 const log = getLogger('read-disclosure');
 
 export const readDisclosureInput = z.object({
-  rcept_no: z
-    .string()
-    .regex(/^\d{14}$/, '접수번호는 14자리 숫자여야 합니다 (예: 20260728000484)')
+  rcept_no: rceptNoSchema
     .describe('DART 접수번호 14자리'),
   format: z
     .enum(['markdown', 'text'])

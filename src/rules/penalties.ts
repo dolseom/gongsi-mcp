@@ -10,9 +10,9 @@
 
 import type { LegalRef, PenaltyResult } from './types.js';
 import { findRatioTier } from './penalty-ratios.js';
+import { 억 } from './thresholds.js';
 
 const 만 = 10_000;
-const 억 = 100_000_000;
 
 /** 법 §26·§29(대규모내부거래·공익법인) / 법 §27·§28(중요사항·기업집단현황) */
 export type PenaltyRegime = 'art26_29' | 'art27_28';

@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { ymdSchema } from '../lib/schemas.js';
 import {
   addBusinessDays,
   addCalendarDays,
@@ -21,18 +22,12 @@ import {
   holidaysOn,
   isBusinessDay,
   isHolidayDataVerified,
-  isValidYMD,
   nextBusinessDay,
 } from '../rules/business-days.js';
 import type { LegalRef, YMD } from '../rules/types.js';
 import { ToolError } from '../lib/errors.js';
 
-const ymdField = (desc: string) =>
-  z
-    .string()
-    .regex(/^\d{8}$/, '날짜는 YYYYMMDD 8자리여야 합니다')
-    .refine(isValidYMD, '실존하지 않는 달력 날짜입니다 (예: 20270231은 2월 31일)')
-    .describe(desc);
+const ymdField = (desc: string) => ymdSchema.describe(desc);
 
 export const calcBusinessDaysInput = z
   .object({

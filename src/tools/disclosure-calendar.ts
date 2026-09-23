@@ -9,16 +9,14 @@
  */
 
 import { z } from 'zod';
+import { ymdSchema } from '../lib/schemas.js';
 import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-calendar.js';
 import { periodicDutiesMeta, loadPeriodicDuties } from '../rules/periodic-duties.js';
 import { businessDaysRemaining } from '../rules/deadlines.js';
-import { countCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 import { ToolError } from '../lib/errors.js';
 
-const YMD = z
-  .string()
-  .regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다')
-  .refine(isValidYMD, '실존하지 않는 날짜입니다');
+const YMD = ymdSchema;
 
 export const disclosureCalendarInput = z.object({
   year: z

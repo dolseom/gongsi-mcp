@@ -21,6 +21,7 @@
  */
 
 import { z } from 'zod';
+import { yearMonthSchema, ymdSchema } from '../lib/schemas.js';
 import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
@@ -38,7 +39,7 @@ import { litDeadline, evaluateCompliance } from '../rules/deadlines.js';
 import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
 import type { PenaltyResult } from '../rules/types.js';
-import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit');
 
@@ -63,25 +64,14 @@ export const auditGroupDisclosuresInput = z.object({
     .max(50)
     .optional()
     .describe('회사 목록 — 회사명 또는 corp_code(8자리). 집단 전체 대신 특정 회사만 감사할 때'),
-  from: z
-    .string()
-    .regex(/^\d{8}$/, 'YYYYMMDD')
-    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+  from: ymdSchema
     .describe('감사 기간 시작일 (접수일 기준)'),
-  to: z
-    .string()
-    .regex(/^\d{8}$/, 'YYYYMMDD')
-    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+  to: ymdSchema
     .describe('감사 기간 종료일'),
-  today: z
-    .string()
-    .regex(/^\d{8}$/, 'YYYYMMDD')
-    .refine(isValidYMD, '실존하지 않는 날짜입니다')
+  today: ymdSchema
     .optional()
     .describe('판정 기준일 (기본: 오늘). 자진시정 골든타임 계산에 쓴다'),
-  year_month: z
-    .string()
-    .regex(/^\d{6}$/)
+  year_month: yearMonthSchema
     .optional()
     .describe('집단 소속회사 기준 공개년월 (기본: 최신 지정연도)'),
 });

@@ -15,6 +15,7 @@
  */
 
 import { z } from 'zod';
+import { rceptNoSchema } from '../lib/schemas.js';
 import { loadDocument } from './read-disclosure.js';
 import {
   checkJ004Document,
@@ -29,7 +30,7 @@ import { getLogger } from '../lib/logger.js';
 
 const log = getLogger('j004-check');
 
-const RCEPT = z.string().regex(/^\d{14}$/, '접수번호는 14자리 숫자입니다');
+const RCEPT = rceptNoSchema;
 
 export const checkJ004ConsistencyInput = z.object({
   rcept_no: RCEPT.describe('점검할 기업집단현황공시(J004) 접수번호'),

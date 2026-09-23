@@ -13,6 +13,7 @@
  */
 
 import { z } from 'zod';
+import { yearMonthSchema } from '../lib/schemas.js';
 import { EgroupClient, type AffiliateFinance, type GroupSummary } from '../clients/egroup.js';
 import { inferYearMonth, verifyYearMonth } from './resolve-entity.js';
 import {
@@ -49,9 +50,7 @@ export const getGroupStructureInput = z.object({
       'DART corp_code 조인 시도 (기본 true). 법인등록번호가 캐시에 채워진 회사만 조인됩니다 — ' +
         'joined 수가 적으면 resolve_entity(fetchJurirNo=true) 로 회사를 조회해 채우세요',
     ),
-  year_month: z
-    .string()
-    .regex(/^\d{6}$/, '공개년월은 YYYYMM 형식입니다 (예: 202605)')
+  year_month: yearMonthSchema
     .optional()
     .describe('기준 공개년월 (미지정 시 최신 지정연도 추정 — 매년 5월 갱신)'),
   compact: z

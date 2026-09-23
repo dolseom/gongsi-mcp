@@ -401,4 +401,20 @@ describe('도구 입력 날짜 round-trip 검증 (Codex 3차 백로그)', () => 
       auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20260131' }).success,
     ).toBe(true);
   });
+
+  it('audit 두 도구의 year_month 형식 오류도 get_group_structure 와 같은 문구로 알린다', async () => {
+    const { auditGroupDisclosuresInput } = await import('../src/tools/audit-group-disclosures.js');
+    const { auditPeriodicDisclosuresInput } = await import('../src/tools/audit-periodic-disclosures.js');
+    const { getGroupStructureInput } = await import('../src/tools/get-group-structure.js');
+    const msg = (r: { success: boolean; error?: { issues: Array<{ message: string }> } }) =>
+      r.error?.issues.map((i) => i.message).join(' | ');
+    const expected = msg(getGroupStructureInput.safeParse({ group: '삼성', year_month: '2026-05' }));
+    expect(expected).toContain('YYYYMM');
+    expect(
+      msg(auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20260131', year_month: '2026-05' })),
+    ).toBe(expected);
+    expect(msg(auditPeriodicDisclosuresInput.safeParse({ group: '삼성', year: 2026, year_month: '2026-05' }))).toContain(
+      expected,
+    );
+  });
 });

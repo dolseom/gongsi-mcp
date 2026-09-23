@@ -23,20 +23,18 @@
  */
 
 import { z } from 'zod';
+import { yearMonthSchema, ymdSchema } from '../lib/schemas.js';
 import { DartClient, viewerUrl } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { resolvePopulation, type Population } from './audit-group-disclosures.js';
 import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-calendar.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
-import { countCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit-periodic');
 
-const YMD = z
-  .string()
-  .regex(/^\d{8}$/, 'YYYYMMDD 형식이어야 합니다')
-  .refine(isValidYMD, '실존하지 않는 날짜입니다');
+const YMD = ymdSchema;
 
 /** 이 도구가 다루는 의무 — 기한이 달력 고정이고 DART 목록만으로 판정되는 것 */
 const SUPPORTED = [
@@ -65,9 +63,7 @@ export const auditPeriodicDisclosuresInput = z.object({
     .describe(
       '점검할 의무 (기본: 기업집단현황 연1회·분기). subcontract_payment_terms 를 넣으면 하도급대금 결제조건도 본다',
     ),
-  year_month: z
-    .string()
-    .regex(/^\d{6}$/)
+  year_month: yearMonthSchema
     .optional()
     .describe(
       '기업집단포털 기준월 YYYYMM. 생략하면 **점검 연도의 5월**(YYYY05)을 쓴다 — ' +

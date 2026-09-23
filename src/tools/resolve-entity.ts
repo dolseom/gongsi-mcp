@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import { yearMonthSchema } from '../lib/schemas.js';
 import { DartClient } from '../clients/dart.js';
 import { EgroupClient } from '../clients/egroup.js';
 import { resolveCorp, detectIdentifier } from '../resolver/corp-index.js';
@@ -51,9 +52,7 @@ export const resolveEntityInput = z.object({
       '법인등록번호를 기업개황 API로 채울지 (기본 false, 호출 1회 소비). ' +
         '기업집단포털과 대사하려면 필요하다',
     ),
-  yearMonth: z
-    .string()
-    .regex(/^\d{6}$/)
+  yearMonth: yearMonthSchema
     .optional()
     .describe('기업집단 기준 공개년월 YYYYMM (미지정 시 최신 지정연도를 추정)'),
 });
