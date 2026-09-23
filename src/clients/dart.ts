@@ -108,6 +108,9 @@ export interface DartClientOptions {
  */
 const MIN_REQUEST_MS = 1_000;
 
+/** 요청 최대 시도 횟수 (최초 1회 + 재시도 2회). 백오프는 시도 사이에만 — 1초, 2초 */
+const MAX_ATTEMPTS = 3;
+
 export class DartClient {
   private readonly apiKey: string;
   private readonly store = getStore();
@@ -155,12 +158,12 @@ export class DartClient {
   /**
    * 재시도 포함 요청. **본문 수신까지** 재시도 범위에 넣는다 —
    * 헤더만 받고 반환하면 body 읽기 중의 timeout/절단이 재시도되지 않는다(Codex 지적).
-   * 대상: 네트워크 오류 · 429 · 5xx. 백오프 min(2^n, 8)초, 최대 3회.
+   * 대상: 네트워크 오류 · 429 · 5xx. 최대 3회 시도, 백오프 min(2^n, 8)초는 시도 사이에만(1초·2초).
    *
    * ⚠️ 예외 메시지에 URL을 절대 넣지 않는다 — 쿼리스트링에 인증키가 들어 있다.
    *
    * ★ 시간 예산(`opts.deadline`)이 붙어 있으면 **타임아웃·백오프를 남은 예산 안으로 좁힌다.**
-   *   좁히지 않으면 타임아웃 100초 × 재시도 3회 + 백오프 7초 = 최악 307초라, 한 번의 상류
+   *   좁히지 않으면 타임아웃 100초 × 재시도 3회 + 백오프 3초 = 최악 303초라, 한 번의 상류
    *   지연만으로 60초 벽을 그대로 넘긴다(Codex ③).
    *   **진행 중인 요청은 `AbortSignal` 이 끊는다** — 이 클래스가 유일하게 진행 중인 일을
    *   중단하는 지점이다. 예산이 끝난 뒤 도착하는 응답은 어차피 결과에 실리지 못하고,
@@ -174,7 +177,10 @@ export class DartClient {
     const url = this.buildUrl(path, params);
     let lastErrName = '';
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      // 마지막 시도가 실패하면 기다리지 않고 바로 던진다 — 다음 시도가 없는데 백오프로
+      // 최대 4초를 더 쓰던 결함 (60초 벽 안에서 그 4초는 다른 회사 하나를 조회할 시간이다)
+      const isLastAttempt = attempt === MAX_ATTEMPTS - 1;
       const remaining = this.deadline?.remainingMs();
       if (remaining !== undefined && remaining < MIN_REQUEST_MS) {
         throw new ToolError(
@@ -196,6 +202,7 @@ export class DartClient {
 
         if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
           log.warn('재시도 가능한 상태코드', { path, status: res.status, attempt: attempt + 1 });
+          if (isLastAttempt) break;
           if (!(await this.backoff(attempt))) {
             throw new ToolError(
               'deadline_exceeded',
@@ -220,6 +227,7 @@ export class DartClient {
         if (err instanceof ToolError && err.code === 'deadline_exceeded') throw err;
         lastErrName = err instanceof Error ? err.name : 'UnknownError';
         log.warn('요청 실패', { path, error: lastErrName, attempt: attempt + 1 });
+        if (isLastAttempt) break;
         if (!(await this.backoff(attempt))) {
           throw new ToolError(
             'deadline_exceeded',
@@ -229,7 +237,7 @@ export class DartClient {
         }
       }
     }
-    throw new ToolError('dart_api_error', `DART 요청이 3회 재시도 후에도 실패했습니다 (${lastErrName || 'HTTP 오류'}).`, {
+    throw new ToolError('dart_api_error', `DART 요청이 ${MAX_ATTEMPTS}회 재시도 후에도 실패했습니다 (${lastErrName || 'HTTP 오류'}).`, {
       path,
     });
   }

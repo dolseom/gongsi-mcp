@@ -95,6 +95,49 @@ describe('시간 예산이 붙은 DART 요청', () => {
     expect(Date.now() - started).toBeLessThan(1_000); // 백오프를 기다리지 않았다
   });
 
+  it('마지막 시도가 실패하면 백오프 없이 바로 던진다 — 시도 사이 대기(1초·2초)만 쓴다', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = vi.fn(async () => {
+        throw new Error('ECONNRESET');
+      });
+      vi.stubGlobal('fetch', f);
+      const client = new DartClient('test-key'); // 예산 없음 — 종전 재시도 3회 경로
+      let settled: unknown = null;
+      const p = client.listPage({ corpCode: '00111111' }).catch((e: unknown) => {
+        settled = e;
+      });
+      // 시도 사이 백오프 1초 + 2초 = 3초면 끝나야 한다 (종전: 마지막 뒤 4초를 더 잤다)
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f).toHaveBeenCalledTimes(3);
+      expect(settled).toMatchObject({ code: 'dart_api_error' });
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('예산이 넉넉하면 마지막 실패는 deadline_exceeded 가 아니라 dart_api_error 다', async () => {
+    vi.useFakeTimers();
+    try {
+      const c = clock();
+      const d = new Deadline(10_000, c.now);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('busy', { status: 503 })));
+      const client = new DartClient('test-key', { deadline: d });
+      let settled: unknown = null;
+      const p = client.listPage({ corpCode: '00111111' }).catch((e: unknown) => {
+        settled = e;
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      // 종전: 마지막 시도 뒤에도 백오프 4초를 더 잤고, 남은 예산이 5초(백오프 4 + 최소 시도 1) 미만이면
+      // "재시도할 수 없어 중단"(deadline_exceeded) 으로 보고했다 — 재시도가 남아 있지 않은데 예산 탓으로
+      expect(settled).toMatchObject({ code: 'dart_api_error' });
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('예산을 주지 않으면 종전 동작 그대로다 — 다른 도구의 타임아웃·재시도를 바꾸지 않는다', async () => {
     const f = vi.fn(
       async () =>
