@@ -18,6 +18,7 @@ import {
   UNLISTED_MATERIAL_THRESHOLDS,
   UNLISTED_MATERIAL_UNCONDITIONAL,
   effectiveEquity,
+  formatWon,
 } from '../rules/thresholds.js';
 import {
   litDeadline,
@@ -39,7 +40,7 @@ import {
 } from '../rules/unlisted-material.js';
 import { estimatePenalty, type PenaltyRegime } from '../rules/penalties.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
-import { toYMD, toDate, isValidYMD } from '../rules/business-days.js';
+import { toDate, isValidYMD, todayKstYMD } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
 import { searchQna, type QnaCategory } from '../kb/qna.js';
@@ -294,7 +295,7 @@ function dutyEventDate(
 export function checkDisclosureDuty(
   input: CheckDisclosureDutyInput,
 ): DutyResult | ErrorResponse {
-  const today = input.today ?? toYMD(new Date());
+  const today = input.today ?? todayKstYMD();
   const notes: string[] = [];
 
   // 공시일 하한 검증 — 의결·사유 발생·분기말 전에 공시할 수는 없다. 연도 오타(2025↔2026)가
@@ -889,11 +890,4 @@ function isPenaltyResult(
   );
 }
 
-function fmtWon(n: number): string {
-  const 억 = 100_000_000;
-  if (n >= 억) {
-    const v = n / 억;
-    return `${Number.isInteger(v) ? v : v.toFixed(2)}억원`;
-  }
-  return `${n.toLocaleString('ko-KR')}원`;
-}
+const fmtWon = formatWon;

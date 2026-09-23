@@ -264,6 +264,21 @@ describe('corp_code 존재 검증 (P2-마 20)', () => {
     expect(r.notes.some((n: string) => n.includes('존재 검증을 건너뛰'))).toBe(false);
   });
 
+  it('회사명 경로는 resolveCorp 를 쓴다 — 법인격 표기 차이를 정규화 일치로 흡수한다', async () => {
+    seed();
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures({ ...BASE_INPUT, companies: ['테스트회사(주)'] }, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(1);
+  });
+
+  it('회사명 경로 — 인덱스에 없는 이름은 corp_not_found', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    await expect(
+      auditGroupDisclosures({ ...BASE_INPUT, companies: ['없는회사'] }, deps),
+    ).rejects.toMatchObject({ code: 'corp_not_found' });
+  });
+
   it('인덱스가 비어 있으면 막지 않되 검증 생략을 notes 로 알린다', async () => {
     const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
     const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;

@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-calendar.js';
 import { periodicDutiesMeta, loadPeriodicDuties } from '../rules/periodic-duties.js';
 import { businessDaysRemaining } from '../rules/deadlines.js';
-import { countCalendarDays, isValidYMD, toYMD } from '../rules/business-days.js';
+import { countCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
 import { ToolError } from '../lib/errors.js';
 
 const YMD = z
@@ -63,7 +63,7 @@ interface DatedEntry extends CalendarEntry {
 const DUE_SOON_BUSINESS_DAYS = 10;
 
 export function disclosureCalendar(input: DisclosureCalendarInput): unknown {
-  const today = input.today ?? toYMD(new Date());
+  const today = input.today ?? todayKstYMD();
   const year = input.year ?? Number(today.slice(0, 4));
 
   if (input.from && input.to && input.from > input.to) {

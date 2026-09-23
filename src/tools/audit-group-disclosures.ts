@@ -24,15 +24,13 @@ import { z } from 'zod';
 import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
-import { loadCorpIndex, corpIndexIsStale } from '../resolver/corp-index.js';
+import { loadCorpIndex, corpIndexIsStale, resolveCorp } from '../resolver/corp-index.js';
 import { getGroupStructure } from './get-group-structure.js';
 import { normalizeCompanyName } from '../parsers/md-table.js';
 import { getStore } from '../lib/store.js';
 import { getConfig } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
 import {
-  AmbiguousCorpError,
-  CorpNotFoundError,
   RangeTooLargeError,
   ToolError,
 } from '../lib/errors.js';
@@ -40,7 +38,7 @@ import { litDeadline, evaluateCompliance } from '../rules/deadlines.js';
 import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
 import type { PenaltyResult } from '../rules/types.js';
-import { toYMD, isValidYMD } from '../rules/business-days.js';
+import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit');
 
@@ -283,20 +281,11 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
       corpCodes.set(t, rec?.corpName ?? t);
       continue;
     }
-    const matches = store.findCorpsByName(t);
-    if (matches.length === 0) {
-      throw new CorpNotFoundError(
-        t,
-        store.searchCorpsByName(t, 5).map((c) => ({ corpCode: c.corpCode, corpName: c.corpName })),
-      );
-    }
-    if (matches.length > 1) {
-      throw new AmbiguousCorpError(
-        t,
-        matches.map((m) => ({ corp_code: m.corpCode, corp_name: m.corpName, jurir_no: m.jurirNo })),
-      );
-    }
-    corpCodes.set(matches[0]!.corpCode, matches[0]!.corpName);
+    // 다른 도구와 같은 해석기를 쓴다 — 빈 인덱스는 1회 적재하고(신규 설치 직후 corp_not_found 방지),
+    // 법인격 표기 차이('삼성전자(주)')는 정규화 일치로 흡수한다. 없음·동명은 종전처럼 예외다.
+    const found = await resolveCorp(t, () => new DartClient());
+    if ('ambiguous' in found) throw new Error('도달 불가: allowAmbiguous 를 주지 않았다');
+    corpCodes.set(found.corpCode, found.corpName);
   }
   return { corpCodes, group: null, unjoined: [], codeValidationSkipped };
 }
@@ -343,7 +332,7 @@ export async function auditGroupDisclosures(
     throw new ToolError('invalid_argument', 'from 이 to 보다 늦습니다.');
   }
 
-  const today = input.today ?? toYMD(new Date());
+  const today = input.today ?? todayKstYMD();
   const startedAt = Date.now();
 
   const population = await resolvePopulation(input);

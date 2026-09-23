@@ -29,7 +29,7 @@ import { resolvePopulation, type Population } from './audit-group-disclosures.js
 import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-calendar.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
-import { isValidYMD, toYMD } from '../rules/business-days.js';
+import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit-periodic');
 
@@ -260,7 +260,7 @@ export async function auditPeriodicDisclosures(
     throw new ToolError('invalid_argument', 'group 과 companies 는 동시에 쓸 수 없습니다.');
   }
 
-  const today = input.today ?? toYMD(new Date());
+  const today = input.today ?? todayKstYMD();
   const duties: SupportedDuty[] = input.duties?.length
     ? input.duties
     : ['group_status_annual', 'group_status_quarterly'];

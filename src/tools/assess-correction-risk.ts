@@ -17,7 +17,7 @@
  */
 
 import { z } from 'zod';
-import { countCalendarDays, toYMD, isValidYMD } from '../rules/business-days.js';
+import { countCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
 import type { PenaltyRegime } from '../rules/penalties.js';
 import type { LegalRef, YMD as YMDType } from '../rules/types.js';
@@ -101,7 +101,7 @@ function reductionTier(delayDays: number): { pct: number; nextDropNote: string }
 }
 
 export function assessCorrectionRisk(input: AssessCorrectionRiskInput): CorrectionRiskResult {
-  const today = input.today ?? toYMD(new Date());
+  const today = input.today ?? todayKstYMD();
   const ruleName = REGIME_RULE[input.regime];
   const notes: string[] = [];
   const legalBasis: LegalRef[] = [

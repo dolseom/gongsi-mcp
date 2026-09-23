@@ -13,7 +13,7 @@ import { resolveCorp } from '../resolver/corp-index.js';
 import { collectAdaptive } from '../search/batch.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
-import { isValidYMD } from '../rules/business-days.js';
+import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 export const searchDisclosuresInput = z.object({
   query: z
@@ -97,9 +97,6 @@ const ROW_SCHEMA = [
   'rm',
 ] as const;
 
-function kstToday(): string {
-  return new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10).replace(/-/g, '');
-}
 
 function shapeRows(rows: Disclosure[], compact: boolean): Record<string, unknown> {
   if (compact) {
@@ -149,7 +146,7 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
     corpResolved = { corp_code: r.corpCode, corp_name: r.corpName };
   }
 
-  const dateTo = input.date_to ?? kstToday();
+  const dateTo = input.date_to ?? todayKstYMD();
   const dateFrom =
     input.date_from ??
     ((): string => {

@@ -8,8 +8,9 @@ import {
   isBusinessDay,
   isValidYMD,
   nextBusinessDay,
+  todayKstYMD,
 } from '../src/rules/business-days.js';
-import { calcThreshold, effectiveEquity, 억 } from '../src/rules/thresholds.js';
+import { calcThreshold, effectiveEquity, formatWon, 억 } from '../src/rules/thresholds.js';
 import {
   businessDaysRemaining,
   evaluateCompliance,
@@ -694,5 +695,28 @@ describe('달력일 계산', () => {
   it('지연일수는 달력일 기준이다', () => {
     expect(countCalendarDays('20260727', '20260728')).toBe(1);
     expect(countCalendarDays('20260731', '20260810')).toBe(10);
+  });
+});
+
+describe('todayKstYMD — "오늘" 기본값은 한국시간', () => {
+  it('KST 00~09시(UTC 전날)에도 한국 날짜를 준다', () => {
+    // 2026-09-24 08:30 KST = 2026-09-23 23:30 UTC
+    expect(todayKstYMD(new Date('2026-09-23T23:30:00Z'))).toBe('20260924');
+  });
+  it('KST 자정 직전은 그날이다', () => {
+    expect(todayKstYMD(new Date('2026-09-24T14:59:59Z'))).toBe('20260924');
+    expect(todayKstYMD(new Date('2026-09-24T15:00:00Z'))).toBe('20260925');
+  });
+});
+
+describe('formatWon — 모든 도구 공통 금액 표기', () => {
+  it('소수 둘째 자리까지, 끝의 0 없이', () => {
+    expect(formatWon(377_000_000)).toBe('3.77억원');
+    expect(formatWon(9_950_000_000)).toBe('99.5억원');
+    expect(formatWon(10_000_000_000)).toBe('100억원');
+    expect(formatWon(50_000_000)).toBe('50,000,000원');
+  });
+  it('내림이다 — 100억 미만이 "100억원"으로 보이지 않는다', () => {
+    expect(formatWon(9_999_600_000)).toBe('99.99억원');
   });
 });

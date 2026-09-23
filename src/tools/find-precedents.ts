@@ -33,7 +33,7 @@ import { readDisclosure } from './read-disclosure.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
 import { getLogger } from '../lib/logger.js';
-import { countCalendarDays } from '../rules/business-days.js';
+import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('find-precedents');
 
@@ -133,9 +133,6 @@ export function selectCandidates(rows: Disclosure[], opts: CandidateOptions): Di
   return out;
 }
 
-function kstToday(): string {
-  return new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 10).replace(/-/g, '');
-}
 
 function addDays(ymd: string, n: number): string {
   const ms = Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)));
@@ -161,7 +158,7 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   }
 
   // 최신부터 창 단위로 거슬러 검색 — 후보가 넉넉해지면 중단
-  const today = kstToday();
+  const today = todayKstYMD();
   const oldest = addDays(today, -(lookbackDays - 1));
   const wantBuffer = count * 3; // 파싱 불가·중복 대비 여유
   const matched: Disclosure[] = [];

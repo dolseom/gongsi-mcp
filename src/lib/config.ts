@@ -91,7 +91,6 @@ const KNOWN = [
   'GONGSI_RATE_WARN',
   'GONGSI_RATE_HARD_STOP',
   'GONGSI_CONCURRENCY',
-  'GONGSI_HTTP_CONNECT_TIMEOUT',
   'GONGSI_HTTP_READ_TIMEOUT',
   'GONGSI_PER_TASK_TIMEOUT',
   'GONGSI_MAX_PAGES',
@@ -99,9 +98,7 @@ const KNOWN = [
   'GONGSI_ADAPTIVE_THRESHOLD',
   'GONGSI_ADAPTIVE_MIN_DAYS',
   'GONGSI_ADAPTIVE_FALLBACK_DAYS',
-  'GONGSI_ADAPTIVE_MEASURE_CONCURRENCY',
   'GONGSI_ADAPTIVE_MAX_MEASURE_CALLS',
-  'GONGSI_BODY_FETCH_LIMIT',
   'GONGSI_CACHE_DB',
   'GONGSI_LOG_LEVEL',
   'GONGSI_TIME_BUDGET_MS',
@@ -184,7 +181,6 @@ export interface Config {
   rateHardStop: number;
 
   concurrency: number;
-  connectTimeoutMs: number;
   readTimeoutMs: number;
   perTaskTimeoutMs: number;
 
@@ -205,11 +201,9 @@ export interface Config {
   adaptiveThreshold: number;
   adaptiveMinDays: number;
   adaptiveFallbackDays: number;
-  adaptiveMeasureConcurrency: number;
   /** 미지정 시 코드 수 비례로 계산한다 (100 + 50 × 코드수) */
   adaptiveMaxMeasureCalls: number | undefined;
 
-  bodyFetchLimit: number;
   cacheDbPath: string;
   logLevel: string;
 
@@ -235,7 +229,6 @@ export function getConfig(): Config {
     rateHardStop: envInt('GONGSI_RATE_HARD_STOP', 19_000),
 
     concurrency,
-    connectTimeoutMs: envInt('GONGSI_HTTP_CONNECT_TIMEOUT', 10) * 1000,
     readTimeoutMs: envInt('GONGSI_HTTP_READ_TIMEOUT', 100) * 1000,
     perTaskTimeoutMs: envInt('GONGSI_PER_TASK_TIMEOUT', 180) * 1000,
 
@@ -245,17 +238,11 @@ export function getConfig(): Config {
     adaptiveThreshold: Math.max(1, envInt('GONGSI_ADAPTIVE_THRESHOLD', 1000)),
     adaptiveMinDays: Math.max(1, envInt('GONGSI_ADAPTIVE_MIN_DAYS', 3)),
     adaptiveFallbackDays: Math.max(1, envInt('GONGSI_ADAPTIVE_FALLBACK_DAYS', 30)),
-    // 측정 동시성은 검색 동시성을 넘지 않는다
-    adaptiveMeasureConcurrency: Math.min(
-      Math.max(1, envInt('GONGSI_ADAPTIVE_MEASURE_CONCURRENCY', 5)),
-      concurrency,
-    ),
     adaptiveMaxMeasureCalls:
       explicitMeasureCalls === undefined || explicitMeasureCalls === ''
         ? undefined
         : Math.max(1, envInt('GONGSI_ADAPTIVE_MAX_MEASURE_CALLS', 150)),
 
-    bodyFetchLimit: Math.max(1, envInt('GONGSI_BODY_FETCH_LIMIT', 50)),
     cacheDbPath: process.env['GONGSI_CACHE_DB'] || join(PROJECT_ROOT, 'data', 'cache.db'),
     logLevel: (process.env['GONGSI_LOG_LEVEL'] || 'INFO').toUpperCase(),
 

@@ -98,6 +98,14 @@ export function toYMD(date: Date): YMD {
  * `Date.UTC` 는 20260231 같은 값을 조용히 3월로 롤오버시키므로,
  * 정규식만 통과한 입력이 기한 계산에 들어가면 판정이 하루 이상 어긋난다.
  */
+/**
+ * 한국시간 기준 오늘. `toYMD(new Date())` 는 UTC 라 KST 00~09시에 전날이 된다 —
+ * D-day·기한 경과·자진시정 판정이 하루씩 밀리므로 "오늘" 기본값은 반드시 이것을 쓴다.
+ */
+export function todayKstYMD(now: Date = new Date()): YMD {
+  return toYMD(new Date(now.getTime() + 9 * 3_600_000));
+}
+
 export function isValidYMD(ymd: string): boolean {
   if (!/^\d{8}$/.test(ymd)) return false;
   return toYMD(toDate(ymd)) === ymd;

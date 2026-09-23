@@ -15,7 +15,13 @@
  *  - 단위는 캡션(`단위 : 백만원`)에 있다. **가정하지 않는다** — 1,000배 오차가 판정을 뒤집는다.
  */
 
-import { parseDisclosureNumber, normalizeCell, normalizeCompanyName } from './md-table.js';
+import {
+  parseDisclosureNumber,
+  normalizeCell,
+  normalizeCompanyName,
+  splitRow,
+  isSeparatorRow as isSeparator,
+} from './md-table.js';
 
 /** 단위 표기 → 원 환산 배수 */
 const UNIT_FACTORS: Array<[RegExp, number]> = [
@@ -49,15 +55,6 @@ export interface LabeledTable {
   width: number;
   /** 헤더 폭과 열 수가 다른 데이터 행 수 (병합 전개 밀림·서식 변형 신호) */
   raggedRows: number;
-}
-
-function splitRow(line: string): string[] {
-  const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return inner.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
-}
-
-function isSeparator(cells: string[]): boolean {
-  return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c) || c === '');
 }
 
 function unitOf(text: string): { factor: number; caption: string } | null {

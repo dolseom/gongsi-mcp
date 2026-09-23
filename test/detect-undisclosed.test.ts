@@ -2616,6 +2616,13 @@ describe('유형 미상 J001 — 원문 거래상대방 대조', () => {
       expect(f.counterparties).toEqual([]);
     });
 
+    it('셀 안의 이스케이프된 \\| 는 열 구분이 아니다 — 상대방 이름이 잘리지 않는다', () => {
+      const f = parseFilingCounterparties(
+        '| 1. 거래상대방 | 에이\\|비(주) | 회사와의 관계 | 계열회사 |\n',
+      );
+      expect(f.counterparties).toEqual(['에이|비(주)']);
+    });
+
     it('parseAmbiguousFilingDoc 는 parseFilingCounterparties 의 별칭이다 (기존 호출부 호환)', () => {
       expect(parseAmbiguousFilingDoc).toBe(parseFilingCounterparties);
     });
@@ -4960,6 +4967,27 @@ describe('action_items — 조치가 필요한 판정을 바구니를 가로질�
     const items = r['action_items'].items as Array<Record<string, any>>;
     const ps = items.map((i) => i['priority'] as number);
     expect([...ps]).toEqual([...ps].sort((a, b) => a - b));
+  });
+
+  it('같은 우선순위 안에서는 숫자 금액 큰 순이다 (표시 문자열 길이가 아니라)', async () => {
+    // '150억원'(5자)이 '99.5억원'(6자)보다 뒤로 가던 결함의 회귀 고정
+    const md = MD.replace(
+      '| 비금융회사 | 을회사(주) | 1,000 | 10,000 |',
+      '| 비금융회사 | 을회사(주) | 1,000 | 10,000 |\n| 비금융회사 | 병회사(주) | 1,000 | 10,000 |',
+    ).replace(
+      '| 비금융회사 | 갑회사(주) | 을회사(주) | C1000(제조업) | 부품 | 현금 | 수의계약 | 3,000 |',
+      '| 비금융회사 | 갑회사(주) | 병회사(주) | C1000(제조업) | 부품 | 현금 | 수의계약 | 9,950 |\n' +
+        '| 비금융회사 | 갑회사(주) | 을회사(주) | C1000(제조업) | 부품 | 현금 | 수의계약 | 15,000 |',
+    );
+    const r = (await detectUndisclosedTransactions(
+      { rcept_no: '20260601001646', today: '20260827' },
+      makeDeps({ markdown: md, corps: { ...CORPS, 병회사: [{ corpCode: '00000003', corpName: '병회사' }] }, j001: [] }),
+    )) as Record<string, any>;
+    const buyers = (r['action_items'].items as Array<Record<string, any>>).filter(
+      (i) => i['perspective'] === '거래상대방',
+    );
+    expect(buyers.map((i) => i['amount_display'])).toEqual(['150억원', '99.5억원']);
+    expect(buyers[0]!['priority']).toBe(buyers[1]!['priority']);
   });
 
   it('닫힌 판정(기준 미달·국외)은 목록에 넣지 않는다 — 조치할 것만 담는다', async () => {

@@ -87,15 +87,15 @@ function foreignAffiliateReason(colGroup: string): string {
   );
 }
 import { randomBytes } from 'node:crypto';
-import { normalizeCompanyName } from '../parsers/md-table.js';
+import { normalizeCompanyName, splitRow } from '../parsers/md-table.js';
 import { ensureCorpIndex, fetchJurirNo, type JurirNoFetch } from '../resolver/corp-index.js';
-import { calcThreshold, CAP_100, 억 } from '../rules/thresholds.js';
+import { calcThreshold, CAP_100, formatWon, 억 } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
 import { Deadline } from '../lib/deadline.js';
 import { getConfig } from '../lib/config.js';
 import { ToolError } from '../lib/errors.js';
-import { isValidYMD, toYMD } from '../rules/business-days.js';
+import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('detect-undisclosed');
 
@@ -456,13 +456,7 @@ function daysBetween(a: string, b: string): number {
   return Math.round((t(a) - t(b)) / 86_400_000);
 }
 
-function fmtWon(n: number): string {
-  if (n >= 억) {
-    const v = n / 억;
-    return `${Number.isInteger(v) ? v : v.toFixed(1)}억원`;
-  }
-  return `${n.toLocaleString('ko-KR')}원`;
-}
+const fmtWon = formatWon;
 
 /** 보고서명 정규화 — 공백·가운뎃점·괄호 표기 차이를 무시하고 유형 키워드를 찾는다 */
 function normalizeReportNm(nm: string): string {
@@ -634,14 +628,8 @@ function isVerticalLabelRow(cells: string[], labelIdx: number): boolean {
 /** doc_subjects 로 실어 나르는 상한 — 80754 트랙 B 는 종목명이 수십 줄이라 표시가 터진다 */
 const MAX_DOC_SUBJECTS = 20;
 
-function mdCells(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((c) => c.trim());
-}
+/** 셀 안의 `\|` 이스케이프를 지키는 공용 분리기 — 단순 split('|') 은 열을 밀어 상대방을 오독한다 */
+const mdCells = splitRow;
 
 /**
  * J001 원문(markdown)에서 **거래상대방·거래대상·거래금액**을 읽는다.
@@ -1491,6 +1479,15 @@ function signalAmountDisplay(s: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/** 같은 우선순위로 숫자 금액을 꺼낸다 — 정렬용. 표시 문자열 길이로 정렬하면 150억이 99.5억 뒤로 간다 */
+function signalAmountValue(s: Record<string, unknown>): number {
+  for (const k of ['annual_amount', 'annual_amount_total', 'amount']) {
+    const v = s[k];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+  }
+  return 0;
+}
+
 function thresholdDisplay(o: unknown): string | undefined {
   if (!o || typeof o !== 'object') return undefined;
   const th = (o as { threshold?: { value_display?: unknown } }).threshold;
@@ -1504,13 +1501,14 @@ function thresholdDisplay(o: unknown): string | undefined {
  * 하드코딩하면 새 유형이 생겼을 때 조용히 빠진다.
  */
 function collectActionItems(payload: Record<string, unknown>): ActionItem[] {
-  const out: ActionItem[] = [];
+  const out: Array<{ item: ActionItem; value: number }> = [];
   const push = (
     status: unknown,
     perspective: ActionItem['perspective'],
     company: unknown,
     counterparty: unknown,
     amount: string | undefined,
+    value: number,
     threshold: string | undefined,
     source: string,
   ): void => {
@@ -1518,14 +1516,17 @@ function collectActionItems(payload: Record<string, unknown>): ActionItem[] {
     const priority = ACTION_STATUS_PRIORITY[status];
     if (priority === undefined) return;
     out.push({
-      priority,
-      status,
-      perspective,
-      company: typeof company === 'string' ? company : '(미상)',
-      counterparty: typeof counterparty === 'string' ? counterparty : '(미상)',
-      ...(amount ? { amount_display: amount } : {}),
-      ...(threshold ? { threshold_display: threshold } : {}),
-      source,
+      item: {
+        priority,
+        status,
+        perspective,
+        company: typeof company === 'string' ? company : '(미상)',
+        counterparty: typeof counterparty === 'string' ? counterparty : '(미상)',
+        ...(amount ? { amount_display: amount } : {}),
+        ...(threshold ? { threshold_display: threshold } : {}),
+        source,
+      },
+      value,
     });
   };
 
@@ -1535,19 +1536,22 @@ function collectActionItems(payload: Record<string, unknown>): ActionItem[] {
       if (!raw || typeof raw !== 'object') continue;
       const s = raw as Record<string, unknown>;
       const amount = signalAmountDisplay(s);
-      push(s['status'], '본인', s['company'], s['counterparty'], amount, thresholdDisplay(s), name);
+      const value = signalAmountValue(s);
+      push(s['status'], '본인', s['company'], s['counterparty'], amount, value, thresholdDisplay(s), name);
       // 거래상대방 관점 — 같은 거래를 **상대방 자기 자본**으로 다시 잰 판정이다
       for (const key of ['buyer_side', 'seller_side', 'lender_side']) {
         const side = s[key];
         if (!side || typeof side !== 'object') continue;
         const sv = side as Record<string, unknown>;
-        push(sv['status'], '거래상대방', sv['company'], s['company'], amount, thresholdDisplay(sv), name);
+        push(sv['status'], '거래상대방', sv['company'], s['company'], amount, value, thresholdDisplay(sv), name);
       }
     }
   }
 
-  // 우선순위 → 금액 큰 순. 금액은 표시 문자열뿐이라 숫자로 되돌리지 않고 길이·사전순으로만 안정 정렬한다.
-  return out.sort((a, b) => a.priority - b.priority || (b.amount_display ?? '').length - (a.amount_display ?? '').length);
+  // 우선순위 → 금액 큰 순 (숫자 금액 기준, 같으면 수집 순서 유지)
+  return out
+    .sort((a, b) => a.item.priority - b.item.priority || b.value - a.value)
+    .map((e) => e.item);
 }
 
 /**
@@ -2021,7 +2025,7 @@ export async function detectUndisclosedTransactions(
    * 이어보기 호출이 `today` 를 생략하면 **앞 호출의 값**을 이어받는다 — 호출마다 시스템 날짜로
    * 다시 잡으면 자정을 넘긴 이어보기가 앞 호출과 다른 창을 보게 된다.
    */
-  const today = input.today ?? contMeta?.today ?? toYMD(new Date());
+  const today = input.today ?? contMeta?.today ?? todayKstYMD();
 
   /** 이 실행이 실제로 쓴 DART HTTP 콜 수 — `list_calls` 는 회사당 1 카운터라 콜 수가 아니다 */
   const dartCallsBefore = client?.todayCalls() ?? null;

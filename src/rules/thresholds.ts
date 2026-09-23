@@ -45,13 +45,17 @@ export interface CapitalInput {
   paidInCapital?: number;
 }
 
-function fmt(n: number): string {
-  if (n >= 억) {
-    const v = n / 억;
-    return `${Number.isInteger(v) ? v : v.toFixed(2)}억원`;
-  }
+/**
+ * 원 단위 금액 표기 — 모든 도구가 이 하나를 쓴다 (도구마다 자릿수가 달라 같은 금액이 달리 보였다).
+ * 1억 이상은 소수 둘째 자리까지 **내림**하고 끝의 0은 지운다. 반올림하면 99.996억이 "100억원"으로
+ * 보여 "100억 미만"이라는 같은 판정의 사유와 모순된다. 백만원 단위 정수로 잘라 부동소수 오차를 피한다.
+ */
+export function formatWon(n: number): string {
+  if (n >= 억) return `${Math.floor(n / 1_000_000) / 100}억원`;
   return `${n.toLocaleString('ko-KR')}원`;
 }
+
+const fmt = formatWon;
 
 /**
  * 대규모내부거래 기준금액을 계산한다.

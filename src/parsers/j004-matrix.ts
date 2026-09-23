@@ -387,7 +387,7 @@ export function extractMatrix(
       for (const [c, colCompany] of colNames) {
         const amount = parseDisclosureNumber(row[c] ?? '');
         if (amount === null || amount <= 0) continue;
-        const key = `${normalizeCell(rowCompany)} ${normalizeCell(colCompany)}`;
+        const key = `${normalizeCell(rowCompany)}\u0000${normalizeCell(colCompany)}`;
         if (seenPairs.has(key)) {
           res.duplicatePairs++;
           continue;

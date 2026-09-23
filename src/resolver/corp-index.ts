@@ -145,11 +145,14 @@ export interface ResolvedCorp extends CorpRecord {
  */
 export async function resolveCorp(
   query: string,
-  client: DartClient,
+  /** 함수로 주면 네트워크가 필요할 때(빈 인덱스 적재·기업개황)만 만든다 — 키 없는 경로를 막지 않기 위해 */
+  clientOrFactory: DartClient | (() => DartClient),
   opts: ResolveOptions = {},
 ): Promise<ResolvedCorp | { ambiguous: true; candidates: CorpRecord[] }> {
   const store = getStore();
-  await ensureCorpIndex(client);
+  const client = (): DartClient =>
+    typeof clientOrFactory === 'function' ? clientOrFactory() : clientOrFactory;
+  if (store.corpCount() === 0) await loadCorpIndex(client());
 
   const q = query.trim();
   const kind = detectIdentifier(q);
@@ -224,7 +227,7 @@ export async function resolveCorp(
   if (normalizedMatch) result.normalizedMatch = true;
 
   if (opts.fetchJurirNo && !found.jurirNo) {
-    const r = await fetchJurirNo(found.corpCode, client);
+    const r = await fetchJurirNo(found.corpCode, client());
     if (r.status === 'ok') result.jurirNo = r.jurirNo;
     else if (r.status === 'error') result.jurirNoFetchError = r.message;
   }
