@@ -16,7 +16,7 @@
 **① 높음: 오늘 커밋은 거래유형이 다른 공시로도 보류를 해제한다**
 
 `checkCompany`의 유형 미상 경로는 **상대방 이름 일치만** 검사합니다. 읽어 둔 `subjects`, 금액, 실제 거래기간, ACODE는 승격 조건에 들어가지 않습니다.  
-근거: [detect-undisclosed-transactions.ts:2286](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2286).
+근거: [detect-undisclosed-transactions.ts:2286](../src/tools/detect-undisclosed-transactions.ts:2286).
 
 특히 기존 테스트가 이미 반례를 포함합니다.
 
@@ -25,9 +25,9 @@
 - 기대 결과: `j001_filing_near_date`, 보류 0건
 - 테스트는 `doc_subjects === ['출자증권']`까지 확인합니다.
 
-근거: [detect-undisclosed.test.ts:2202](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/test/detect-undisclosed.test.ts:2202).
+근거: [detect-undisclosed.test.ts:2202](../test/detect-undisclosed.test.ts:2202).
 
-이는 단순한 가설이 아니라 **현재 코드와 테스트가 허용하는 동작**입니다. 더구나 caveat에는 “상대방·유형까지 확인”했다고 쓰지만 실제로는 유형을 확인하지 않습니다. [detect-undisclosed-transactions.ts:2766](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2766).
+이는 단순한 가설이 아니라 **현재 코드와 테스트가 허용하는 동작**입니다. 더구나 caveat에는 “상대방·유형까지 확인”했다고 쓰지만 실제로는 유형을 확인하지 않습니다. [detect-undisclosed-transactions.ts:2766](../src/tools/detect-undisclosed-transactions.ts:2766).
 
 기존의 명확한 보고서명 경로도 회사·유형이 같으면 상대방 확인 없이 `exists`를 반환합니다. 따라서 이번 문제는 기존의 느슨한 존재 확인 위에 추가된 것입니다. **관련 공시 발견과 해당 거래의 공시 확인을 분리해야 합니다.**
 
@@ -36,7 +36,7 @@
 **② 높음: 정정 전 상대방을 현재 공시의 근거로 사용할 수 있다**
 
 `parseAmbiguousFilingDoc`는 정정사유·정정전·정정후 셀을 구분하지 않고 상대방 후보에 넣습니다. 이후 어느 후보든 이름이 맞으면 승격합니다.  
-근거: [detect-undisclosed-transactions.ts:364](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:364), [같은 파일:387](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:387).
+근거: [detect-undisclosed-transactions.ts:364](../src/tools/detect-undisclosed-transactions.ts:364), [같은 파일:387](../src/tools/detect-undisclosed-transactions.ts:387).
 
 **코드상 반례:** 상대방이 A에서 B로 정정된 표를 읽으면, A 거래에도 “원문 상대방 일치”를 붙일 수 있습니다. 제공된 정정 픽스처는 상대방 변경 사례가 아니므로 이 위험을 검증하지 않습니다.
 
@@ -46,20 +46,20 @@
 
 `detect`는 회사별 J001 검색과 유형 미상 원문 읽기를 순차 수행합니다. 전체 호출의 deadline·중단 신호·재개 위치가 없습니다.
 
-- 회사별 검색: [detect-undisclosed-transactions.ts:2081](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2081)
-- 원문 순차 읽기: [같은 파일:2285](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2285)
-- HTTP 기본 timeout: **100초**, DART 요청 최대 3회 시도. [config.ts:185](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/lib/config.ts:185), [dart.ts:148](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/clients/dart.ts:148)
+- 회사별 검색: [detect-undisclosed-transactions.ts:2081](../src/tools/detect-undisclosed-transactions.ts:2081)
+- 원문 순차 읽기: [같은 파일:2285](../src/tools/detect-undisclosed-transactions.ts:2285)
+- HTTP 기본 timeout: **100초**, DART 요청 최대 3회 시도. [config.ts:185](../src/lib/config.ts:185), [dart.ts:148](../src/clients/dart.ts:148)
 
-`collectAdaptive`의 45초는 **각 수집 호출의 예측값**입니다. `detect` 전체의 실제 경과시간 제한이 아닙니다. 청크 timeout도 `Promise.race`여서 진행 중인 네트워크 수집을 취소하지 않습니다. [batch.ts:176](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/search/batch.ts:176).
+`collectAdaptive`의 45초는 **각 수집 호출의 예측값**입니다. `detect` 전체의 실제 경과시간 제한이 아닙니다. 청크 timeout도 `Promise.race`여서 진행 중인 네트워크 수집을 취소하지 않습니다. [batch.ts:176](../src/search/batch.ts:176).
 
-또한 **`list_calls=12`는 실제 HTTP 12콜이 아닙니다.** 회사별 `collectList` 반환 후 1씩 증가하며, 내부 측정·페이지 호출은 합산하지 않습니다. 실패한 호출도 이 카운터에서 빠집니다. [detect-undisclosed-transactions.ts:2113](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2113).
+또한 **`list_calls=12`는 실제 HTTP 12콜이 아닙니다.** 회사별 `collectList` 반환 후 1씩 증가하며, 내부 측정·페이지 호출은 합산하지 않습니다. 실패한 호출도 이 카운터에서 빠집니다. [detect-undisclosed-transactions.ts:2113](../src/tools/detect-undisclosed-transactions.ts:2113).
 
 따라서 캐시 상태의 2.1초는 유용한 관측이지만, 여기에 24콜을 추가해도 안전하다는 근거는 아닙니다.
 
 **④ 높음: (5) 총괄 보완이 같은 회사 쌍의 추가 금액을 버린다**
 
 (6)에 정규화된 회사 쌍이 있으면, (5)의 같은 쌍은 **금액 비교 없이 통째로 제외**됩니다.  
-근거: [detect-undisclosed-transactions.ts:1782](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:1782), [같은 파일:1811](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:1811).
+근거: [detect-undisclosed-transactions.ts:1782](../src/tools/detect-undisclosed-transactions.ts:1782), [같은 파일:1811](../src/tools/detect-undisclosed-transactions.ts:1811).
 
 **가설·검증용 반례:** 같은 쌍의 (6) 추출액은 50억, (5) 총괄은 450억, 기준금액은 100억이라면, 총괄에서 얻을 수 있는 `4×기준` 신호가 사라집니다. (6)의 부분 기재·파싱 누락·품목 분리가 이런 차이를 만드는지는 실물 검증이 필요합니다.
 
@@ -68,7 +68,7 @@
 **⑤ 중간~높음: 콜드 캐시는 단순한 조회 부족이 아니라 초기화 경로의 단절이다**
 
 `resolvePopulation`은 포털 목록을 확보했더라도 DART 조인이 0건이면 예외를 던집니다. 그 과정에서 만들어 둔 소속회사명·법인등록번호도 반환되지 않습니다.  
-근거: [audit-group-disclosures.ts:196](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/audit-group-disclosures.ts:196), [같은 파일:216](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/audit-group-disclosures.ts:216).
+근거: [audit-group-disclosures.ts:196](../src/tools/audit-group-disclosures.ts:196), [같은 파일:216](../src/tools/audit-group-disclosures.ts:216).
 
 결과적으로:
 
@@ -77,24 +77,24 @@
 - 이 경우 유일한 DART 상호 일치는 소속 검증 없이 수용됩니다.
 - `detect` 자체에는 법인 인덱스 초기화를 보장하는 호출도 없습니다.
 
-근거: [detect-undisclosed-transactions.ts:1094](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:1094), [같은 파일:1235](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:1235).
+근거: [detect-undisclosed-transactions.ts:1094](../src/tools/detect-undisclosed-transactions.ts:1094), [같은 파일:1235](../src/tools/detect-undisclosed-transactions.ts:1235).
 
 **조인 실패를 보류하는 처리는 대체로 안전합니다.** 문제는 확보한 모집단을 버리는 것과, 폴백의 식별 근거가 약해지는 것입니다. 포털 키 자체가 없는 경우는 캐시 부족과 또 다른 문제입니다.
 
 **⑥ 중간: 기준미달·파싱 진단이 실제보다 강하게 읽힐 수 있다**
 
 기준금액이 거래시점 자본이 아닌 J004 자본 스냅샷의 근사치라는 한계를 코드도 인정합니다. 따라서 “연간 총액이 기준 미만이면 모든 거래가 미만”이라는 산술은 **그 기준금액이 해당 시점에 유효할 때만** 적용됩니다. 경계에서 몇 억 떨어져 있다는 이유만으로 안전하지도 않습니다. 자본 변동 규모가 확인되지 않았기 때문입니다.  
-근거: [detect-undisclosed-transactions.ts:2779](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2779).
+근거: [detect-undisclosed-transactions.ts:2779](../src/tools/detect-undisclosed-transactions.ts:2779).
 
-파서도 열 수 불일치를 계측하지만 해당 행의 판정을 막지는 않습니다. **가설:** 열이 밀렸는데 다른 숫자를 거래금액으로 읽으면, 진단 경고와 `below_threshold`가 함께 나올 수 있습니다. [j004-transactions.ts:146](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/parsers/j004-transactions.ts:146), [같은 파일:376](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/parsers/j004-transactions.ts:376).
+파서도 열 수 불일치를 계측하지만 해당 행의 판정을 막지는 않습니다. **가설:** 열이 밀렸는데 다른 숫자를 거래금액으로 읽으면, 진단 경고와 `below_threshold`가 함께 나올 수 있습니다. [j004-transactions.ts:146](../src/parsers/j004-transactions.ts:146), [같은 파일:376](../src/parsers/j004-transactions.ts:376).
 
 경고를 더 쓰기보다, **어떤 행의 어떤 판정이 불확실한지 연결하는 것**이 필요합니다.
 
 **⑦ 중간: 검색 절단 방어는 DART보다 포털 쪽이 약하다**
 
-DART는 페이지 상한·중간 빈 페이지를 `truncated`로 알리고, `detect`도 불완전 검색에서 공시가 안 보이면 `not_judged`로 둡니다. 이 방어는 유지할 가치가 큽니다. [dart.ts:296](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/clients/dart.ts:296), [detect-undisclosed-transactions.ts:2340](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/detect-undisclosed-transactions.ts:2340).
+DART는 페이지 상한·중간 빈 페이지를 `truncated`로 알리고, `detect`도 불완전 검색에서 공시가 안 보이면 `not_judged`로 둡니다. 이 방어는 유지할 가치가 큽니다. [dart.ts:296](../src/clients/dart.ts:296), [detect-undisclosed-transactions.ts:2340](../src/tools/detect-undisclosed-transactions.ts:2340).
 
-반면 포털 수집은 **20페이지 또는 빈 페이지에서 종료한 뒤 완전성 표시 없이 배열을 반환**합니다. 비어 있지 않은 부분 목록은 캐시될 수 있습니다. [egroup.ts:170](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/clients/egroup.ts:170), [get-group-structure.ts:85](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/src/tools/get-group-structure.ts:85).
+반면 포털 수집은 **20페이지 또는 빈 페이지에서 종료한 뒤 완전성 표시 없이 배열을 반환**합니다. 비어 있지 않은 부분 목록은 캐시될 수 있습니다. [egroup.ts:170](../src/clients/egroup.ts:170), [get-group-structure.ts:85](../src/tools/get-group-structure.ts:85).
 
 현재 24개사 사례가 실제로 잘렸다는 증거는 없습니다. 다만 **조인의 정답 기준인 모집단에도 수집 완전성 계약이 필요합니다.**
 
@@ -111,7 +111,7 @@ DART는 페이지 상한·중간 빈 페이지를 `truncated`로 알리고, `det
 
 1번은 `detect` 전용 워밍보다 **여러 도구가 공유하는 식별·준비 단계**가 낫습니다. 또한 “집단당 영구 1회”보다 **회사별 성공 결과를 재사용하고, 집단 구성 변화에 따라 누락분을 보충**하는 방식이 적절합니다.
 
-2번의 법적 전제는 저장소의 [CLAUDE.local.md:206](C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp/CLAUDE.local.md:206)에 기록된 **각 당사자에게 적용되는 상대방 요건의 비대칭**까지만 인용합니다. 한쪽 지분 확인을 양쪽 의무 확정에 재사용해서는 안 됩니다.
+2번의 법적 전제는 저장소의 [CLAUDE.local.md:206](../CLAUDE.local.md:206)에 기록된 **각 당사자에게 적용되는 상대방 요건의 비대칭**까지만 인용합니다. 한쪽 지분 확인을 양쪽 의무 확정에 재사용해서는 안 됩니다.
 
 **(4) 놓친 고도화 지렛대**
 

@@ -2,11 +2,13 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseStream, toolNames } from './parse-stream.mjs';
 import { DISALLOWED_TOOLS } from '../disallowed-tools.mjs';
 
-const REPO = 'C:/Users/jjang/Desktop/AI공부/☆☆클로드코드/dart-mcp';
-const HERE = process.cwd();
+// 스크립트 위치 기준 — 어느 디렉터리에서 실행해도 같은 경로를 쓴다
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(HERE, '..', '..');
 const items = JSON.parse(readFileSync(path.join(HERE, 'messy-questions.json'), 'utf8')).items;
 const only = process.argv[2] ? process.argv[2].split(',') : null;
 const CONC = Number(process.argv[3] ?? 2);

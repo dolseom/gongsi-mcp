@@ -30,9 +30,11 @@ jobs:
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
+          cache: npm
 
-      # trusted publishing 은 npm 11.5.1 이상 필요 — 러너 번들 버전이 낮을 수 있어 갱신
-      - run: npm install -g npm@latest
+      # trusted publishing 은 npm 11.5.1 이상 필요 — 러너 번들 버전이 낮을 수 있어 갱신.
+      # latest 대신 메이저를 고정해 npm 12 의 동작 변화가 배포일에 섞여 들지 않게 한다.
+      - run: npm install -g npm@^11.5.1
 
       - run: npm ci
 
@@ -49,7 +51,7 @@ jobs:
       - run: npm run build
       - run: node scripts/smoke-tarball.mjs
 
-      # prepublishOnly 게이트(시크릿스캔→타입체크→테스트 344→빌드)는 npm publish 가 자동 실행한다.
+      # prepublishOnly 게이트(시크릿스캔→타입체크→테스트→빌드)는 npm publish 가 자동 실행한다.
       # CI 에는 .env 가 없으므로 시크릿스캔은 "대조값 없음 — 생략"으로 통과한다 (실게이트는 로컬 pre-commit).
       - if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run
