@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseStream, toolNames } from './parse-stream.mjs';
 import { DISALLOWED_TOOLS } from '../disallowed-tools.mjs';
+import { gongsiEnvPath, readEnvFile } from '../../scripts/lib/env.mjs';
 
 // 스크립트 위치 기준 — 어느 디렉터리에서 실행해도 같은 경로를 쓴다
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -16,10 +17,10 @@ const OUT = path.join(HERE, 'messy-results');
 mkdirSync(OUT, { recursive: true });
 
 // 홈 .env 의 키를 자식 프로세스에 넘긴다 (프로젝트 .env 는 캐시 DB 가 다르다)
+// (문법 'strict' = 이 러너의 종전 규칙. 파일이 없으면 종전대로 ENOENT 로 멈춘다 — 키 없이 돌면 전 문항이 오류다)
 const env = { ...process.env };
-for (const line of readFileSync(path.join(process.env.USERPROFILE ?? process.env.HOME, '.gongsi-mcp', '.env'), 'utf8').split(/\r?\n/)) {
-  const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
-  if (m) env[m[1]] = m[2];
+for (const [name, value] of readEnvFile(gongsiEnvPath(process.env.USERPROFILE ?? process.env.HOME), { syntax: 'strict' })) {
+  env[name] = value;
 }
 
 /**

@@ -12,11 +12,12 @@
  *   실제 키로 따로 한다. 여기서는 **키 없는 사용자가 실제로 받는 응답**만 본다.
  * 사전 조건: dist 가 빌드되어 있을 것 (npm run build).
  */
-import { execSync, spawn } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startStdioServer, resultBody } from './lib/stdio-client.mjs';
 
 const root = join(fileURLToPath(import.meta.url), '..', '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -77,76 +78,21 @@ delete env['DART_API_KEY'];
 delete env['EGROUP_API_KEY'];
 // 개발 PC 의 실캐시를 가리키지 않게 한다 (신규 설치는 캐시가 비어 있다)
 delete env['GONGSI_CACHE_DB'];
-server = spawn(process.execPath, [cli], { cwd: tmp, env, stdio: ['pipe', 'pipe', 'pipe'] });
+const client = startStdioServer({
+  cli,
+  cwd: tmp,
+  env,
+  requestTimeoutMs: REQUEST_TIMEOUT_MS,
+  stderrTailInTimeout: 500,
+  exitWaitMs: SERVER_EXIT_WAIT_MS,
+  onNonJson: (line) => fail(`stdout 에 JSON 아닌 출력이 섞였습니다 (프로토콜 오염): ${line.slice(0, 200)}`),
+});
+server = client.proc;
 log(`서버 기동 pid=${server.pid}`);
 
-let stderrBuf = '';
-server.stderr.on('data', (d) => (stderrBuf += d));
-
-// 4) JSON-RPC 왕복 (stdio, 줄 단위 JSON)
-const pending = new Map();
-let lineBuf = '';
-server.stdout.on('data', (d) => {
-  lineBuf += d;
-  let nl;
-  while ((nl = lineBuf.indexOf('\n')) >= 0) {
-    const line = lineBuf.slice(0, nl).trim();
-    lineBuf = lineBuf.slice(nl + 1);
-    if (!line) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      fail(`stdout 에 JSON 아닌 출력이 섞였습니다 (프로토콜 오염): ${line.slice(0, 200)}`);
-    }
-    if (msg.id !== undefined && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id);
-      pending.delete(msg.id);
-      if (msg.error) reject(new Error(JSON.stringify(msg.error)));
-      else resolve(msg.result);
-    }
-  }
-});
-
-let nextId = 1;
-function request(method, params) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    // ⚠️ 응답이 오면 타이머를 반드시 지운다. 종전에는 지우지 않아 **"통과" 로그 뒤에도 30초씩
-    //   프로세스가 살아 있었다** (2026-09-13 실측: 통과 13.2초 → 종료 44.4초). 바깥 도구가 45초에
-    //   끊으면 "통과 로그는 있는데 종료 코드가 없는" 오해의 소지가 있는 기록이 남는다.
-    const timer = setTimeout(() => {
-      if (pending.has(id)) {
-        pending.delete(id);
-        reject(new Error(`${method} ${REQUEST_TIMEOUT_MS / 1000}초 응답 없음. stderr: ${stderrBuf.slice(-500)}`));
-      }
-    }, REQUEST_TIMEOUT_MS);
-    pending.set(id, {
-      resolve: (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      reject: (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    });
-    server.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-  });
-}
-function notify(method) {
-  server.stdin.write(JSON.stringify({ jsonrpc: '2.0', method }) + '\n');
-}
-function callTool(name, args) {
-  return request('tools/call', { name, arguments: args });
-}
-function bodyOf(res) {
-  try {
-    return JSON.parse(res?.content?.[0]?.text ?? '');
-  } catch {
-    return null;
-  }
-}
+// 4) JSON-RPC 왕복 (stdio, 줄 단위 JSON) — scripts/lib/stdio-client.mjs
+const { request, notify, callTool } = client;
+const bodyOf = resultBody;
 
 /**
  * 스키마 단계 거절인가 — SDK 버전에 따라 JSON-RPC error(-32602) 로 오거나 isError 결과로 온다.
@@ -166,23 +112,6 @@ async function expectSchemaRejection(name, args, label) {
     throw e;
   }
   return 'unreachable';
-}
-
-/** 서버를 멈추고 **실제로 종료됐는지** 확인한다 (로그만으로는 종료를 증명하지 못한다) */
-async function stopServer() {
-  if (!server) return { code: null, signal: null, already: true };
-  if (server.exitCode !== null || server.signalCode !== null) {
-    return { code: server.exitCode, signal: server.signalCode, already: true };
-  }
-  const exited = new Promise((r) => server.once('exit', (code, signal) => r({ code, signal, already: false })));
-  server.kill();
-  let t;
-  const timeout = new Promise((r) => {
-    t = setTimeout(() => r(null), SERVER_EXIT_WAIT_MS);
-  });
-  const res = await Promise.race([exited, timeout]);
-  clearTimeout(t);
-  return res;
 }
 
 const passed = [];
@@ -319,10 +248,11 @@ try {
   fail(e instanceof Error ? e.message : String(e));
 }
 
-const exit = await stopServer();
+// 서버를 멈추고 **실제로 종료됐는지** 확인한다 (로그만으로는 종료를 증명하지 못한다)
+const exit = await client.stop();
 if (!exit) fail(`서버 프로세스(pid=${server.pid})가 ${SERVER_EXIT_WAIT_MS / 1000}초 안에 종료되지 않았습니다`);
 log(`서버 종료 확인 pid=${server.pid} code=${exit.code} signal=${exit.signal}`);
-if (pending.size > 0) fail(`응답을 받지 못한 요청 ${pending.size}건이 남았습니다`);
+if (client.pendingCount() > 0) fail(`응답을 받지 못한 요청 ${client.pendingCount()}건이 남았습니다`);
 
 log(
   `통과 — ${pkg.name}@${pkg.version}, 검사 ${passed.length}종 (${passed.join(' · ')}), ` +

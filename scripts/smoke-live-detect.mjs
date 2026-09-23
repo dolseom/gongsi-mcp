@@ -16,9 +16,9 @@
  * 키 값은 출력하지 않는다 (server_info 의 설정 여부 boolean 만 본다).
  * 사전 조건: npm run build, DART_API_KEY 가 .env 또는 ~/.gongsi-mcp/.env 에 있을 것.
  */
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startStdioServer, resultText, resultBody } from './lib/stdio-client.mjs';
 
 const root = join(fileURLToPath(import.meta.url), '..', '..');
 const cli = join(root, 'dist', 'src', 'cli.js');
@@ -50,75 +50,20 @@ function notPerformed(msg) {
   process.exit(2);
 }
 
-/** stdio MCP 서버 하나 — 요청 타이머는 응답 즉시 지운다 (종료 지연 방지) */
+/** stdio MCP 서버 하나 — scripts/lib/stdio-client.mjs (요청 타이머는 응답 즉시 지운다) */
 function startServer() {
-  const proc = spawn(process.execPath, [cli], { cwd: root, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
-  const pending = new Map();
-  let buf = '';
-  let nextId = 1;
-  proc.stderr.on('data', () => {});
-  proc.stdout.on('data', (d) => {
-    buf += d;
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        fail(`stdout 에 JSON 아닌 출력이 섞였습니다: ${line.slice(0, 120)}`);
-      }
-      const p = pending.get(msg.id);
-      if (!p) continue;
-      pending.delete(msg.id);
-      if (msg.error) p.reject(new Error(JSON.stringify(msg.error)));
-      else p.resolve(msg.result);
-    }
+  const s = startStdioServer({
+    cli,
+    cwd: root,
+    env: process.env,
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    onNonJson: (line) => fail(`stdout 에 JSON 아닌 출력이 섞였습니다: ${line.slice(0, 120)}`),
   });
-  function request(method, params) {
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(new Error(`${method} ${REQUEST_TIMEOUT_MS / 1000}초 응답 없음`));
-      }, REQUEST_TIMEOUT_MS);
-      pending.set(id, {
-        resolve: (v) => (clearTimeout(timer), resolve(v)),
-        reject: (e) => (clearTimeout(timer), reject(e)),
-      });
-      proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    });
-  }
-  async function init() {
-    await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'smoke-live', version: '0.0.0' },
-    });
-    proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
-  }
-  async function stop() {
-    if (proc.exitCode !== null || proc.signalCode !== null) return { code: proc.exitCode, signal: proc.signalCode };
-    const exited = new Promise((r) => proc.once('exit', (code, signal) => r({ code, signal })));
-    proc.kill();
-    let t;
-    const res = await Promise.race([exited, new Promise((r) => (t = setTimeout(() => r(null), 5_000)))]);
-    clearTimeout(t);
-    return res;
-  }
-  return { proc, request, init, stop, call: (name, args) => request('tools/call', { name, arguments: args }) };
+  return { proc: s.proc, request: s.request, init: () => s.init('smoke-live'), stop: s.stop, call: s.callTool };
 }
 
-const text = (res) => res?.content?.[0]?.text ?? '';
-const body = (res) => {
-  try {
-    return JSON.parse(text(res));
-  } catch {
-    return null;
-  }
-};
+const text = resultText;
+const body = resultBody;
 const bytesOf = (res) => Buffer.byteLength(text(res), 'utf8');
 
 const report = { rcept_no: RCEPT, kind: 'live keyed stdio (non-deterministic)', checks: [] };

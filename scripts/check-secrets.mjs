@@ -14,9 +14,10 @@
  * *_KEY / *_TOKEN / *_SECRET 변수 (12자 이상). 값은 어떤 경우에도 출력하지 않는다.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { gongsiEnvPath, readEnvFile } from './lib/env.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -28,17 +29,14 @@ function git(args, opts = {}) {
 function collectSecrets() {
   const envPaths = [
     join(ROOT, '.env'),
-    join(homedir(), '.gongsi-mcp', '.env'),
+    gongsiEnvPath(),
     join(homedir(), '.dart-ftc-mcp', '.env'),
   ];
   const secrets = new Map();
   for (const p of envPaths) {
-    if (!existsSync(p)) continue;
-    for (const line of readFileSync(p, 'utf8').split(/\r?\n/)) {
-      const m = /^\s*([A-Z0-9_]*(?:KEY|TOKEN|SECRET)[A-Z0-9_]*)\s*=\s*(.+?)\s*$/.exec(line);
-      if (!m) continue;
-      const value = m[2].replace(/^["']|["']$/g, '');
-      if (value.length >= 12 && !secrets.has(value)) secrets.set(value, m[1]);
+    for (const [name, value] of readEnvFile(p, { optional: true, syntax: 'loose', stripQuotes: true })) {
+      if (!/KEY|TOKEN|SECRET/.test(name)) continue;
+      if (value.length >= 12 && !secrets.has(value)) secrets.set(value, name);
     }
   }
   return secrets;
