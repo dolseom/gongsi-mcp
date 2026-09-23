@@ -16,6 +16,7 @@ import {
   resolveCorp,
 } from '../src/resolver/corp-index.js';
 import { useMemoryStore } from './helpers/store.js';
+import { Store, __setStore } from '../src/lib/store.js';
 import { AmbiguousCorpError, CorpNotFoundError, ToolError } from '../src/lib/errors.js';
 import type { DartClient } from '../src/clients/dart.js';
 

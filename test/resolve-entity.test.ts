@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { EgroupClient } from '../src/clients/egroup.js';
 import { useMemoryStore } from './helpers/store.js';
 import { Store, __setStore } from '../src/lib/store.js';
