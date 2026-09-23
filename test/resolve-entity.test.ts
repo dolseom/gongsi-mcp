@@ -1,7 +1,10 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { EgroupClient } from '../src/clients/egroup.js';
 import { useMemoryStore } from './helpers/store.js';
-import { findGroupByJurirNo, verifyYearMonth } from '../src/tools/resolve-entity.js';
+import { Store, __setStore } from '../src/lib/store.js';
+import { __resetConfig } from '../src/lib/config.js';
+import { findGroupByJurirNo, resolveEntity, verifyYearMonth } from '../src/tools/resolve-entity.js';
+import { getGroupStructure } from '../src/tools/get-group-structure.js';
 
 /**
  * P0-3 회귀 고정 — 계열사 캐시 오염 (함정 11번 재발 경로).
@@ -174,5 +177,72 @@ describe('공개년월 실검증 (P2-라 15)', () => {
     }));
     const v = await verifyYearMonth(new EgroupClient('test-key'), '202605');
     expect(v).toEqual({ ym: '202605' });
+  });
+});
+
+describe('기업집단 목록 캐시 공유 (lib/egroup-cache)', () => {
+  let store: Store;
+  let prevKey: string | undefined;
+
+  beforeEach(() => {
+    store = new Store(':memory:');
+    __setStore(store);
+    prevKey = process.env['EGROUP_API_KEY'];
+    process.env['EGROUP_API_KEY'] = 'test-key';
+    __resetConfig();
+  });
+
+  afterEach(() => {
+    __setStore(null);
+    store.close();
+    vi.unstubAllGlobals();
+    if (prevKey === undefined) delete process.env['EGROUP_API_KEY'];
+    else process.env['EGROUP_API_KEY'] = prevKey;
+    __resetConfig();
+  });
+
+  function stubCounting(): { groupsCalls: () => number } {
+    const f = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes('appnGroupSttusList')) return new Response(groupsXml(GROUP_ITEM, 1), { status: 200 });
+      if (u.includes('appnGroupAffiList')) return new Response(affXml(affItem(JURIR), 1), { status: 200 });
+      throw new Error(`예상치 못한 호출: ${u}`);
+    });
+    vi.stubGlobal('fetch', f);
+    return {
+      groupsCalls: () => f.mock.calls.filter(([u]) => String(u).includes('appnGroupSttusList')).length,
+    };
+  }
+
+  it('resolve_entity 로 집단을 두 번 조회해도 포털 groups() 호출은 1회다', async () => {
+    const counter = stubCounting();
+    const r1 = (await resolveEntity({ query: '삼성', type: 'group', yearMonth: YM })) as Record<string, unknown>;
+    const r2 = (await resolveEntity({ query: '삼성', type: 'group', yearMonth: YM })) as Record<string, unknown>;
+    expect((r1['group'] as Record<string, unknown>)['code']).toBe('K1000032');
+    expect(r2['group']).toEqual(r1['group']);
+    expect(counter.groupsCalls()).toBe(1);
+    expect(store.get(`egroup_groups:${YM}`)).not.toBeNull();
+  });
+
+  it('resolve_entity 와 get_group_structure 가 같은 집단 목록 캐시를 쓴다', async () => {
+    const counter = stubCounting();
+    await resolveEntity({ query: '삼성', type: 'group', yearMonth: YM });
+    const g = (await getGroupStructure({ group: '삼성', year_month: YM, join_dart: false })) as {
+      group: Record<string, unknown>;
+      diagnostics: { api_calls: number; cache_hits: number };
+    };
+    expect(g.group['code']).toBe('K1000032');
+    expect(counter.groupsCalls()).toBe(1);
+    // 집단 목록은 캐시 히트, 계열사 목록만 새로 받았다
+    expect(g.diagnostics).toMatchObject({ api_calls: 1, cache_hits: 1 });
+  });
+
+  it('집단 목록이 비면 캐시하지 않는다 — 다음 조회가 다시 받는다', async () => {
+    const f = vi.fn(async () => new Response(groupsXml('', 0), { status: 200 }));
+    vi.stubGlobal('fetch', f);
+    await expect(resolveEntity({ query: '삼성', type: 'group', yearMonth: YM })).rejects.toBeTruthy();
+    expect(store.get(`egroup_groups:${YM}`)).toBeNull();
+    await expect(resolveEntity({ query: '삼성', type: 'group', yearMonth: YM })).rejects.toBeTruthy();
+    expect(f).toHaveBeenCalledTimes(2);
   });
 });

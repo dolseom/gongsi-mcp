@@ -11,11 +11,9 @@
  */
 
 import { getConfig, USER_AGENT } from '../lib/config.js';
-import { getLogger, redact } from '../lib/logger.js';
+import { redact } from '../lib/logger.js';
 import { getStore } from '../lib/store.js';
 import { MissingApiKeyError, ToolError, UpstreamForbiddenError } from '../lib/errors.js';
-
-const log = getLogger('egroup');
 
 const BASE = 'https://apis.data.go.kr/1130000';
 
@@ -284,20 +282,6 @@ export class EgroupClient {
       jurirno,
       numOfRows: 500,
     });
-  }
-
-  /** 기업집단명으로 코드를 찾는다. 부분일치 후보도 함께 돌려준다. */
-  async findGroup(
-    name: string,
-    presentnYear: string,
-  ): Promise<{ exact: GroupSummary | null; candidates: GroupSummary[] }> {
-    const all = await this.groups(presentnYear);
-    const norm = (s: string) => s.replace(/[\s()㈜]/g, '');
-    const target = norm(name);
-    const exact = all.find((g) => norm(g.unityGrupNm) === target) ?? null;
-    const candidates = exact ? [] : all.filter((g) => norm(g.unityGrupNm).includes(target)).slice(0, 5);
-    log.debug('기업집단 조회', { name, found: !!exact, candidates: candidates.length });
-    return { exact, candidates };
   }
 }
 

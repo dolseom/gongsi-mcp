@@ -19,7 +19,8 @@ const log = getLogger('corp-index');
 
 /** 적재 후 이만큼 지나면 갱신을 권한다 (DART 는 매일 갱신되지만 변동은 완만하다) */
 const REFRESH_AFTER_DAYS = 7;
-const LOADED_AT_KEY = 'corps_loaded_at';
+/** 법인코드 목록 적재 시각을 담는 kv 키 — 감사 도구가 오류 문맥에 싣는다 */
+export const LOADED_AT_KEY = 'corps_loaded_at';
 
 /** `corpCode.xml` 을 내려받아 corps 테이블에 적재한다 */
 export async function loadCorpIndex(client: DartClient): Promise<number> {

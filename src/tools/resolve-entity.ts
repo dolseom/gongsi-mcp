@@ -11,7 +11,14 @@
 import { z } from 'zod';
 import { DartClient } from '../clients/dart.js';
 import { EgroupClient } from '../clients/egroup.js';
-import { resolveCorp, detectIdentifier, normalizeName } from '../resolver/corp-index.js';
+import { resolveCorp, detectIdentifier } from '../resolver/corp-index.js';
+import {
+  cachedAffiliates,
+  cachedGroups,
+  emptyGroupListError,
+  groupSummaryFields,
+  matchGroupByName,
+} from '../lib/egroup-cache.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
@@ -202,17 +209,12 @@ export async function resolveEntity(input: ResolveEntityInput): Promise<unknown>
       }
 
       if (tryGroup && !company) {
-        const { exact, candidates } = await egroup.findGroup(input.query, yearMonth);
+        // 집단 목록은 get_group_structure 와 같은 연 단위 캐시를 쓴다 (lib/egroup-cache)
+        const { value: groups } = await cachedGroups(egroup, yearMonth);
+        const { exact, candidates } = matchGroupByName(groups, input.query);
+        log.debug('기업집단 조회', { name: input.query, found: !!exact, candidates: candidates.length });
         if (exact) {
-          results['group'] = {
-            name: exact.unityGrupNm,
-            code: exact.unityGrupCode,
-            representative_person: exact.smerNm,
-            representative_company: exact.repreCmpny,
-            affiliate_count: Number(exact.sumCmpnyCo) || exact.sumCmpnyCo,
-            mutual_investment_restricted: exact.invstmntLmtt,
-            year_month: yearMonth,
-          };
+          results['group'] = groupSummaryFields(exact, yearMonth);
         } else if (candidates.length) {
           results['group_candidates'] = candidates.map((c) => ({
             name: c.unityGrupNm,
@@ -300,48 +302,30 @@ export async function findGroupByJurirNo(
   // "어느 집단에도 없음"도 캐시한다 — 미소속 회사를 반복 조회해도 전 집단을 다시 돌지 않게
   if (store.get(`jurir_group_miss:${yearMonth}:${jurirNo}`)) return null;
 
-  const groups = await egroup.groups(yearMonth);
-  if (groups.length === 0) {
-    // 빈 집단 목록은 "미소속"의 근거가 아니다 — 미공개 연월이거나 상류 오류다.
-    // 이대로 순회 0회 → miss 기록이 되면 "기업집단 미소속 = 공시의무 없음"이 박제된다 (get-group-structure 와 동일 가드).
-    throw new ToolError(
-      'group_not_found',
-      `${yearMonth} 기준 지정 기업집단 목록이 비어 있습니다. 해당 연도 지정이 아직 공개되지 않았을 수 있습니다 — ` +
-        `yearMonth 를 전년도 5월(예: ${Number(yearMonth.slice(0, 4)) - 1}05)로 지정해 다시 시도하세요.`,
-      { year_month: yearMonth },
-    );
-  }
+  const { value: groups } = await cachedGroups(egroup, yearMonth);
+  // 빈 집단 목록은 "미소속"의 근거가 아니다 — 미공개 연월이거나 상류 오류다.
+  // 이대로 순회 0회 → miss 기록이 되면 "기업집단 미소속 = 공시의무 없음"이 박제된다 (get-group-structure 와 동일 가드).
+  if (groups.length === 0) throw emptyGroupListError(yearMonth, 'yearMonth');
   log.info('기업집단 역조회 시작', { jurirNo, groups: groups.length, yearMonth });
 
   let sawEmptyAffiliates = false;
   let consecutiveEmpty = 0;
   for (const g of groups) {
-    const affKey = `egroup_affiliates:${yearMonth}:${g.unityGrupCode}`;
-    let affiliates: Awaited<ReturnType<EgroupClient['affiliates']>>;
-    const affCached = store.get(affKey);
-    const cachedList = affCached ? (JSON.parse(affCached) as typeof affiliates) : null;
-    // 캐시된 빈 목록은 과거 오염분일 수 있으므로 무시하고 다시 받는다 (자가 치유)
-    if (cachedList && cachedList.length > 0) {
-      affiliates = cachedList;
+    // 캐시된 빈 목록은 무시하고 다시 받고, 받은 빈 목록은 캐시하지 않는다 (lib/egroup-cache).
+    // 지정 집단은 소속회사가 반드시 있으므로 빈 목록은 정상값이 아니다 — 캐시가 아니라 방금 받은 응답이다.
+    const { value: affiliates } = await cachedAffiliates(egroup, yearMonth, g.unityGrupCode);
+    if (affiliates.length > 0) {
       consecutiveEmpty = 0;
     } else {
-      affiliates = await egroup.affiliates(yearMonth, g.unityGrupCode);
-      // 빈 목록은 캐시하지 않는다 — 상류 오류를 연단위로 박제하면 1년짜리 오진이 된다
-      // (지정 집단은 소속회사가 반드시 있으므로 빈 응답은 정상값이 아니다. get-group-structure 와 동일 방어)
-      if (affiliates.length > 0) {
-        store.set(affKey, JSON.stringify(affiliates));
-        consecutiveEmpty = 0;
-      } else {
-        sawEmptyAffiliates = true;
-        // 연속 3개 집단이 비면 포털 전면 장애로 보고 즉시 중단 — 남은 ~100회 호출 낭비 방지 (Opus M-4)
-        if (++consecutiveEmpty >= 3) {
-          throw new ToolError(
-            'egroup_api_error',
-            '연속 3개 기업집단의 계열사 목록이 비어 있습니다 — 포털 장애로 보입니다. ' +
-              '시간을 두고 다시 시도하세요 (이 결과는 소속 여부 판정의 근거가 아닙니다).',
-            { year_month: yearMonth },
-          );
-        }
+      sawEmptyAffiliates = true;
+      // 연속 3개 집단이 비면 포털 전면 장애로 보고 즉시 중단 — 남은 ~100회 호출 낭비 방지 (Opus M-4)
+      if (++consecutiveEmpty >= 3) {
+        throw new ToolError(
+          'egroup_api_error',
+          '연속 3개 기업집단의 계열사 목록이 비어 있습니다 — 포털 장애로 보입니다. ' +
+            '시간을 두고 다시 시도하세요 (이 결과는 소속 여부 판정의 근거가 아닙니다).',
+          { year_month: yearMonth },
+        );
       }
     }
 
@@ -373,6 +357,3 @@ export async function findGroupByJurirNo(
   store.set(`jurir_group_miss:${yearMonth}:${jurirNo}`, '1');
   return null;
 }
-
-/** 상호 정규화 결과를 노출한다 (진단·테스트용) */
-export { normalizeName };

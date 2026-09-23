@@ -13,13 +13,16 @@
  */
 
 import { z } from 'zod';
-import {
-  EgroupClient,
-  type Affiliate,
-  type AffiliateFinance,
-  type GroupSummary,
-} from '../clients/egroup.js';
+import { EgroupClient, type AffiliateFinance, type GroupSummary } from '../clients/egroup.js';
 import { inferYearMonth, verifyYearMonth } from './resolve-entity.js';
+import {
+  cachedAffiliates,
+  cachedFinances,
+  cachedGroups,
+  emptyGroupListError,
+  groupSummaryFields,
+  matchGroupByName,
+} from '../lib/egroup-cache.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
@@ -71,25 +74,6 @@ export function toWon(s: string | undefined): number | string | null {
   return Number.isFinite(n) ? n : s;
 }
 
-async function cachedJson<T>(key: string, fetcher: () => Promise<T>): Promise<{ value: T; cached: boolean }> {
-  const store = getStore();
-  const hit = store.get(key);
-  if (hit) {
-    const parsed = JSON.parse(hit) as T;
-    // 오염된 구버전 빈 캐시([])는 무시하고 다시 받는다 — "빈 목록 미캐시" 규칙 도입 전에
-    // 박제된 캐시가 계속 계열사 0개를 정상 응답으로 내던 경로 (Codex 7차 중간 5, P0-3 과 같은 패턴)
-    if (!(Array.isArray(parsed) && parsed.length === 0)) {
-      return { value: parsed, cached: true };
-    }
-  }
-  const value = await fetcher();
-  // 빈 목록은 캐시하지 않는다 — 상류 오류를 연단위로 박제하면 1년짜리 오진이 된다
-  if (!(Array.isArray(value) && value.length === 0)) {
-    store.set(key, JSON.stringify(value));
-  }
-  return { value, cached: false };
-}
-
 export async function getGroupStructure(input: GetGroupStructureInput): Promise<unknown> {
   const egroup = new EgroupClient();
   const store = getStore();
@@ -108,21 +92,11 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
   }
 
   // ① 지정 집단 목록 (연단위 캐시)
-  const groupsRes = await cachedJson<GroupSummary[]>(`egroup_groups:${yearMonth}`, async () => {
-    const g = await egroup.groups(yearMonth);
-    apiCalls++;
-    return g;
-  });
+  const groupsRes = await cachedGroups(egroup, yearMonth);
   if (groupsRes.cached) cacheHits++;
+  else apiCalls++;
   const allGroups = groupsRes.value;
-  if (allGroups.length === 0) {
-    throw new ToolError(
-      'group_not_found',
-      `${yearMonth} 기준 지정 기업집단 목록이 비어 있습니다. ` +
-        `해당 연도 지정이 아직 공개되지 않았을 수 있습니다 — year_month 를 전년도 5월(예: ${Number(yearMonth.slice(0, 4)) - 1}05)로 지정해 보세요.`,
-      { year_month: yearMonth },
-    );
-  }
+  if (allGroups.length === 0) throw emptyGroupListError(yearMonth, 'year_month');
 
   // ② 집단 특정 — 코드 직접 지정 또는 이름 매칭
   const q = input.group.trim();
@@ -132,13 +106,9 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
     group = allGroups.find((g) => g.unityGrupCode === q);
     matchKind = 'code';
   } else {
-    const norm = (s: string) => s.replace(/[\s()㈜]/g, '');
-    const target = norm(q);
-    group = allGroups.find((g) => norm(g.unityGrupNm) === target);
+    const { exact, candidates } = matchGroupByName(allGroups, q);
+    group = exact ?? undefined;
     if (!group) {
-      const candidates = allGroups
-        .filter((g) => norm(g.unityGrupNm).includes(target))
-        .slice(0, 5);
       if (candidates.length === 1) {
         // 부분일치 단독 후보 자동 선택 — 정확일치와 구분되는 플래그를 응답에 남긴다 (P2-마 23)
         group = candidates[0];
@@ -160,28 +130,18 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
       { year_month: yearMonth },
     );
   }
-  const grp = group; // 클로저 안에서 undefined 좁히기가 풀리지 않도록 고정
-
-  // ③ 소속회사 전수 — resolve_entity 역조회와 같은 캐시 키
-  const affKey = `egroup_affiliates:${yearMonth}:${grp.unityGrupCode}`;
-  const affRes = await cachedJson<Affiliate[]>(affKey, async () => {
-    const a = await egroup.affiliates(yearMonth, grp.unityGrupCode);
-    apiCalls++;
-    return a;
-  });
+  // ③ 소속회사 전수 — resolve_entity 역조회와 같은 캐시 (lib/egroup-cache)
+  const affRes = await cachedAffiliates(egroup, yearMonth, group.unityGrupCode);
   if (affRes.cached) cacheHits++;
+  else apiCalls++;
   const affiliates = affRes.value;
 
   // ④ 재무현황 (옵션, 연단위 캐시)
   let financeByJurir = new Map<string, AffiliateFinance>();
   if (input.include_financials) {
-    const finKey = `egroup_finances:${yearMonth}:${grp.unityGrupCode}`;
-    const finRes = await cachedJson<AffiliateFinance[]>(finKey, async () => {
-      const f = await egroup.finances(yearMonth, grp.unityGrupCode);
-      apiCalls++;
-      return f;
-    });
+    const finRes = await cachedFinances(egroup, yearMonth, group.unityGrupCode);
     if (finRes.cached) cacheHits++;
+    else apiCalls++;
     financeByJurir = new Map(
       finRes.value.map((f) => [String(f.jurirno).replace(/-/g, ''), f]),
     );
@@ -250,13 +210,7 @@ export async function getGroupStructure(input: GetGroupStructureInput): Promise<
 
   return {
     group: {
-      name: group.unityGrupNm,
-      code: group.unityGrupCode,
-      representative_person: group.smerNm,
-      representative_company: group.repreCmpny,
-      affiliate_count: Number(group.sumCmpnyCo) || group.sumCmpnyCo,
-      mutual_investment_restricted: group.invstmntLmtt,
-      year_month: yearMonth,
+      ...groupSummaryFields(group, yearMonth),
       // 어떻게 매칭됐는지 — 부분일치 자동 선택이 정확일치처럼 보이지 않게 (P2-마 23)
       matched_by: matchKind,
       ...(matchKind === 'partial'

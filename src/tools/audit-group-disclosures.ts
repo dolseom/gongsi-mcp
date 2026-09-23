@@ -24,7 +24,7 @@ import { z } from 'zod';
 import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { collectAdaptive, type BatchResult } from '../search/batch.js';
 import { loadDocument, isDocumentCached, type DocMeta } from './read-disclosure.js';
-import { loadCorpIndex, corpIndexIsStale, resolveCorp } from '../resolver/corp-index.js';
+import { loadCorpIndex, corpIndexIsStale, resolveCorp, LOADED_AT_KEY } from '../resolver/corp-index.js';
 import { getGroupStructure } from './get-group-structure.js';
 import { normalizeCompanyName } from '../parsers/md-table.js';
 import { getStore } from '../lib/store.js';
@@ -266,7 +266,7 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
         // 이름 경로는 CorpNotFoundError 를 던지는데 코드 경로만 무검증이었다 (P2-마 20) —
         // 오타 코드가 모집단에 들어가면 "감사 완료, 지연 0건"이라는 거짓 안심으로 귀결된다.
         if (canValidateCodes) {
-          const loadedAt = store.get('corps_loaded_at'); // corp-index.ts LOADED_AT_KEY
+          const loadedAt = store.get(LOADED_AT_KEY);
           throw new ToolError(
             'corp_not_found',
             `corp_code '${t}' 가 DART 법인코드 목록(${store.corpCount().toLocaleString()}건` +
