@@ -305,6 +305,19 @@ function pairKey(company: string, counterparty: string): string {
   return `${normalizeCompanyName(company)} ${normalizeCompanyName(counterparty)}`;
 }
 
+/**
+ * 확인된 공시들의 접수일 − 거래일 (달력일). 최근접(절댓값 최소, 동률이면 앞 것)과
+ * 근접 창(−NEAR_BEFORE_DAYS ~ +NEAR_AFTER_DAYS) 안에 하나라도 있는지. 차입·대여 두 관점이 같은 규칙을 쓴다.
+ * `matching` 은 비어 있지 않아야 한다 (exists 판정의 근거 공시).
+ */
+function nearestFilingGap(matching: Disclosure[], date: string): { nearest: number; near: boolean } {
+  const gaps = matching.map((f) => daysBetween(f.rcept_dt, date));
+  return {
+    nearest: gaps.reduce((a, g) => (Math.abs(g) < Math.abs(a) ? g : a)),
+    near: gaps.some((g) => g >= -NEAR_BEFORE_DAYS && g <= NEAR_AFTER_DAYS),
+  };
+}
+
 /** 상태가 `status` 인 항목만 (원래 순서 유지) */
 function byStatus<T extends { status?: string }>(items: readonly T[], status: NonNullable<T['status']>): T[] {
   return items.filter((x) => x.status === status);
@@ -2444,19 +2457,43 @@ export async function detectUndisclosedTransactions(
     }
   }
 
+  /**
+   * 판정 확정 6경로(차입·대여·(6)·(5)·유가증권·상대방)의 공통 뼈대 — 공시의무자 회사의 J001 을
+   * 대조하고(checkCompany) 그 결과 필드를 대상에 옮겨 담는다(applyCommon). 상태·reason 은
+   * 경로마다 어휘가 달라 호출부가 정한다.
+   */
+  async function checkAndApply(
+    target: J001CheckFields,
+    obligor: string,
+    typeFilter: (nm: string) => boolean,
+    typeLabel: string,
+    counterparty: string,
+    nearDate?: string,
+  ): Promise<CompanyCheck> {
+    const chk = await checkCompany(
+      normalizeCompanyName(obligor),
+      typeFilter,
+      typeLabel,
+      counterparty,
+      nearDate,
+    );
+    applyCommon(target, chk, counterparty, typeLabel);
+    return chk;
+  }
+
   // 여기부터 상태 확정 구간 — 남은 상류 비용은 J001 **원문 열기**뿐이다 (검색은 끝났다).
   budget.enter('judge');
 
   for (const b of judgedBorrowings) {
     if (b.status !== 'not_judged' || b.reason) continue; // over 만 남아 있다
-    const chk = await checkCompany(
-      normalizeCompanyName(b.company),
+    const chk = await checkAndApply(
+      b,
+      b.company,
       isBorrowingReport,
       '자금차입',
       b.counterparty,
       b.date ?? undefined,
     );
-    applyCommon(b, chk, b.counterparty, '자금차입');
     if (chk.outcome === 'not_judged') {
       b.status = 'not_judged';
       b.reason = chk.reason!;
@@ -2478,10 +2515,8 @@ export async function detectUndisclosedTransactions(
         '창 안에 같은 유형 공시가 존재한다는 것까지만 확인됐습니다';
       continue;
     }
-    const gaps = matching.map((f) => daysBetween(f.rcept_dt, b.date!));
-    const nearest = gaps.reduce((a, g) => (Math.abs(g) < Math.abs(a) ? g : a));
+    const { nearest, near } = nearestFilingGap(matching, b.date);
     b.nearest_filing_gap_days = nearest;
-    const near = gaps.some((g) => g >= -NEAR_BEFORE_DAYS && g <= NEAR_AFTER_DAYS);
     if (near) {
       b.status = 'j001_filing_near_date';
     } else {
@@ -2499,14 +2534,14 @@ export async function detectUndisclosedTransactions(
   for (const b of judgedBorrowings) {
     const side = b.lender_side;
     if (!side || side.status !== 'not_judged' || side.reason) continue; // 기준 초과 건만
-    const chk = await checkCompany(
-      normalizeCompanyName(side.company),
+    const chk = await checkAndApply(
+      side,
+      side.company,
       isLendingReport,
       '자금대여',
       b.company,
       b.date ?? undefined,
     );
-    applyCommon(side, chk, b.company, '자금대여');
     if (chk.outcome === 'not_judged') {
       side.reason = chk.reason!;
       continue;
@@ -2527,10 +2562,9 @@ export async function detectUndisclosedTransactions(
         '창 안에 자금대여 공시가 존재한다는 것까지만 확인됐습니다';
       continue;
     }
-    const gaps = matching.map((f) => daysBetween(f.rcept_dt, b.date!));
-    const nearest = gaps.reduce((a, g) => (Math.abs(g) < Math.abs(a) ? g : a));
+    const { nearest, near } = nearestFilingGap(matching, b.date);
     side.nearest_filing_gap_days = nearest;
-    if (gaps.some((g) => g >= -NEAR_BEFORE_DAYS && g <= NEAR_AFTER_DAYS)) {
+    if (near) {
       side.status = 'j001_filing_near_date';
     } else {
       side.status = 'j001_filing_in_window_only';
@@ -2545,13 +2579,7 @@ export async function detectUndisclosedTransactions(
     // 상품·용역 공시의무는 상대방 요건(동일인·친족 20%↑ 출자 계열사 등)이 전제인데
     // 이 도구는 지분 데이터가 없어 확인하지 못한다 — 모든 신호에 미확인을 명시 (Codex 4차 C1)
     g.counterparty_qualification = 'not_verified';
-    const chk = await checkCompany(
-      normalizeCompanyName(g.company),
-      isGoodsServicesReport,
-      '상품·용역',
-      g.counterparty,
-    );
-    applyCommon(g, chk, g.counterparty, '상품·용역');
+    const chk = await checkAndApply(g, g.company, isGoodsServicesReport, '상품·용역', g.counterparty);
     if (chk.outcome === 'not_judged') {
       g.status = 'not_judged';
       g.reason = chk.reason!;
@@ -2575,13 +2603,7 @@ export async function detectUndisclosedTransactions(
   for (const m of signalGoodsMatrix) {
     // 상대방 요건(동일인·친족 20%↑ 출자) 미확인 한계는 (6)과 똑같이 적용된다
     m.counterparty_qualification = 'not_verified';
-    const chk = await checkCompany(
-      normalizeCompanyName(m.company),
-      isGoodsServicesReport,
-      '상품·용역',
-      m.counterparty,
-    );
-    applyCommon(m, chk, m.counterparty, '상품·용역');
+    const chk = await checkAndApply(m, m.company, isGoodsServicesReport, '상품·용역', m.counterparty);
     if (chk.outcome === 'not_judged') {
       m.status = 'not_judged';
       m.reason = chk.reason!;
@@ -2611,13 +2633,7 @@ export async function detectUndisclosedTransactions(
   }
 
   for (const sec of signalSecurities) {
-    const chk = await checkCompany(
-      normalizeCompanyName(sec.company),
-      isSecuritiesReport,
-      '유가증권',
-      sec.counterparty,
-    );
-    applyCommon(sec, chk, sec.counterparty, '유가증권');
+    const chk = await checkAndApply(sec, sec.company, isSecuritiesReport, '유가증권', sec.counterparty);
     if (chk.outcome === 'not_judged') {
       sec.status = 'not_judged';
       sec.reason = chk.reason!;
@@ -2642,13 +2658,13 @@ export async function detectUndisclosedTransactions(
   //       날짜가 없는 신호라 존재 확인까지만 하고 근접 대조는 하지 않는다.
   for (const { side, kind, origin } of counterSides) {
     if (side.status !== 'not_judged' || side.reason) continue; // 기준 초과 건만
-    const chk = await checkCompany(
-      normalizeCompanyName(side.company),
+    const chk = await checkAndApply(
+      side,
+      side.company,
       kind === 'goods' ? isGoodsServicesReport : isSecuritiesReport,
       kind === 'goods' ? '상품·용역' : '유가증권',
       origin,
     );
-    applyCommon(side, chk, origin, kind === 'goods' ? '상품·용역' : '유가증권');
     if (chk.outcome === 'not_judged') {
       side.reason = chk.reason!;
       continue;
