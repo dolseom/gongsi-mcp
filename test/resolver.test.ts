@@ -9,6 +9,7 @@ import {
   ZipError,
 } from '../src/lib/zip.js';
 import {
+  loadCorpIndex,
   parseCorpCodeXml,
   detectIdentifier,
   normalizeName,
@@ -137,6 +138,21 @@ describe('corpCode.xml 파싱', () => {
     expect(records[0]).toMatchObject({ corpCode: '00126380', stockCode: '005930' });
     // &amp; 디코딩 + 빈 종목코드 → null
     expect(records[1]).toMatchObject({ corpName: '삼성E&A', stockCode: null, jurirNo: null });
+  });
+
+  it('ZIP 안에 XML 이 없으면 규격 오류(dart_api_error)로 던진다 — 일반 Error 가 아니다', async () => {
+    const store = new Store(':memory:');
+    __setStore(store);
+    try {
+      const zip = makeZip([{ name: 'readme.txt', data: enc.encode('no xml') }]);
+      const client = { downloadCorpCode: async () => zip } as unknown as DartClient;
+      const err = await loadCorpIndex(client).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ToolError);
+      expect(err).toMatchObject({ code: 'dart_api_error' });
+    } finally {
+      __setStore(null);
+      store.close();
+    }
   });
 });
 

@@ -25,7 +25,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { USER_AGENT } from './lib/config.js';
+import { getConfig, USER_AGENT } from './lib/config.js';
 import { Store } from './lib/store.js';
 
 const DART_GUIDE = 'https://opendart.fss.or.kr/ → 인증키 신청 (즉시 발급)';
@@ -295,7 +295,8 @@ export async function runSetup(argv: string[]): Promise<number> {
     mkdirSync(dirname(target.path), { recursive: true });
     const existing = existsSync(target.path) ? readFileSync(target.path, 'utf-8') : '';
     const bak = backupIfExists(target.path);
-    writeFileSync(target.path, upsertEnvContent(existing, updates), { encoding: 'utf-8', mode: 0o600 });
+    const envContent = upsertEnvContent(existing, updates);
+    writeFileSync(target.path, envContent, { encoding: 'utf-8', mode: 0o600 });
     restrictPermissions(target.path);
     console.log(`\n.env 기록: ${target.path}${bak ? ` (기존 파일 백업: ${bak})` : ''}`);
 
@@ -303,8 +304,14 @@ export async function runSetup(argv: string[]): Promise<number> {
     // 다른 SQLite 바인딩에서 "한글 경로 + WAL 비호환"이 실측된 사례가 있다 (korean-dart-mcp 피드백 §3-2).
     // node:sqlite 는 다른 구현이라 단정할 수 없으므로 추정 대신 실제로 한 번 열어 검증한다.
     {
-      const cacheDb =
-        updates['GONGSI_CACHE_DB'] ?? join(process.cwd(), 'data', 'cache.db');
+      // 서버가 실제로 열 경로를 검사한다 — 방금 쓴 .env 의 GONGSI_CACHE_DB(기존 줄 포함)가 있으면 그것,
+      // 없으면 서버(config.ts)의 기본값: 환경변수 GONGSI_CACHE_DB → **패키지 루트** 기준 data/cache.db.
+      // 종전의 cwd 기준 경로는 npx 설치본이나 --env-path 로 실행하면 서버가 쓰지 않는 파일을 검사했다.
+      const fromEnvFile = /^GONGSI_CACHE_DB=(.*)$/m
+        .exec(envContent)?.[1]
+        ?.trim()
+        .replace(/^(['"])(.*)\1$/, '$2');
+      const cacheDb = fromEnvFile || getConfig().cacheDbPath;
       // eslint 없는 프로젝트 — 제어문자 검사 대신 코드포인트로 비ASCII 를 판정한다
       const nonAscii = [...cacheDb].some((ch) => (ch.codePointAt(0) ?? 0) > 0x7f);
       try {

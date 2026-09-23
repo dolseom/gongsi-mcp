@@ -13,7 +13,7 @@ import type { DartClient } from '../clients/dart.js';
 import { getStore, type CorpRecord } from '../lib/store.js';
 import { getLogger, redact } from '../lib/logger.js';
 import { readFirstEntry } from '../lib/zip.js';
-import { AmbiguousCorpError, CorpNotFoundError, ToolError } from '../lib/errors.js';
+import { AmbiguousCorpError, CorpNotFoundError, DartApiError, ToolError } from '../lib/errors.js';
 
 const log = getLogger('corp-index');
 
@@ -29,7 +29,8 @@ export async function loadCorpIndex(client: DartClient): Promise<number> {
   const zip = await client.downloadCorpCode();
 
   const entry = readFirstEntry(zip, (n) => n.toLowerCase().endsWith('.xml'));
-  if (!entry) throw new Error('법인코드 ZIP 안에 XML이 없습니다.');
+  // 일반 Error 는 도구 경계에서 규격 오류 코드를 잃는다 — 같은 응답의 'ZIP 아님'(dart.ts)과 같은 어휘로
+  if (!entry) throw new DartApiError('invalid_payload', '법인코드 ZIP 안에 XML이 없습니다.');
 
   const xml = new TextDecoder('utf-8').decode(entry.content);
   const records = parseCorpCodeXml(xml);
