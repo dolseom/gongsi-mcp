@@ -218,6 +218,8 @@ describe('기업집단 구조 — 순수 로직', () => {
     expect(inferYearMonth(new Date('2026-07-31'))).toBe('202605');
     expect(inferYearMonth(new Date('2026-03-01'))).toBe('202505');
     expect(inferYearMonth(new Date('2026-05-01'))).toBe('202605');
+    // KST 5월 1일 08:00 = UTC 4월 30일 23:00 — 서버 시간대와 무관하게 한국 날짜로 본다
+    expect(inferYearMonth(new Date('2026-04-30T23:00:00Z'))).toBe('202605');
   });
 });
 

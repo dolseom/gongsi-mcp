@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod';
+import { todayKstYMD } from '../rules/business-days.js';
 import { yearMonthSchema } from '../lib/schemas.js';
 import { DartClient } from '../clients/dart.js';
 import { EgroupClient } from '../clients/egroup.js';
@@ -64,8 +65,10 @@ export type ResolveEntityInput = z.infer<typeof resolveEntityInput>;
  * 공정위는 매년 5월 1일 기준으로 지정하고 포털은 연 1회 갱신된다.
  */
 export function inferYearMonth(now = new Date()): string {
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1;
+  // 한국시간 기준 — 로컬 시각을 쓰면 UTC 서버에서 5월 1일 00~09시(KST)에 전년도로 추정한다
+  const ymd = todayKstYMD(now);
+  const y = Number(ymd.slice(0, 4));
+  const m = Number(ymd.slice(4, 6));
   // 5월 지정 발표 전이면 전년도 기준이 최신이다
   return m >= 5 ? `${y}05` : `${y - 1}05`;
 }
