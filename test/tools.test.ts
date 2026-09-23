@@ -2,7 +2,8 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkDisclosureDuty } from '../src/tools/check-disclosure-duty.js';
-import { Store, __setStore, todayKst } from '../src/lib/store.js';
+import { Store, todayKst } from '../src/lib/store.js';
+import { useMemoryStore } from './helpers/store.js';
 import { redact } from '../src/lib/logger.js';
 import { __resetConfig } from '../src/lib/config.js';
 import { 억 } from '../src/rules/thresholds.js';
@@ -281,54 +282,44 @@ describe('check_disclosure_duty', () => {
 });
 
 describe('저장소 (node:sqlite 어댑터)', () => {
-  let store: Store;
-
-  beforeEach(() => {
-    store = new Store(':memory:');
-    __setStore(store);
-  });
-
-  afterEach(() => {
-    __setStore(null);
-    store.close();
-  });
+  const store = useMemoryStore();
 
   it('일일 호출 카운터는 KST 일자 버킷으로 누적된다', () => {
-    expect(store.todayCallCount('dart')).toBe(0);
-    store.incrementCall('dart', 1);
-    store.incrementCall('dart', 2);
-    expect(store.todayCallCount('dart')).toBe(3);
+    expect(store().todayCallCount('dart')).toBe(0);
+    store().incrementCall('dart', 1);
+    store().incrementCall('dart', 2);
+    expect(store().todayCallCount('dart')).toBe(3);
     // API 별로 분리된다
-    expect(store.todayCallCount('egroup')).toBe(0);
+    expect(store().todayCallCount('egroup')).toBe(0);
     expect(todayKst()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it('법인 인덱스는 상호 완전일치로 동명 법인을 모두 돌려준다', () => {
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '00126229', corpName: '삼성물산', stockCode: null, jurirNo: '1101110015762', modifyDate: '20260101' },
       { corpCode: '00149655', corpName: '삼성물산', stockCode: null, jurirNo: '1101110002975', modifyDate: '20260101' },
     ]);
-    expect(store.findCorpsByName('삼성물산')).toHaveLength(2);
+    expect(store().findCorpsByName('삼성물산')).toHaveLength(2);
     // 법인등록번호로 유일하게 특정된다 — 기업집단포털 조인 키
-    expect(store.findCorpsByJurirNo('1101110002975')).toHaveLength(1);
+    expect(store().findCorpsByJurirNo('1101110002975')).toHaveLength(1);
   });
 
   it('jurir_no 는 새 값이 없으면 기존 값을 지킨다', () => {
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '00126380', corpName: '삼성전자', stockCode: '005930', jurirNo: '1301110006246', modifyDate: '20260101' },
     ]);
     // CORPCODE.xml 재적재 — jurir_no 가 없는 소스
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '00126380', corpName: '삼성전자', stockCode: '005930', jurirNo: null, modifyDate: '20260201' },
     ]);
-    expect(store.getCorpByCode('00126380')?.jurirNo).toBe('1301110006246');
-    expect(store.getCorpByCode('00126380')?.modifyDate).toBe('20260201');
+    expect(store().getCorpByCode('00126380')?.jurirNo).toBe('1301110006246');
+    expect(store().getCorpByCode('00126380')?.modifyDate).toBe('20260201');
   });
 
   it('파싱 실패한 원문도 빈 값으로 캐시해 재다운로드를 막는다', () => {
-    store.storeBody('20260101000001', '');
-    expect(store.hasBody('20260101000001')).toBe(true);
-    expect(store.getBody('20260101000001')?.content).toBe('');
+    store().storeBody('20260101000001', '');
+    expect(store().hasBody('20260101000001')).toBe(true);
+    expect(store().getBody('20260101000001')?.content).toBe('');
   });
 });
 

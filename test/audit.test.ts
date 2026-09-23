@@ -5,8 +5,9 @@
  *   비상장(E) 의결 2026-07-22 → 기한 2026-07-31 / 상장이었다면 3영업일 = 2026-07-27
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Store, __setStore } from '../src/lib/store.js';
+import { describe, it, expect } from 'vitest';
+import { useMemoryStore } from './helpers/store.js';
+import { disclosureBuilder } from './helpers/disclosure.js';
 import {
   auditGroupDisclosures,
   suggestDocSplits,
@@ -16,29 +17,13 @@ import type { Disclosure } from '../src/clients/dart.js';
 import type { DocMeta } from '../src/tools/read-disclosure.js';
 import type { BatchResult } from '../src/search/batch.js';
 
-let store: Store;
-beforeEach(() => {
-  store = new Store(':memory:');
-  __setStore(store);
-});
-afterEach(() => {
-  store.close();
-  __setStore(null);
-});
+const store = useMemoryStore();
 
-function row(over: Partial<Disclosure>): Disclosure {
-  return {
-    corp_code: '00000001',
-    corp_name: '테스트회사',
-    corp_cls: 'E',
-    report_nm: '대규모내부거래관련(자금차입)',
-    rcept_no: '20260728000001',
-    flr_nm: '테스트회사',
-    rcept_dt: '20260728',
-    rm: '공',
-    ...over,
-  };
-}
+const row = disclosureBuilder({
+  corp_name: '테스트회사',
+  report_nm: '대규모내부거래관련(자금차입)',
+  rcept_dt: '20260728',
+});
 
 function docMeta(over: Partial<DocMeta>): DocMeta {
   return {
@@ -241,11 +226,11 @@ describe('감사 범위의 사각 고지 — 미공시·타 공시유형', () =>
 
 describe('corp_code 존재 검증 (P2-마 20)', () => {
   const seed = () => {
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '00000001', corpName: '테스트회사', stockCode: null, jurirNo: null, modifyDate: null },
     ]);
     // 신선한 인덱스로 표시 — 낡았으면 미존재 코드에서 실제 갱신(네트워크)을 시도한다 (Opus 7차 중간 2)
-    store.set('corps_loaded_at', new Date().toISOString());
+    store().set('corps_loaded_at', new Date().toISOString());
   };
 
   it('인덱스가 있으면 미존재 8자리 코드를 corp_not_found 로 거부한다 (이름 경로와 대칭)', async () => {

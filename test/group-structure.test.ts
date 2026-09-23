@@ -3,11 +3,11 @@
  * 포털 API 결합 경로는 실서버 스모크로 검증한다.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isGroupCode, toWon } from '../src/tools/get-group-structure.js';
 import { inferYearMonth } from '../src/tools/resolve-entity.js';
 import { EgroupClient, describeFetchFailure, parsePortalXml } from '../src/clients/egroup.js';
-import { Store, __setStore } from '../src/lib/store.js';
+import { useMemoryStore } from './helpers/store.js';
 import type { ToolError } from '../src/lib/errors.js';
 
 describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
@@ -93,16 +93,9 @@ describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
 });
 
 describe('EgroupClient — 파싱 실패 가드 (Codex 3차 백로그)', () => {
-  let store: Store;
-
-  beforeEach(() => {
-    store = new Store(':memory:');
-    __setStore(store);
-  });
+  useMemoryStore();
 
   afterEach(() => {
-    __setStore(null);
-    store.close();
     vi.unstubAllGlobals();
   });
 
@@ -121,16 +114,9 @@ describe('EgroupClient — 파싱 실패 가드 (Codex 3차 백로그)', () => {
 });
 
 describe('EgroupClient — 수집 완전성 (부분 목록을 성공으로 돌려주지 않는다)', () => {
-  let store: Store;
-
-  beforeEach(() => {
-    store = new Store(':memory:');
-    __setStore(store);
-  });
+  useMemoryStore();
 
   afterEach(() => {
-    __setStore(null);
-    store.close();
     vi.unstubAllGlobals();
   });
 

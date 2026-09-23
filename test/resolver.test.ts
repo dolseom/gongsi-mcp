@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { deflateRawSync } from 'node:zlib';
 import {
   listEntries,
@@ -14,7 +14,7 @@ import {
   normalizeName,
   resolveCorp,
 } from '../src/resolver/corp-index.js';
-import { Store, __setStore } from '../src/lib/store.js';
+import { useMemoryStore } from './helpers/store.js';
 import { AmbiguousCorpError, CorpNotFoundError, ToolError } from '../src/lib/errors.js';
 import type { DartClient } from '../src/clients/dart.js';
 
@@ -162,23 +162,16 @@ describe('식별자 판정·상호 정규화', () => {
 });
 
 describe('resolveCorp (사전 적재된 인덱스)', () => {
-  let store: Store;
+  const store = useMemoryStore();
   // 인덱스가 차 있으면 client 를 호출하지 않는다 — 더미로 충분
   const dummy = {} as DartClient;
 
   beforeEach(() => {
-    store = new Store(':memory:');
-    __setStore(store);
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '00126380', corpName: '삼성전자', stockCode: '005930', jurirNo: null, modifyDate: null },
       { corpCode: '00126229', corpName: '삼성물산', stockCode: null, jurirNo: null, modifyDate: null },
       { corpCode: '00149655', corpName: '삼성물산', stockCode: null, jurirNo: null, modifyDate: null },
     ]);
-  });
-
-  afterEach(() => {
-    __setStore(null);
-    store.close();
   });
 
   it('상호 완전일치 단독이면 그대로 찾는다', async () => {
@@ -205,7 +198,7 @@ describe('resolveCorp (사전 적재된 인덱스)', () => {
 
   it('법인등록번호는 채워진 뒤에만 찾아지고, 없으면 이유를 설명한다', async () => {
     await expect(resolveCorp('1301110006246', dummy)).rejects.toThrow(ToolError);
-    store.setJurirNo('00126380', '1301110006246');
+    store().setJurirNo('00126380', '1301110006246');
     const r = await resolveCorp('130111-0006246', dummy);
     expect(r).toMatchObject({ corpCode: '00126380', matchedBy: 'jurir_no' });
   });
@@ -216,7 +209,7 @@ describe('resolveCorp (사전 적재된 인덱스)', () => {
 
   it('숫자 형식은 추정일 뿐 — 코드 조회가 비면 이름으로 폴백한다 (Codex 지적)', async () => {
     // 상호가 6자리 숫자인 회사: 종목코드로 오분류되지만 이름 폴백으로 찾아진다
-    store.upsertCorps([
+    store().upsertCorps([
       { corpCode: '99999901', corpName: '123456', stockCode: null, jurirNo: null, modifyDate: null },
     ]);
     const r = await resolveCorp('123456', dummy);

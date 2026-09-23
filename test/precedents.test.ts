@@ -5,21 +5,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { selectCandidates, findPrecedentsInput } from '../src/tools/find-precedents.js';
-import type { Disclosure } from '../src/clients/dart.js';
+import { disclosureBuilder } from './helpers/disclosure.js';
 
-function row(over: Partial<Disclosure>): Disclosure {
-  return {
-    corp_code: '00000001',
-    corp_name: '테스트',
-    corp_cls: 'E',
-    report_nm: '특수관계인으로부터자금차입',
-    rcept_no: '20260701000001',
-    flr_nm: '테스트',
-    rcept_dt: '20260701',
-    rm: '공',
-    ...over,
-  };
-}
+const row = disclosureBuilder({
+  corp_name: '테스트',
+  report_nm: '특수관계인으로부터자금차입',
+  rcept_dt: '20260701',
+});
 
 describe('선례 후보 선정', () => {
   it('최신순으로 정렬한다 (같은 날은 rcept_no 역순)', () => {

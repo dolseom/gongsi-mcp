@@ -6,19 +6,15 @@
  * **예산을 주지 않는 도구(audit·search 등)의 동작은 그대로여야 한다.**
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { DartClient } from '../src/clients/dart.js';
 import { Deadline } from '../src/lib/deadline.js';
-import { Store, __setStore } from '../src/lib/store.js';
+import { useMemoryStore } from './helpers/store.js';
 
-let store: Store;
-beforeEach(() => {
-  store = new Store(':memory:');
-  __setStore(store);
-});
+useMemoryStore();
 afterEach(() => {
-  store.close();
-  __setStore(null);
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -46,8 +42,16 @@ describe('시간 예산이 붙은 DART 요청', () => {
 
   it('요청 타임아웃이 **남은 예산**으로 좁혀진다 — 100초 설정값을 그대로 쓰지 않는다', async () => {
     const c = clock();
-    // 남은 1.2초. 좁히지 않으면 이 테스트는 설정값 100초를 기다린다.
+    // 남은 1.2초. 좁히지 않으면 이 요청은 설정값 100초 뒤에야 끊긴다.
     const d = new Deadline(1_200, c.now);
+    // 실제로 1.2초를 기다리지 않도록 가짜 타이머로 굴린다. Node 의 AbortSignal.timeout 은 내부 타이머라
+    // vi.useFakeTimers 가 가로채지 못한다 → 같은 계약(ms 뒤 TimeoutError 로 abort)을 가짜 setTimeout 위에 얹는다.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(new DOMException('signal timed out', 'TimeoutError')), ms);
+      return ac.signal;
+    });
     // 신호가 끊길 때까지 응답하지 않는 상류 (연결은 됐는데 본문이 안 오는 상황)
     const f = vi.fn(
       (_url: string, init?: { signal?: AbortSignal }) =>
@@ -58,14 +62,21 @@ describe('시간 예산이 붙은 DART 요청', () => {
     vi.stubGlobal('fetch', f);
 
     const client = new DartClient('test-key', { deadline: d });
-    const started = Date.now();
-    await expect(client.listPage({ corpCode: '00111111' })).rejects.toMatchObject({
-      code: 'deadline_exceeded',
-    });
-    // 100초가 아니라 남은 예산 안에서 끊겼다 (여유 있게 10초로 확인)
-    expect(Date.now() - started).toBeLessThan(10_000);
+    let settled = false;
+    let error: unknown;
+    void client
+      .listPage({ corpCode: '00111111' })
+      .catch((e: unknown) => void (error = e))
+      .finally(() => void (settled = true));
+
+    await vi.advanceTimersByTimeAsync(1_199);
+    expect(settled).toBe(false); // 남은 예산이 다 가기 전에는 끊지 않는다
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true); // 100초가 아니라 남은 예산(1.2초)에서 끊겼다
+    expect(error).toMatchObject({ code: 'deadline_exceeded' });
+    expect(timeoutSpy).toHaveBeenCalledWith(1_200); // 설정값 100초가 아니라 남은 예산
     expect(f).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  });
 
   it('백오프 + 다음 시도 시간이 남지 않으면 재시도하지 않는다 (sleep 으로 예산을 태우지 않는다)', async () => {
     const c = clock();

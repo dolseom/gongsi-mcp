@@ -6,8 +6,9 @@
  *   ② 미제출을 볼 수 있다 — 단 "후보"이며, 기한 미도래·조건부 의무에는 쓰지 않는다
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Store, __setStore } from '../src/lib/store.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { useMemoryStore } from './helpers/store.js';
+import { disclosureBuilder } from './helpers/disclosure.js';
 import {
   auditPeriodicDisclosures,
   classifyReportName,
@@ -20,34 +21,20 @@ import { buildPeriodicCalendar } from '../src/rules/periodic-calendar.js';
 import type { Disclosure } from '../src/clients/dart.js';
 import type { BatchResult } from '../src/search/batch.js';
 
-let store: Store;
+const store = useMemoryStore();
 beforeEach(() => {
-  store = new Store(':memory:');
-  __setStore(store);
-  store.upsertCorps([
+  store().upsertCorps([
     { corpCode: '00000001', corpName: '갑회사', stockCode: null, jurirNo: null, modifyDate: null },
     { corpCode: '00000002', corpName: '을회사', stockCode: null, jurirNo: null, modifyDate: null },
   ]);
-  store.set('corps_loaded_at', new Date().toISOString());
-});
-afterEach(() => {
-  store.close();
-  __setStore(null);
+  store().set('corps_loaded_at', new Date().toISOString());
 });
 
-function row(over: Partial<Disclosure>): Disclosure {
-  return {
-    corp_code: '00000001',
-    corp_name: '갑회사',
-    corp_cls: 'E',
-    report_nm: '대규모기업집단현황공시[연1회공시및1/4분기용(개별회사)]',
-    rcept_no: '20260531000001',
-    flr_nm: '갑회사',
-    rcept_dt: '20260531',
-    rm: '공',
-    ...over,
-  };
-}
+const row = disclosureBuilder({
+  corp_name: '갑회사',
+  report_nm: '대규모기업집단현황공시[연1회공시및1/4분기용(개별회사)]',
+  rcept_dt: '20260531',
+});
 
 function batchOf(rows: Disclosure[]): BatchResult {
   return {
