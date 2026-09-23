@@ -162,7 +162,7 @@ export function nextBusinessDay(ymd: YMD): YMD {
   let cur = ymd;
   let guard = 0;
   while (!isBusinessDay(cur)) {
-    cur = toYMD(new Date(toDate(cur).getTime() + 86_400_000));
+    cur = addCalendarDays(cur, 1);
     if (++guard > 60) throw new Error(`영업일을 찾지 못했습니다: ${ymd} 기준 60일 초과`);
   }
   return cur;
@@ -183,7 +183,7 @@ export function addBusinessDays(from: YMD, n: number): YMD {
   let counted = 0;
   let guard = 0;
   while (counted < n) {
-    cur = toYMD(new Date(toDate(cur).getTime() + 86_400_000));
+    cur = addCalendarDays(cur, 1);
     if (isBusinessDay(cur)) counted++;
     if (++guard > 400) throw new Error(`영업일 계산이 종료되지 않았습니다: ${from} + ${n}`);
   }
@@ -202,14 +202,22 @@ export function countBusinessDays(from: YMD, to: YMD): number {
   let count = 0;
   let guard = 0;
   while (cur !== b) {
-    cur = toYMD(new Date(toDate(cur).getTime() + 86_400_000));
+    cur = addCalendarDays(cur, 1);
     if (isBusinessDay(cur)) count++;
     if (++guard > 4000) throw new Error(`영업일 계산 범위를 초과했습니다: ${from} ~ ${to}`);
   }
   return reverse ? -count : count;
 }
 
-/** 달력일 기준 경과일수 (과태료 지연일수 산정용) */
+/** 달력일 기준 경과일수 (과태료 지연일수 산정용). to 가 from 보다 이르면 음수 */
 export function countCalendarDays(from: YMD, to: YMD): number {
   return Math.round((toDate(to).getTime() - toDate(from).getTime()) / 86_400_000);
+}
+
+/**
+ * 달력일 n일 뒤 (n 이 음수면 앞). UTC 자정 기준 ms 연산이라 타임존·윤년·월말이 그대로 맞는다.
+ * 입력은 실존 날짜여야 한다 — 20260231 같은 값은 `toDate` 가 3월로 롤오버시킨다 (isValidYMD 로 먼저 거를 것).
+ */
+export function addCalendarDays(ymd: YMD, n: number): YMD {
+  return toYMD(new Date(toDate(ymd).getTime() + n * 86_400_000));
 }

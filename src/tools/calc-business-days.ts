@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import {
   addBusinessDays,
+  addCalendarDays,
   countBusinessDays,
   countCalendarDays,
   dayOfWeek,
@@ -22,8 +23,6 @@ import {
   isHolidayDataVerified,
   isValidYMD,
   nextBusinessDay,
-  toDate,
-  toYMD,
 } from '../rules/business-days.js';
 import type { LegalRef, YMD } from '../rules/types.js';
 import { ToolError } from '../lib/errors.js';
@@ -142,17 +141,13 @@ function nonBusinessReason(ymd: YMD): string {
   return parts.join(', ');
 }
 
-function nextDay(ymd: YMD): YMD {
-  return toYMD(new Date(toDate(ymd).getTime() + 86_400_000));
-}
-
 /** (from, to] 구간의 비영업일 목록. 근거 동봉용 — 상한을 넘으면 자른다. */
 function collectSkipped(from: YMD, to: YMD, cap = 40): { days: SkippedDay[]; truncated: boolean } {
   const days: SkippedDay[] = [];
   let cur = from;
   let truncated = false;
   while (cur !== to) {
-    cur = nextDay(cur);
+    cur = addCalendarDays(cur, 1);
     if (!isBusinessDay(cur)) {
       if (days.length >= cap) {
         truncated = true;
@@ -246,9 +241,9 @@ export function calcBusinessDays(input: CalcBusinessDaysInput): CalcBusinessDays
     legalBasis.push(REF_LAST_DAY);
   } else if (input.add_calendar_days !== undefined) {
     operation = 'add_calendar_days';
-    const raw = toYMD(new Date(toDate(input.date).getTime() + input.add_calendar_days * 86_400_000));
+    const raw = addCalendarDays(input.date, input.add_calendar_days);
     const effective = nextBusinessDay(raw);
-    const collected = raw === effective ? { days: [], truncated: false } : collectSkipped(nextDayBack(raw), effective);
+    const collected = raw === effective ? { days: [], truncated: false } : collectSkipped(addCalendarDays(raw, -1), effective);
     skipped = collected.days.filter((d) => d.date !== effective);
     skippedTruncated = collected.truncated;
     touchedDates = [input.date, raw, effective];
@@ -330,9 +325,4 @@ export function calcBusinessDays(input: CalcBusinessDaysInput): CalcBusinessDays
     notes,
     legalBasis,
   };
-}
-
-/** collectSkipped 는 (from, to] 를 걷는다 — raw 자신부터 포함해 걷도록 하루 앞으로 되돌린다 */
-function nextDayBack(ymd: YMD): YMD {
-  return toYMD(new Date(toDate(ymd).getTime() - 86_400_000));
 }

@@ -26,6 +26,7 @@ import {
   subcontractPaymentDeadline,
 } from './deadlines.js';
 import { loadPeriodicDuties, type PeriodicDuty } from './periodic-duties.js';
+import { addCalendarDays } from './business-days.js';
 import type { DeadlineResult, LegalRef, YMD } from './types.js';
 
 /** 캘린더 한 줄 */
@@ -150,7 +151,7 @@ function omnibusEntry(duty: PeriodicDuty, year: number, q: 1 | 2 | 3 | 4): Calen
 function goodsReducedEntry(duty: PeriodicDuty, year: number, q: 1 | 2 | 3 | 4): CalendarEntry {
   const qe = quarterEnd(year, q);
   const result = goodsServicesReducedDeadline(qe);
-  const statutory = toYmdPlusDays(qe, 45);
+  const statutory = addCalendarDays(qe, 45);
   return entryOf(duty, { statutory, result }, `${year}년 ${q}분기`, qe);
 }
 
@@ -158,19 +159,8 @@ function goodsReducedEntry(duty: PeriodicDuty, year: number, q: 1 | 2 | 3 | 4): 
 function subcontractEntry(duty: PeriodicDuty, year: number, h: 1 | 2): CalendarEntry {
   const he = halfEnd(year, h);
   const result = subcontractPaymentDeadline(he);
-  const statutory = toYmdPlusDays(he, 45);
+  const statutory = addCalendarDays(he, 45);
   return entryOf(duty, { statutory, result }, `${year}년 ${h === 1 ? '상' : '하'}반기`, he);
-}
-
-function toYmdPlusDays(ymd: YMD, days: number): YMD {
-  const y = Number(ymd.slice(0, 4));
-  const m = Number(ymd.slice(4, 6));
-  const d = Number(ymd.slice(6, 8));
-  const t = Date.UTC(y, m - 1, d) + days * 86_400_000;
-  const dt = new Date(t);
-  return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, '0')}${String(
-    dt.getUTCDate(),
-  ).padStart(2, '0')}`;
 }
 
 /**

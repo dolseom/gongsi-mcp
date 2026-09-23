@@ -16,6 +16,7 @@ import { getConfig, measureCallBudget } from '../lib/config.js';
 import { getLogger } from '../lib/logger.js';
 import { RangeTooLargeError } from '../lib/errors.js';
 import type { CollectResult, Disclosure, ListParams } from '../clients/dart.js';
+import { addCalendarDays as addDays, countCalendarDays } from '../rules/business-days.js';
 
 const log = getLogger('search-batch');
 
@@ -103,23 +104,9 @@ export interface AdaptiveOptions {
 
 // ── 날짜 유틸 (YYYYMMDD, UTC 고정) ──────────────────────────────
 
-function ymdToMs(ymd: string): number {
-  return Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)));
-}
-
-function msToYmd(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
-}
-
-function addDays(ymd: string, n: number): string {
-  return msToYmd(ymdToMs(ymd) + n * 86_400_000);
-}
-
 /** from~to 포함 일수 */
 function daySpan(from: string, to: string): number {
-  return Math.round((ymdToMs(to) - ymdToMs(from)) / 86_400_000) + 1;
+  return countCalendarDays(from, to) + 1;
 }
 
 function minYmd(a: string, b: string): string {

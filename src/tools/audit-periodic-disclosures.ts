@@ -29,7 +29,7 @@ import { resolvePopulation, type Population } from './audit-group-disclosures.js
 import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-calendar.js';
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
-import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { countCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('audit-periodic');
 
@@ -242,11 +242,6 @@ interface DeadlineReport {
   out_of_scope: Array<{ corp_name: string; corp_code: string; joined_group_at: string }>;
   representative_filings: Array<{ corp_name: string; corp_code: string; rcept_no: string }>;
   likely_out_of_scope?: boolean;
-}
-
-function daysBetween(from: string, to: string): number {
-  const d = (s: string) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
-  return Math.round((d(to) - d(from)) / 86_400_000);
 }
 
 export async function auditPeriodicDisclosures(
@@ -476,7 +471,7 @@ export async function auditPeriodicDisclosures(
           corp_code: corpCode,
           rcept_no: earliest.rcept_no,
           rcept_dt: earliest.rcept_dt,
-          delay_days: daysBetween(e.deadline, earliest.rcept_dt),
+          delay_days: countCalendarDays(e.deadline, earliest.rcept_dt),
           viewer_url: viewerUrl(earliest.rcept_no),
         });
       }

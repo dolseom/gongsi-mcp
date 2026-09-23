@@ -13,7 +13,7 @@ import { resolveCorp } from '../resolver/corp-index.js';
 import { collectAdaptive } from '../search/batch.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
-import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
+import { addCalendarDays, isValidYMD, todayKstYMD } from '../rules/business-days.js';
 
 export const searchDisclosuresInput = z.object({
   query: z
@@ -147,16 +147,7 @@ export async function searchDisclosures(input: SearchDisclosuresInput): Promise<
   }
 
   const dateTo = input.date_to ?? todayKstYMD();
-  const dateFrom =
-    input.date_from ??
-    ((): string => {
-      const ms = Date.UTC(
-        Number(dateTo.slice(0, 4)),
-        Number(dateTo.slice(4, 6)) - 1,
-        Number(dateTo.slice(6, 8)),
-      );
-      return new Date(ms - 29 * 86_400_000).toISOString().slice(0, 10).replace(/-/g, '');
-    })();
+  const dateFrom = input.date_from ?? addCalendarDays(dateTo, -29);
   if (dateFrom > dateTo) {
     throw new ToolError('invalid_argument', `date_from(${dateFrom})이 date_to(${dateTo})보다 늦습니다.`);
   }

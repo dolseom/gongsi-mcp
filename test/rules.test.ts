@@ -3,6 +3,7 @@ import {
   __resetHolidayData,
   __setHolidayData,
   addBusinessDays,
+  addCalendarDays,
   countCalendarDays,
   dayOfWeek,
   isBusinessDay,
@@ -718,5 +719,26 @@ describe('formatWon — 모든 도구 공통 금액 표기', () => {
   });
   it('내림이다 — 100억 미만이 "100억원"으로 보이지 않는다', () => {
     expect(formatWon(9_999_600_000)).toBe('99.99억원');
+  });
+});
+
+describe('addCalendarDays — 흩어져 있던 날짜 더하기 6벌을 합친 것', () => {
+  it('월말·연말을 넘긴다', () => {
+    expect(addCalendarDays('20260131', 1)).toBe('20260201');
+    expect(addCalendarDays('20261231', 1)).toBe('20270101');
+  });
+  it('윤년 2월 29일을 지난다 (2028 윤년 / 2026 평년)', () => {
+    expect(addCalendarDays('20280228', 1)).toBe('20280229');
+    expect(addCalendarDays('20260228', 1)).toBe('20260301');
+  });
+  it('음수 n 은 앞으로 간다 — search_disclosures 기본 30일 창 · 비영업일 역산에 쓰인다', () => {
+    expect(addCalendarDays('20260301', -1)).toBe('20260228');
+    expect(addCalendarDays('20260330', -29)).toBe('20260301');
+  });
+  it('분기말 + 45일 (상품·용역 특례 법정 기한)', () => {
+    expect(addCalendarDays('20260331', 45)).toBe('20260515');
+  });
+  it('countCalendarDays 와 역함수 관계다', () => {
+    expect(countCalendarDays('20260101', addCalendarDays('20260101', 400))).toBe(400);
   });
 });

@@ -33,7 +33,7 @@ import { readDisclosure } from './read-disclosure.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
 import { ToolError } from '../lib/errors.js';
 import { getLogger } from '../lib/logger.js';
-import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
+import { addCalendarDays as addDays, countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 
 const log = getLogger('find-precedents');
 
@@ -133,11 +133,6 @@ export function selectCandidates(rows: Disclosure[], opts: CandidateOptions): Di
   return out;
 }
 
-
-function addDays(ymd: string, n: number): string {
-  const ms = Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)));
-  return new Date(ms + n * 86_400_000).toISOString().slice(0, 10).replace(/-/g, '');
-}
 
 export async function findPrecedents(input: FindPrecedentsInput): Promise<unknown> {
   const client = new DartClient();

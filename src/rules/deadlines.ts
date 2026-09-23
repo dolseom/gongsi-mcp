@@ -6,13 +6,13 @@
 
 import {
   addBusinessDays,
+  addCalendarDays,
   countCalendarDays,
   hasHolidayData,
   isBusinessDay,
   isHolidayDataVerified,
   nextBusinessDay,
   toDate,
-  toYMD,
 } from './business-days.js';
 import type { DeadlineResult, LegalRef, ListingStatus, YMD } from './types.js';
 
@@ -185,7 +185,7 @@ export function omnibusQuarterlyDeadline(quarterEnd: YMD): DeadlineResult {
  */
 export function goodsServicesReducedDeadline(quarterEnd: YMD): DeadlineResult {
   assertQuarterEnd(quarterEnd);
-  const raw = toYMD(new Date(toDate(quarterEnd).getTime() + 45 * 86_400_000));
+  const raw = addCalendarDays(quarterEnd, 45);
   return finalize(raw, `분기 종료(${quarterEnd}) 후 45일 이내 (달력일)`, 0, REF_GOODS_45);
 }
 
@@ -214,7 +214,7 @@ export function subcontractPaymentDeadline(halfEnd: YMD): DeadlineResult {
   if (mmdd !== '0630' && mmdd !== '1231') {
     throw new Error(`반기 종료일은 6월 30일 또는 12월 31일이어야 합니다: ${halfEnd}`);
   }
-  const raw = toYMD(new Date(toDate(halfEnd).getTime() + 45 * 86_400_000));
+  const raw = addCalendarDays(halfEnd, 45);
   return finalize(
     raw,
     `반기 종료일(${halfEnd}) 다음 날부터 45일 이내 (달력일)`,
@@ -278,13 +278,13 @@ export function businessDaysRemaining(today: YMD, deadline: YMD): number {
     let back = deadline;
     let passed = 0;
     while (back !== today) {
-      back = toYMD(new Date(toDate(back).getTime() + 86_400_000));
+      back = addCalendarDays(back, 1);
       if (isBusinessDay(back)) passed++;
     }
     return -passed;
   }
   while (cur !== deadline) {
-    cur = toYMD(new Date(toDate(cur).getTime() + 86_400_000));
+    cur = addCalendarDays(cur, 1);
     if (isBusinessDay(cur)) count++;
   }
   return count;

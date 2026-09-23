@@ -15,7 +15,7 @@
  * 달력일 기준으로 굴러가므로, **어느 경우든 지금 즉시 공시가 손실을 최소화한다.**
  */
 
-import { addBusinessDays, toDate, toYMD } from './business-days.js';
+import { addBusinessDays, addCalendarDays, toDate } from './business-days.js';
 import { businessDaysRemaining } from './deadlines.js';
 import type { LegalRef, YMD } from './types.js';
 import type { PenaltyRegime } from './penalties.js';
@@ -68,7 +68,7 @@ export function selfCorrectionWindow(
   regime: PenaltyRegime,
   today: YMD,
 ): SelfCorrectionResult {
-  const windowStart = nextCalendarDay(deadline);
+  const windowStart = addCalendarDays(deadline, 1);
   const windowEnd = addBusinessDays(deadline, 10);
 
   let status: SelfCorrectionResult['status'];
@@ -103,8 +103,4 @@ export function selfCorrectionWindow(
       },
     ],
   };
-}
-
-function nextCalendarDay(ymd: YMD): YMD {
-  return toYMD(new Date(toDate(ymd).getTime() + 86_400_000));
 }
