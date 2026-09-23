@@ -30,6 +30,7 @@ import {
 import {
   auditPeriodicDisclosures,
   auditPeriodicDisclosuresInput,
+  SPLIT_ADVICE_COMPANIES,
 } from './tools/audit-periodic-disclosures.js';
 import {
   assessCorrectionRisk,
@@ -56,6 +57,8 @@ import {
   disclosureCalendarInput,
 } from './tools/disclosure-calendar.js';
 import { serverInfo, serverInfoInput } from './tools/server-info.js';
+import { SNAPSHOT_TTL_MS } from './lib/detection-results.js';
+import { CAP_100, 억 } from './rules/thresholds.js';
 
 loadDotEnv();
 const log = getLogger('server');
@@ -320,7 +323,7 @@ server.registerTool(
       '- 기한이 아직 오지 않은 항목(due:false)은 미제출 판정을 하지 않습니다\n' +
       '- 하도급대금(J009)은 원사업자·거래가 있을 때만의 의무라 **미제출을 신호로 쓰지 않습니다** ' +
       '(non_filing_is_signal:false)\n' +
-      '- 집단 점검은 **EGROUP_API_KEY 필요**. 회사당 1회 조회라 한 번에 **80개사**까지입니다\n' +
+      `- 집단 점검은 **EGROUP_API_KEY 필요**. 회사당 1회 조회라 한 번에 **${SPLIT_ADVICE_COMPANIES}개사**까지입니다\n` +
       "- '연1회공시및1/4분기용' 서식 1건은 연1회와 1분기 의무를 **동시에 이행**합니다\n" +
       '- 기간 배정은 접수일 창 추정이라 모호한 자리에는 ambiguous_assignment·possibly_filed_late 가 붙습니다\n' +
       '- 대표회사 제출은 개별회사 의무를 대체하지 않습니다 (고시 §3⑤ 항목만 대표회사 책임)\n\n' +
@@ -390,7 +393,7 @@ server.registerTool(
       '- **자금 차입 = 건별 차입일 근접 대조**(가장 강한 신호). 차입일 −90~+30일에 같은 유형 공시가 있으면 ' +
       'j001_filing_near_date, 검색창 안 어딘가에만 있으면 j001_filing_in_window_only(한도 의결 커버일 수도, ' +
       '**부분 공시 누락**일 수도 있음), 없으면 미공시 후보. 기준금액은 같은 문서의 자본으로 계산한 ' +
-      '**근사치**이고, 거래금액 100억원 이상만 자본과 무관하게 확실합니다\n' +
+      `**근사치**이고, 거래금액 ${CAP_100 / 억}억원 이상만 자본과 무관하게 확실합니다\n` +
       '- **상품·용역**은 연간 합계뿐이라 (판매회사, 거래상대방) 연간 합산 ≥ **4×기준금액**일 때만 ' +
       '(어느 분기 하나는 반드시 기준 이상) 신호로 씁니다. 의무 자체가 상대방이 총수일가 20% 이상 ' +
       '출자 계열사 등일 때만 성립하는데(법 §26①4호) 지분 확인이 불가능해 전부 ' +
@@ -453,7 +456,7 @@ server.registerTool(
       '`next_offset` 을 그대로 다시 넣으면 이어집니다 — 조각을 순서대로 이어붙이면 **원본과 정확히 ' +
       '같습니다**. 중간 조각은 그 자체로 유효한 JSON 이 아닙니다\n' +
       '- `offset`·`total_chars` 는 **UTF-16 코드 단위**입니다 (바이트가 아닙니다 — 한글 1자 = 1 단위)\n' +
-      '- ⚠️ 상세는 **서버 프로세스 메모리에만 30분** 보관됩니다. 만료·회수·서버 재시작 뒤에는 ' +
+      `- ⚠️ 상세는 **서버 프로세스 메모리에만 ${SNAPSHOT_TTL_MS / 60_000}분** 보관됩니다. 만료·회수·서버 재시작 뒤에는 ` +
       'result_unavailable 로 거절하고 다시 탐지해야 합니다 — 다른 결과를 대신 돌려주지 않습니다\n' +
       '- ⚠️ **읽지 않은 상세를 "확인했다"고 말하지 마세요.** 요약의 details_required 는 아직 안 읽은 ' +
       '근거가 있다는 뜻입니다',

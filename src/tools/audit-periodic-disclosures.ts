@@ -78,7 +78,7 @@ export type AuditPeriodicDisclosuresInput = z.infer<typeof auditPeriodicDisclosu
  * 분할을 권고하는 회사 수. **60초 안전 보장값이 아니라 권고선이다** —
  * 실제 호출 수는 선택 duty 수 × (측정 1 + 수집 1) 이고 재시도·페이지 수·지연이 더해진다.
  */
-const SPLIT_ADVICE_COMPANIES = 80;
+export const SPLIT_ADVICE_COMPANIES = 80;
 
 /** 테스트 주입점 — 실제 API 없이 판정 로직을 검증한다 */
 export interface PeriodicAuditDeps {
