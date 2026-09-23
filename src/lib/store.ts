@@ -7,7 +7,7 @@
  * (docs/absorbed-from-dart-mcp.md §2-4)
  *
  * 저장 대상 — 무엇을 캐시하지 *않는지*가 더 중요하다:
- *   ✅ corps(법인코드 인덱스) · bodies(공시 원문) · call_log(일일 호출) · kv(기타 상태)
+ *   ✅ corps(법인코드 인덱스) · docs(공시 원문) · call_log(일일 호출) · kv(기타 상태)
  *   ❌ **공시 목록은 절대 캐시하지 않는다.** 공시담당자에게는 신선도가 최우선이고,
  *      "방금 접수된 공시"가 안 보이면 도구를 신뢰하지 않는다.
  */
@@ -84,15 +84,24 @@ const DDL = [
    )`,
 ];
 
-// FTS5 는 빌드에 따라 없을 수 있어 실패를 허용한다 (원문 검색만 비활성화된다)
-const FTS_DDL = `CREATE VIRTUAL TABLE IF NOT EXISTS bodies USING fts5(
-   rcept_no UNINDEXED, content, fetched_at UNINDEXED, rm UNINDEXED,
-   tokenize='trigram')`;
+/**
+ * 공시 원문 캐시 — 일반 테이블 + rcept_no PRIMARY KEY.
+ *
+ * 종전에는 FTS5 가상 테이블 `bodies` 였다. 그러나 ① `WHERE rcept_no = ?` 가 UNINDEXED 열이라
+ * **전체 스캔**이었고(실캐시 508건에서 건당 약 10ms, 문서 수에 비례 — detect/audit 는 60초 예산
+ * 안에서 isDocumentCached 를 수백 번 부른다) ② FTS5 가 없는 SQLite 빌드에서는 원문 캐시 자체가
+ * 꺼졌으며 ③ 전문검색(searchBodies)은 src 어디에서도 쓰이지 않았다. 그래서 일반 테이블로 옮겼다.
+ * 기존 `bodies` 는 기동 시 1회 이관한다 (migrateLegacyBodies).
+ */
+const DOCS_DDL = `CREATE TABLE IF NOT EXISTS docs (
+   rcept_no   TEXT PRIMARY KEY,
+   content    TEXT NOT NULL,
+   fetched_at TEXT,
+   rm         TEXT
+ )`;
 
 export class Store {
   private db: DatabaseSync;
-  /** FTS5 를 쓸 수 있는지. 없으면 원문 전문검색만 막고 나머지는 정상 동작한다. */
-  readonly ftsAvailable: boolean;
   /** 실제 열린 DB 경로 (진단용) */
   readonly dbPath: string;
 
@@ -104,17 +113,48 @@ export class Store {
     this.db.exec('PRAGMA journal_mode=WAL');
     this.db.exec('PRAGMA synchronous=NORMAL');
     for (const stmt of DDL) this.db.exec(stmt);
+    this.db.exec(DOCS_DDL);
+    this.migrateLegacyBodies();
+  }
 
-    let fts = false;
+  /**
+   * 옛 FTS5 `bodies` → `docs` 1회 이관.
+   *
+   * - `bodies` 가 없으면(신규 DB·이관 완료 DB) 아무것도 하지 않는다 — 두 번째 기동부터는 조회 1회뿐.
+   * - 복사와 DROP 은 한 트랜잭션이다. 중간에 실패하면 둘 다 되돌려 `bodies` 가 남고 다음 기동에 재시도한다.
+   * - `INSERT OR IGNORE` — `docs` 에 이미 있는 rcept_no 는 `docs` 쪽을 지킨다. 이관 조건을
+   *   "docs 가 비어 있을 때"로 좁히지 않은 이유: 옛 버전 서버가 같은 DB 를 열면 `bodies` 를 다시
+   *   만들어 쓸 수 있고, docs 가 비어 있지 않다는 이유로 영영 이관하지 않으면 옛 테이블이 남는다.
+   * - FTS5 가 없는 빌드에서는 가상 테이블을 읽지도 지우지도 못한다(no such module). 그때는 경고만
+   *   남기고 건너뛴다 — 원문은 다시 받으면 되는 캐시이고, 빈 `docs` 로도 모든 경로가 정상 동작한다.
+   */
+  private migrateLegacyBodies(): void {
+    const legacy = this.db
+      .prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'bodies'`)
+      .get();
+    if (!legacy) return;
+    this.db.exec('BEGIN');
     try {
-      this.db.exec(FTS_DDL);
-      fts = true;
+      const r = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO docs(rcept_no, content, fetched_at, rm)
+           SELECT rcept_no, COALESCE(content, ''), fetched_at, rm
+           FROM bodies WHERE rcept_no IS NOT NULL`,
+        )
+        .run();
+      this.db.exec('DROP TABLE bodies');
+      this.db.exec('COMMIT');
+      log.info('원문 캐시를 bodies(FTS5) → docs 로 이관했습니다', { rows: Number(r.changes ?? 0) });
     } catch (err) {
-      log.warn('FTS5 사용 불가 — 원문 전문검색이 비활성화됩니다', {
-        reason: err instanceof Error ? err.name : String(err),
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        /* 트랜잭션이 이미 끝났으면 무시 */
+      }
+      log.warn('옛 원문 캐시(bodies) 이관 실패 — 건너뜁니다 (원문은 필요할 때 다시 받습니다)', {
+        reason: err instanceof Error ? err.message : String(err),
       });
     }
-    this.ftsAvailable = fts;
   }
 
   close(): void {
@@ -129,7 +169,7 @@ export class Store {
     };
     return {
       corps: count('SELECT COUNT(*) FROM corps'),
-      bodies: this.ftsAvailable ? count('SELECT COUNT(*) FROM bodies') : 0,
+      bodies: count('SELECT COUNT(*) FROM docs'),
     };
   }
 
@@ -230,15 +270,13 @@ export class Store {
   // ---- 공시 원문 ----
 
   hasBody(rceptNo: string): boolean {
-    if (!this.ftsAvailable) return false;
-    const row = this.db.prepare(`SELECT 1 AS x FROM bodies WHERE rcept_no = ?`).get(rceptNo);
+    const row = this.db.prepare(`SELECT 1 AS x FROM docs WHERE rcept_no = ?`).get(rceptNo);
     return row !== undefined;
   }
 
   getBody(rceptNo: string): { rceptNo: string; content: string; fetchedAt: string } | null {
-    if (!this.ftsAvailable) return null;
     const row = this.db
-      .prepare(`SELECT rcept_no, content, fetched_at FROM bodies WHERE rcept_no = ?`)
+      .prepare(`SELECT rcept_no, content, fetched_at FROM docs WHERE rcept_no = ?`)
       .get(rceptNo) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -249,8 +287,7 @@ export class Store {
   }
 
   /**
-   * 원문 저장. 재저장은 DELETE + INSERT 를 한 트랜잭션으로 한다 —
-   * FTS5 는 REPLACE 거동에 편차가 있다.
+   * 원문 저장. 같은 rcept_no 재저장은 교체다(force_refresh 경로) — 단일 UPSERT 문이라 원자적이다.
    * 파싱에 실패한 원문도 빈 문자열로 저장해 재다운로드를 막는다.
    *
    * ★ 영구 캐시(TTL 없음)가 안전한 이유는 **rcept_no 불변 전제** 하나뿐이다:
@@ -261,77 +298,19 @@ export class Store {
    *   회귀 테스트: test/tools.test.ts "원문 영구 캐시는 rcept_no 불변 전제".
    */
   storeBody(rceptNo: string, content: string, rm = ''): void {
-    if (!this.ftsAvailable) return;
-    this.db.exec('BEGIN');
-    try {
-      this.db.prepare(`DELETE FROM bodies WHERE rcept_no = ?`).run(rceptNo);
-      this.db
-        .prepare(`INSERT INTO bodies(rcept_no, content, fetched_at, rm) VALUES (?, ?, ?, ?)`)
-        .run(rceptNo, content, new Date().toISOString(), rm);
-      this.db.exec('COMMIT');
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
+    this.db
+      .prepare(
+        `INSERT INTO docs(rcept_no, content, fetched_at, rm) VALUES (?, ?, ?, ?)
+         ON CONFLICT(rcept_no) DO UPDATE SET
+           content    = excluded.content,
+           fetched_at = excluded.fetched_at,
+           rm         = excluded.rm`,
+      )
+      .run(rceptNo, content, new Date().toISOString(), rm);
   }
 
   invalidateBody(rceptNo: string): void {
-    if (!this.ftsAvailable) return;
-    this.db.prepare(`DELETE FROM bodies WHERE rcept_no = ?`).run(rceptNo);
-  }
-
-  /**
-   * 원문 키워드 검색.
-   * trigram 토크나이저는 3글자 미만을 매칭하지 못하므로 2글자 이하는 LIKE 로 폴백한다.
-   */
-  searchBodies(keyword: string, rceptNos?: string[], limit = 100): Array<{ rceptNo: string; snippet: string }> {
-    if (!this.ftsAvailable) return [];
-    const kw = keyword.trim();
-    if (!kw) return [];
-    if (rceptNos && rceptNos.length === 0) return [];
-    // SQLite 바인딩 변수 한도(구버전 999) 방어 — 대상 집합이 크면 잘라서 처리한다
-    if (rceptNos && rceptNos.length > 500) {
-      const out: Array<{ rceptNo: string; snippet: string }> = [];
-      for (let i = 0; i < rceptNos.length && out.length < limit; i += 500) {
-        out.push(...this.searchBodies(kw, rceptNos.slice(i, i + 500), limit - out.length));
-      }
-      return out;
-    }
-
-    const filter = rceptNos ? ` AND rcept_no IN (${rceptNos.map(() => '?').join(',')})` : '';
-    const params: unknown[] = [];
-
-    if (kw.length >= 3) {
-      // MATCH 는 자체 질의 문법이 있어 `"`·`OR` 같은 입력이 구문 오류를 일으킨다(Codex 지적).
-      // 사용자 키워드는 항상 구문 요소가 아닌 **문자열 리터럴(구문)** 로 감싼다.
-      params.push(`"${kw.replace(/"/g, '""')}"`);
-      if (rceptNos) params.push(...rceptNos);
-      params.push(limit);
-      const rows = this.db
-        .prepare(
-          `SELECT rcept_no, snippet(bodies, 1, '[', ']', '...', 20) AS s
-           FROM bodies WHERE content MATCH ?${filter} LIMIT ?`,
-        )
-        .all(...(params as never[])) as Array<Record<string, unknown>>;
-      return rows.map((r) => ({ rceptNo: String(r['rcept_no']), snippet: String(r['s']) }));
-    }
-
-    params.push(`%${kw}%`);
-    if (rceptNos) params.push(...rceptNos);
-    params.push(limit);
-    const rows = this.db
-      .prepare(`SELECT rcept_no, content FROM bodies WHERE content LIKE ?${filter} LIMIT ?`)
-      .all(...(params as never[])) as Array<Record<string, unknown>>;
-    return rows.map((r) => {
-      const content = String(r['content']);
-      const idx = content.indexOf(kw);
-      const snippet =
-        idx < 0
-          ? content.slice(0, 80)
-          : `${idx > 20 ? '...' : ''}${content.slice(Math.max(0, idx - 20), idx)}[${kw}]` +
-            `${content.slice(idx + kw.length, idx + kw.length + 20)}...`;
-      return { rceptNo: String(r['rcept_no']), snippet };
-    });
+    this.db.prepare(`DELETE FROM docs WHERE rcept_no = ?`).run(rceptNo);
   }
 
   // ---- 기타 상태 ----

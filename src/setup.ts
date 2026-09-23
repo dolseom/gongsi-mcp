@@ -313,15 +313,13 @@ export async function runSetup(argv: string[]): Promise<number> {
         const value = `한글값-${Date.now()}`;
         probe.set(key, value);
         const roundTrip = probe.get(key) === value;
-        const fts = probe.ftsAvailable;
         probe.close();
         if (!roundTrip) {
           console.log(`\n⚠️ 캐시 DB 자가진단 실패 (읽기/쓰기 불일치): ${cacheDb}`);
         } else {
           console.log(
             `캐시 DB 자가진단 통과: ${cacheDb}` +
-              `${nonAscii ? ' (비ASCII 경로 — WAL·FTS 동작 실측 확인됨)' : ''}` +
-              `${fts ? '' : ' ⚠️ FTS5 불가 — 원문 전문검색만 비활성화됩니다'}`,
+              `${nonAscii ? ' (비ASCII 경로 — WAL 동작 실측 확인됨)' : ''}`,
           );
         }
       } catch (err) {

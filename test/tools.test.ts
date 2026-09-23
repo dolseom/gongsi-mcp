@@ -293,10 +293,6 @@ describe('저장소 (node:sqlite 어댑터)', () => {
     store.close();
   });
 
-  it('FTS5 trigram 을 쓸 수 있다 (한글 부분일치)', () => {
-    expect(store.ftsAvailable).toBe(true);
-  });
-
   it('일일 호출 카운터는 KST 일자 버킷으로 누적된다', () => {
     expect(store.todayCallCount('dart')).toBe(0);
     store.incrementCall('dart', 1);
@@ -327,21 +323,6 @@ describe('저장소 (node:sqlite 어댑터)', () => {
     ]);
     expect(store.getCorpByCode('00126380')?.jurirNo).toBe('1301110006246');
     expect(store.getCorpByCode('00126380')?.modifyDate).toBe('20260201');
-  });
-
-  it('원문은 3글자 이상이면 FTS, 2글자 이하면 LIKE 로 찾는다', () => {
-    store.storeBody('20260728000484', '이 건은 대규모내부거래에 해당하며 이사회 의결일은 2026-07-22이다', '공');
-    expect(store.searchBodies('내부거래')).toHaveLength(1);
-    expect(store.searchBodies('의결')).toHaveLength(1); // 2글자 → LIKE 폴백
-    expect(store.searchBodies('없는말')).toHaveLength(0);
-  });
-
-  it('FTS 문법 문자가 섞인 키워드도 구문 오류 없이 처리한다 (Codex 지적)', () => {
-    store.storeBody('20260101000002', '따옴표 "포함" 본문과 OR 조건', '');
-    // 이전 구현: MATCH 문법으로 해석돼 SQLITE_ERROR 로 검색 전체가 죽었다
-    expect(() => store.searchBodies('foo OR')).not.toThrow();
-    expect(() => store.searchBodies('키워드"')).not.toThrow();
-    expect(store.searchBodies('"포함"')).toHaveLength(1); // 리터럴로 매칭
   });
 
   it('파싱 실패한 원문도 빈 값으로 캐시해 재다운로드를 막는다', () => {
@@ -376,10 +357,9 @@ describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
 
 describe('원문 영구 캐시의 rcept_no 불변 전제 (피드백 §2-3 — 암묵 전제의 명시 고정)', () => {
   // 영구 캐시(TTL 없음)가 안전한 유일한 근거: 원본 접수분은 불변이고 정정은 새 rcept_no 로 온다.
-  // 이 전제가 안 통하는 데이터(목록·검색 결과·집계)는 bodies 테이블에 넣으면 안 된다.
+  // 이 전제가 안 통하는 데이터(목록·검색 결과·집계)는 docs(원문 캐시) 테이블에 넣으면 안 된다.
   it('본문 캐시 키는 rcept_no 단독이며 시간이 지나도 만료되지 않는다', () => {
     const s = new Store(':memory:');
-    if (!s.ftsAvailable) return;
     s.storeBody('20260101000001', '원문 내용', '공');
     const got = s.getBody('20260101000001');
     expect(got?.content).toBe('원문 내용');

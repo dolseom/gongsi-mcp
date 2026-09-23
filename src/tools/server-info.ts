@@ -65,7 +65,6 @@ export function serverInfo(): unknown {
       db_bytes: dbBytes,
       corps_indexed: cacheStats.corps,
       bodies_cached: cacheStats.bodies,
-      fts_available: store.ftsAvailable,
     },
     data: {
       holiday_years: holidayYearsStatus(),
