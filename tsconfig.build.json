@@ -1,0 +1,12 @@
+{
+  // 배포 빌드 전용 — src 만, .d.ts·.map 없이.
+  // bin 전용 패키지라 타입 선언을 쓸 소비자가 없고, .map 은 패키지에 없는 ../../src 를 가리킨다.
+  // rootDir 는 "." 그대로 둔다: 산출 경로(dist/src/...)와 data/ 상대경로가 여기에 묶여 있다.
+  // 타입체크(테스트 포함)는 tsconfig.json 이 맡는다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*"]
+}
