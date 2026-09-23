@@ -21,6 +21,24 @@ const LEGACY_FTS_DDL = `CREATE VIRTUAL TABLE IF NOT EXISTS bodies USING fts5(
    rcept_no UNINDEXED, content, fetched_at UNINDEXED, rm UNINDEXED,
    tokenize='trigram')`;
 
+/**
+ * FTS5(trigram) 를 쓸 수 있는 SQLite 인가. Node 22.13 번들 SQLite 에는 FTS5 가 없다(CI 실측
+ * "no such module: fts5"). 그런 환경에서는 옛 코드도 bodies 를 만들지 못해 이관할 것이 애초에 없으므로,
+ * 옛 FTS 테이블을 직접 만들어야 하는 이관 테스트만 건너뛴다.
+ */
+const HAS_FTS5 = (() => {
+  const probe = new DatabaseSync(':memory:');
+  try {
+    probe.exec(LEGACY_FTS_DDL);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    probe.close();
+  }
+})();
+const itFts = it.skipIf(!HAS_FTS5);
+
 let dir: string;
 let dbPath: string;
 
@@ -62,7 +80,7 @@ function docsRows(): Array<Record<string, unknown>> {
 }
 
 describe('원문 캐시 이관 — 옛 FTS5 bodies → docs', () => {
-  it('기동 시 1회 복사하고 bodies(와 FTS 그림자 테이블)를 지운다', () => {
+  itFts('기동 시 1회 복사하고 bodies(와 FTS 그림자 테이블)를 지운다', () => {
     makeLegacyDb([
       ['20260101000001', '원문 하나', '2026-01-01T00:00:00.000Z', '공'],
       ['20260101000002', '', '2026-01-02T00:00:00.000Z', ''], // 파싱 불가 원문 — 빈 값도 그대로
@@ -87,7 +105,7 @@ describe('원문 캐시 이관 — 옛 FTS5 bodies → docs', () => {
     expect(docsRows().map((r) => r['rm'])).toEqual(['공', '', '공정']);
   });
 
-  it('두 번째 기동은 아무것도 바꾸지 않는다', () => {
+  itFts('두 번째 기동은 아무것도 바꾸지 않는다', () => {
     makeLegacyDb([['20260101000001', '원문', '2026-01-01T00:00:00.000Z', '공']]);
     new Store(dbPath).close();
     const first = { tables: tables(), rows: docsRows() };
@@ -97,7 +115,7 @@ describe('원문 캐시 이관 — 옛 FTS5 bodies → docs', () => {
     expect(docsRows()).toEqual(first.rows);
   });
 
-  it('docs 에 이미 있는 rcept_no 는 docs 쪽을 지킨다 (INSERT OR IGNORE)', () => {
+  itFts('docs 에 이미 있는 rcept_no 는 docs 쪽을 지킨다 (INSERT OR IGNORE)', () => {
     new Store(dbPath).close(); // docs 생성
     const db = new DatabaseSync(dbPath);
     db.prepare(`INSERT INTO docs(rcept_no, content, fetched_at, rm) VALUES (?, ?, ?, ?)`).run(
