@@ -13,9 +13,9 @@ export const 억 = 100_000_000;
 /** 령 §33①1호 — 절대 상한 */
 export const CAP_100 = 100 * 억;
 /** 령 §33①2호 단서 — 하한 */
-export const FLOOR_5 = 5 * 억;
+const FLOOR_5 = 5 * 억;
 /** 령 §33①2호 — 자본 대비 비율 */
-export const CAPITAL_RATE = 0.05;
+const CAPITAL_RATE = 0.05;
 
 const REF_LIT: LegalRef[] = [
   {

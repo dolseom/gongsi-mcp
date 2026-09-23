@@ -81,11 +81,6 @@ export function loadDotEnv(): void {
   }
 }
 
-/** 진단용 — 어느 경로를 루트로 잡았는지 */
-export function projectRoot(): string {
-  return PROJECT_ROOT;
-}
-
 /** 인식하는 운영 파라미터 전체. 여기 없는 `GONGSI_*` 는 경고 대상이다. */
 const KNOWN = [
   'GONGSI_RATE_WARN',

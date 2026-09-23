@@ -262,8 +262,3 @@ export function kbStalenessNote(now: Date = new Date()): string | null {
     '(재추출 절차: RESEARCH/공정위매뉴얼_202604/README.md)'
   );
 }
-
-/** 테스트용 — 캐시를 비운다 */
-export function __resetQnaKb(): void {
-  cache = null;
-}

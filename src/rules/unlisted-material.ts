@@ -177,14 +177,6 @@ export const UNLISTED_UNCONDITIONAL_ITEMS: Record<
   },
 };
 
-export function unconditionalItemRef(item: UnconditionalItem): LegalRef {
-  const spec = UNLISTED_UNCONDITIONAL_ITEMS[item];
-  return {
-    source: `${RULE} ${spec.clause}`,
-    summary: `${spec.label}이 있는 경우 금액과 무관하게 공시 대상이다.`,
-  };
-}
-
 /** §5의2⑤3호 — 결정형 사유의 사유 발생일 정의 */
 export const DECISION_DATE_NOTE =
   '결정형 사유의 "사유 발생일"은 이사회 결의(이사회 내 위원회 결의 포함) 또는 대표이사 등 ' +

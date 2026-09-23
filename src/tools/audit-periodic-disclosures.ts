@@ -192,7 +192,7 @@ export function assignmentWindow(entry: CalendarEntry): { start: string; end: st
 }
 
 /** 그 의무·그 기간을 이행하는 서식 종류 */
-export function expectedKind(entry: CalendarEntry): FormKind {
+function expectedKind(entry: CalendarEntry): FormKind {
   if (entry.dart_type === 'J009') return 'subcontract';
   if (entry.duty === 'group_status_annual') return 'annual_q1';
   // 1분기분은 연1회와 한 서식으로 함께 나간다 (실측). 2·3·4분기는 '분기별공시'.

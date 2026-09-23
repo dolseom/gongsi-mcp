@@ -94,10 +94,6 @@ function load(): RatioFile {
   return parsed;
 }
 
-export function ratioTableSource(): string {
-  return load()._meta.source;
-}
-
 /**
  * 거래금액이 속한 구간을 돌려준다.
  *

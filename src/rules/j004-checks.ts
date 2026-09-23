@@ -215,7 +215,7 @@ function pushDiff(
 }
 
 /** 재무현황 표 점검 — 행별 항등식 + 소계·합계 재합산 */
-export function checkFinanceRows(section: string, rows: FinanceRow[]): ConsistencyIssue[] {
+function checkFinanceRows(section: string, rows: FinanceRow[]): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
   const dataRows = rows.filter((r) => !r.isSubtotal && !r.isTotal);
 
@@ -381,7 +381,7 @@ function mapIncomeColumns(table: MdTable): IncomeCols | null {
   return cols;
 }
 
-export function parseIncomeTable(table: MdTable): IncomeRow[] | null {
+function parseIncomeTable(table: MdTable): IncomeRow[] | null {
   const cols = mapIncomeColumns(table);
   if (!cols || cols.revenue === undefined || cols.netIncome === undefined) return null;
   const num = (row: string[], i?: number): number | null =>
@@ -411,7 +411,7 @@ export function parseIncomeTable(table: MdTable): IncomeRow[] | null {
 }
 
 /** 손익현황 표 점검 — 금융/비금융 소계·합계 재합산 (행 내 항등식은 법인세 등으로 성립하지 않아 보지 않는다) */
-export function checkIncomeRows(section: string, rows: IncomeRow[]): ConsistencyIssue[] {
+function checkIncomeRows(section: string, rows: IncomeRow[]): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
   const dataRows = rows.filter((r) => !r.isSubtotal && !r.isTotal);
   const keys: Array<[keyof IncomeRow & string, string]> = [
@@ -465,7 +465,7 @@ export function checkIncomeRows(section: string, rows: IncomeRow[]): Consistency
  * 오탐이 다수 발생한다 (연속 중복 제거로도 안 잡히는 구조적 중복). 구조를 아는
  * 재무현황·손익현황 표만 기본 점검하고, 이 함수는 opt-in 으로만 쓴다.
  */
-export function checkGenericTotals(section: string, table: MdTable): ConsistencyIssue[] {
+function checkGenericTotals(section: string, table: MdTable): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
   const rows = table.rows.filter((r) => !isHeaderLike(r));
   const totalRows = rows.filter((r) => rowMarker(r) === 'total');
@@ -523,7 +523,7 @@ export function checkGenericTotals(section: string, table: MdTable): Consistency
  * 각주('1,234 (주1)')·'자본잠식' 셀은 parseDisclosureNumber 가 null 을 주므로,
  * "파싱된 행 수"를 "검증된 행 수"로 신고하면 건너뛴 행이 검증 완료로 둔갑한다.
  */
-export function isFinanceRowVerifiable(r: FinanceRow): boolean {
+function isFinanceRowVerifiable(r: FinanceRow): boolean {
   return (
     (r.totalAssets !== null && (r.currentAssets !== null || r.nonCurrentAssets !== null)) ||
     (r.totalLiabilities !== null &&

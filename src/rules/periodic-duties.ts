@@ -135,8 +135,3 @@ export function loadPeriodicDuties(): PeriodicDuty[] {
 export function periodicDutiesMeta(): DutyFile['_meta'] {
   return clone(load()._meta);
 }
-
-/** 테스트 전용 — 파일을 바꿔 끼운 뒤 다시 읽게 한다 */
-export function __resetPeriodicDutiesCache(): void {
-  cached = null;
-}

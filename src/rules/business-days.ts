@@ -116,12 +116,12 @@ export function dayOfWeek(ymd: YMD): number {
   return toDate(ymd).getUTCDay();
 }
 
-export function isWeekend(ymd: YMD): boolean {
+function isWeekend(ymd: YMD): boolean {
   const dow = dayOfWeek(ymd);
   return dow === 0 || dow === 6;
 }
 
-export function isHoliday(ymd: YMD): boolean {
+function isHoliday(ymd: YMD): boolean {
   const year = ymd.slice(0, 4);
   const entry = loadAll()[year];
   if (!entry) return false;

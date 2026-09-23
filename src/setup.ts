@@ -39,7 +39,7 @@ export interface KeyCheck {
 }
 
 /** DART 인증키 실호출 검증 — list.json 1건 조회 */
-export async function validateDartKey(key: string): Promise<KeyCheck> {
+async function validateDartKey(key: string): Promise<KeyCheck> {
   try {
     const url = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${encodeURIComponent(key)}&page_count=1`;
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
@@ -69,7 +69,7 @@ export async function validateDartKey(key: string): Promise<KeyCheck> {
  * 기업집단포털 인증키 실호출 검증 — publicYmList 1건.
  * ⚠️ HTTP 403 은 키 오류가 아니라 **해당 서비스 활용신청 미완**이 대부분이다 (함정 3번).
  */
-export async function validateEgroupKey(key: string): Promise<KeyCheck> {
+async function validateEgroupKey(key: string): Promise<KeyCheck> {
   try {
     const sp = new URLSearchParams({
       serviceKey: key,

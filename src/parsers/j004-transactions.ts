@@ -276,7 +276,7 @@ export interface ExtractStats {
   fundTablesWithoutAmountCol: Array<{ label: string; rows: number }>;
 }
 
-export function newExtractStats(): ExtractStats {
+function newExtractStats(): ExtractStats {
   return {
     rowsAmountUnparsable: 0,
     rowsCompanyEqualsCounterparty: 0,

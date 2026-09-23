@@ -27,10 +27,10 @@ export const MAX_SNAPSHOTS = 4;
 /** 단일 snapshot 상한 (직렬화 바이트) */
 export const MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 /** 전체 보관 상한 (직렬화 바이트) */
-export const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 
 /** 응답에 이름을 나열하는 section 수 상한 — 실물 결과의 최상위 항목은 40여 개다 */
-export const MAX_LISTED_SECTIONS = 100;
+const MAX_LISTED_SECTIONS = 100;
 /** 나열할 section 이름 길이 상한 — 입력 스키마의 section 최대 길이와 같다 */
 const MAX_SECTION_NAME_CHARS = 200;
 /**
@@ -38,7 +38,7 @@ const MAX_SECTION_NAME_CHARS = 200;
  * 개수(100)만 제한하면 200자 한글 키 100개가 목록만으로 61KB 가 됐다(Fable M1 프로브 A).
  * 실물 최상위 키 24개(ASCII)는 약 600B 라 이 상한에 걸리지 않는다.
  */
-export const MAX_LISTED_SECTION_BYTES = 4_096;
+const MAX_LISTED_SECTION_BYTES = 4_096;
 
 /**
  * 응답에 싣는 section 목록 — **목록 자체가 응답 크기 예산을 밀어내지 않게** 개수·바이트 상한을 둔다.

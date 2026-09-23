@@ -8,34 +8,8 @@
 /** YYYYMMDD 형식 날짜 문자열 */
 export type YMD = string;
 
-/** 공시의무 유형 */
-export type DutyType =
-  /** 대규모내부거래 — 법 §26 / 령 §33 */
-  | 'large_internal_transaction'
-  /** 비상장회사 등의 중요사항 — 법 §27 / 령 §34 */
-  | 'unlisted_material'
-  /** 기업집단현황 — 법 §28 / 령 §35 */
-  | 'group_status'
-  /** 특수관계인인 공익법인 — 법 §29 / 령 §36 */
-  | 'public_interest_corp'
-  /** 약관에 의한 금융거래 특례 — 고시 §9 */
-  | 'omnibus_financial'
-  /** 하도급대금 결제조건 (J009) — 하도급법 §13의3 / 하도급법 시행령 §8의2 */
-  | 'subcontract_payment_terms';
-
 /** 상장 여부 — 공시기한이 갈린다 */
 export type ListingStatus = 'listed' | 'unlisted';
-
-/** 대규모내부거래 거래유형 — 고시 §4① */
-export type TransactionType =
-  /** 1호: 가지급금·대여금 등 자금 */
-  | 'fund'
-  /** 2호: 주식·회사채 등 유가증권 (담보 제공/수취 포함) */
-  | 'securities'
-  /** 3호: 부동산·무체재산권 등 자산 (담보, 부동산임대차 포함) */
-  | 'asset'
-  /** 4호: 동일인 등 출자 계열회사와의 상품·용역 */
-  | 'goods_services';
 
 /**
  * 거래금액 산정 방식 — 고시 §4③
