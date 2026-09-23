@@ -8,7 +8,7 @@ import type { DocMeta } from '../read-disclosure.js';
 import type { Population, PopulationInput } from '../audit-group-disclosures.js';
 import type { JurirNoFetch } from '../../resolver/corp-index.js';
 import type { AmbiguousSubjectClass } from './filing-doc.js';
-import type { Certainty } from './threshold.js';
+import type { Certainty, ThresholdView } from './threshold.js';
 
 /** 테스트 주입점 — 실제 API 없이 판정 로직을 검증한다 */
 export interface DetectDeps {
@@ -135,144 +135,16 @@ export type LenderStatus =
   | 'counterparty_not_company';
 
 /**
- * 한 차입 건의 **대여회사 쪽** 공시의무 대조 결과.
- * 기준금액은 대여회사 자신의 자본으로 계산한다 (같은 J004 재무현황 표).
+ * J001 대조 결과 필드 — 신호 6종(차입·대여·(6)·(5)·유가증권·상대방 관점)이 공유한다.
+ * 값은 판정 확정 단계의 `applyCommon` 이 한곳에서 채운다 (타입만의 묶음 — 출력 키 순서는
+ * 객체에 값을 넣는 순서가 정한다).
  */
-export interface LenderSide {
-  /** 대여회사 = 이 차입 건의 거래상대방 */
-  company: string;
+export interface J001CheckFields {
   corp_code?: string;
-  status: LenderStatus;
-  reason?: string;
-  threshold?: {
-    value: number;
-    value_display: string;
-    formula: string;
-    source_row: string;
-  };
-  certainty?: Certainty;
-  joined_group_at?: string;
-  j001_search?: { from: string; to: string; type_filter: string };
-  matching_filings?: FilingRef[];
-  matching_filings_total?: number;
-  nearest_filing_gap_days?: number;
-  same_counterparty_annual_total?: number;
-  same_counterparty_annual_total_display?: string;
-  cancellations_of_type_in_window?: number;
-  search_partial?: boolean;
-  other_j001_in_window?: number;
-  /**
-   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
-   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
-   * 대조하라는 뜻으로 함께 낸다.
-   */
-  matching_filings_unconfirmed?: FilingRef[];
-  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
-  counterparty_confirmed_by_document?: true;
-  /**
-   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
-   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
-   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
-   */
-  matching_filings_not_examined_total?: number;
-  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
-  type_ambiguous_filings?: FilingRef[];
-  /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
-  type_ambiguous_resolved_by_document?: true;
-}
-
-/**
- * 거래 **상대방 쪽** 공시의무 대조 결과 — 상품·용역의 매입회사, 유가증권의 매도회사.
- *
- * ★ 근거 (공정위 공시 업무 매뉴얼 2026-04-27 lit26-001): "거래규모가 거래당사자 **모두에게**
- * 대규모내부거래에 해당되는 경우 이사회 의결 및 공시의무는 **거래당사자 모두에게** 있음.
- * 만일 거래규모가 일방당사자에게만 해당되는 경우에는 해당되는 거래당사자에게만 있음."
- * → 기준금액을 **각자의 자본**으로 계산해 따로 판정한다 (차입의 lender_side 와 같은 원리).
- *
- * ⚠️ 상품·용역은 여기에 더해 **상대방 요건**이 걸린다 — 각 당사자의 의무는 *그 상대방*이
- * 동일인·친족 20%↑ 출자 계열회사인지에 달렸다(고시 §4①4호, 매뉴얼 lit26-065·066 실례).
- * 지분을 확인할 수 없으므로 양쪽 모두 candidate_if_counterparty_qualified 에 머문다.
- *
- * 날짜 개념이 없는 표(연간 총액)라 건별 근접 대조는 하지 않는다 — 존재 확인까지만 한다.
- */
-export interface CounterpartySide {
-  /** 이 관점의 공시의무자 = 원래 신호의 거래상대방 (매입회사 또는 매도회사) */
-  company: string;
-  corp_code?: string;
-  status:
-    | 'candidate_if_counterparty_qualified'
-    | 'candidate_aggregate_only'
-    | 'j001_filing_exists'
-    | 'below_threshold'
-    | 'not_judged'
-    /** 상대방을 DART corp_code 로 잇지 못했다 — 조회 자체가 불가능 */
-    | 'counterparty_not_joined'
-    /** 상대방이 자연인(동일인·친족)으로 **추정**된다 — 회사가 아니면 J001 의무자가 아니다 */
-    | 'counterparty_not_company';
-  reason?: string;
-  threshold?: { value: number; value_display: string; formula: string; source_row: string };
-  certainty?: Certainty;
-  /** 상품·용역 전용 — 연간 총액이 이 회사 기준금액의 4배 이상이면 비둘기집이 선다 */
-  quarterly_logic?: GoodsMatrixSignal['quarterly_logic'];
-  /** 상품·용역 전용 — 상대방(= 원래 신호의 판매회사) 지분 요건을 확인하지 못했다 */
-  counterparty_qualification?: 'not_verified';
-  j001_search?: { from: string; to: string; type_filter: string };
-  matching_filings?: FilingRef[];
-  matching_filings_total?: number;
-  cancellations_of_type_in_window?: number;
-  search_partial?: boolean;
-  other_j001_in_window?: number;
-  /**
-   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
-   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
-   * 대조하라는 뜻으로 함께 낸다.
-   */
-  matching_filings_unconfirmed?: FilingRef[];
-  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
-  counterparty_confirmed_by_document?: true;
-  /**
-   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
-   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
-   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
-   */
-  matching_filings_not_examined_total?: number;
-  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
-  type_ambiguous_filings?: FilingRef[];
-  /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
-  type_ambiguous_resolved_by_document?: true;
-}
-
-export interface JudgedBorrowing {
-  company: string;
-  corp_code?: string;
-  counterparty: string;
-  amount: number;
-  amount_display: string;
-  date: string | null;
-  raw_date?: string;
-  table_label: string;
-  threshold?: {
-    value: number;
-    value_display: string;
-    formula: string;
-    source_row: string;
-  };
-  certainty?: Certainty;
-  status: TxStatus;
-  reason?: string;
-  joined_group_at?: string;
   j001_search?: { from: string; to: string; type_filter: string };
   matching_filings?: FilingRef[];
   /** matching_filings 가 10건에서 잘렸을 때의 전체 건수 */
   matching_filings_total?: number;
-  /** 가장 가까운 같은 유형 공시와의 일수 차 (공시 접수일 − 차입일. 음수 = 공시가 앞) */
-  nearest_filing_gap_days?: number;
-  /**
-   * 같은 상대방과의 연간 차입 합산 (원). 개별 건이 기준 미달이어도 §4③(동일 거래상대방·
-   * 동일 거래대상 기준 판단)에 따라 합산 기준으로 공시대상일 수 있다 (Codex 4차 C2).
-   */
-  same_counterparty_annual_total?: number;
-  same_counterparty_annual_total_display?: string;
   /** 창 안의 같은 유형 '[공시취소]' 접수분 수 — 매칭 공시가 취소된 원공시일 수 있다 */
   cancellations_of_type_in_window?: number;
   search_partial?: boolean;
@@ -295,6 +167,82 @@ export interface JudgedBorrowing {
   type_ambiguous_filings?: FilingRef[];
   /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
   type_ambiguous_resolved_by_document?: true;
+}
+
+/**
+ * 한 차입 건의 **대여회사 쪽** 공시의무 대조 결과.
+ * 기준금액은 대여회사 자신의 자본으로 계산한다 (같은 J004 재무현황 표).
+ */
+export interface LenderSide extends J001CheckFields {
+  /** 대여회사 = 이 차입 건의 거래상대방 */
+  company: string;
+  status: LenderStatus;
+  reason?: string;
+  threshold?: ThresholdView;
+  certainty?: Certainty;
+  joined_group_at?: string;
+  nearest_filing_gap_days?: number;
+  same_counterparty_annual_total?: number;
+  same_counterparty_annual_total_display?: string;
+}
+
+/**
+ * 거래 **상대방 쪽** 공시의무 대조 결과 — 상품·용역의 매입회사, 유가증권의 매도회사.
+ *
+ * ★ 근거 (공정위 공시 업무 매뉴얼 2026-04-27 lit26-001): "거래규모가 거래당사자 **모두에게**
+ * 대규모내부거래에 해당되는 경우 이사회 의결 및 공시의무는 **거래당사자 모두에게** 있음.
+ * 만일 거래규모가 일방당사자에게만 해당되는 경우에는 해당되는 거래당사자에게만 있음."
+ * → 기준금액을 **각자의 자본**으로 계산해 따로 판정한다 (차입의 lender_side 와 같은 원리).
+ *
+ * ⚠️ 상품·용역은 여기에 더해 **상대방 요건**이 걸린다 — 각 당사자의 의무는 *그 상대방*이
+ * 동일인·친족 20%↑ 출자 계열회사인지에 달렸다(고시 §4①4호, 매뉴얼 lit26-065·066 실례).
+ * 지분을 확인할 수 없으므로 양쪽 모두 candidate_if_counterparty_qualified 에 머문다.
+ *
+ * 날짜 개념이 없는 표(연간 총액)라 건별 근접 대조는 하지 않는다 — 존재 확인까지만 한다.
+ */
+export interface CounterpartySide extends J001CheckFields {
+  /** 이 관점의 공시의무자 = 원래 신호의 거래상대방 (매입회사 또는 매도회사) */
+  company: string;
+  status:
+    | 'candidate_if_counterparty_qualified'
+    | 'candidate_aggregate_only'
+    | 'j001_filing_exists'
+    | 'below_threshold'
+    | 'not_judged'
+    /** 상대방을 DART corp_code 로 잇지 못했다 — 조회 자체가 불가능 */
+    | 'counterparty_not_joined'
+    /** 상대방이 자연인(동일인·친족)으로 **추정**된다 — 회사가 아니면 J001 의무자가 아니다 */
+    | 'counterparty_not_company';
+  reason?: string;
+  threshold?: ThresholdView;
+  certainty?: Certainty;
+  /** 상품·용역 전용 — 연간 총액이 이 회사 기준금액의 4배 이상이면 비둘기집이 선다 */
+  quarterly_logic?: GoodsMatrixSignal['quarterly_logic'];
+  /** 상품·용역 전용 — 상대방(= 원래 신호의 판매회사) 지분 요건을 확인하지 못했다 */
+  counterparty_qualification?: 'not_verified';
+}
+
+export interface JudgedBorrowing extends J001CheckFields {
+  company: string;
+  counterparty: string;
+  amount: number;
+  amount_display: string;
+  date: string | null;
+  raw_date?: string;
+  table_label: string;
+  threshold?: ThresholdView;
+  certainty?: Certainty;
+  status: TxStatus;
+  reason?: string;
+  joined_group_at?: string;
+  /** 가장 가까운 같은 유형 공시와의 일수 차 (공시 접수일 − 차입일. 음수 = 공시가 앞) */
+  nearest_filing_gap_days?: number;
+  /**
+   * 같은 상대방과의 연간 차입 합산 (원). 개별 건이 기준 미달이어도 §4③(동일 거래상대방·
+   * 동일 거래대상 기준 판단)에 따라 합산 기준으로 공시대상일 수 있다 (Codex 4차 C2).
+   */
+  same_counterparty_annual_total?: number;
+  same_counterparty_annual_total_display?: string;
   other_j001_sample?: FilingRef[];
   /** 자금을 대준 계열회사 쪽의 "자금대여" 공시의무 대조 (거래 한 건에 의무자가 둘이다) */
   lender_side?: LenderSide;
@@ -313,9 +261,8 @@ export interface GoodsItem {
  * 같은 상대방에게 품목 A 30억 + B 15억(합계 45억, 4×기준 40억)인 케이스가 각각 미달로
  * 빠져 탐지 가능한 신호가 유실된다 (교차검토 M-4).
  */
-export interface GoodsSignal {
+export interface GoodsSignal extends J001CheckFields {
   company: string;
-  corp_code?: string;
   counterparty: string;
   /** 어느 표에서 왔는가 — (6) 주요 내역은 품목·금액이 명시된 강한 원천이다 */
   source: '(6)주요내역';
@@ -351,7 +298,7 @@ export interface GoodsSignal {
     annual_display: string;
     note: string;
   };
-  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  threshold?: ThresholdView;
   certainty?: Certainty;
   /** 연간 합산 ≥ 4×기준금액 ⇒ 어느 분기 하나는 반드시 기준금액 이상 (비둘기집 논증) */
   quarterly_logic:
@@ -366,30 +313,6 @@ export interface GoodsSignal {
    * 이 도구는 지분 데이터가 없어 그 요건을 확인하지 못한다.
    */
   counterparty_qualification?: 'not_verified';
-  j001_search?: { from: string; to: string; type_filter: string };
-  matching_filings?: FilingRef[];
-  matching_filings_total?: number;
-  cancellations_of_type_in_window?: number;
-  search_partial?: boolean;
-  other_j001_in_window?: number;
-  /**
-   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
-   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
-   * 대조하라는 뜻으로 함께 낸다.
-   */
-  matching_filings_unconfirmed?: FilingRef[];
-  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
-  counterparty_confirmed_by_document?: true;
-  /**
-   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
-   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
-   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
-   */
-  matching_filings_not_examined_total?: number;
-  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
-  type_ambiguous_filings?: FilingRef[];
-  /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
-  type_ambiguous_resolved_by_document?: true;
   /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
   buyer_side?: CounterpartySide;
 }
@@ -405,16 +328,15 @@ export interface GoodsSignal {
  * **여기서는 성립하지 않는다.** 반대 방향은 확실하다: 연간 총액이 기준 미만이면
  * 그 상대방과의 어떤 개별 거래도 기준 미만이다.
  */
-export interface SecuritySignal {
+export interface SecuritySignal extends J001CheckFields {
   /** 매입회사 (매트릭스 행) — 이 회사의 J001 을 대조한다 */
   company: string;
-  corp_code?: string;
   /** 매도회사 (매트릭스 열) */
   counterparty: string;
   /** 직전 사업연도 1년 합계 (원) */
   annual_amount: number;
   annual_amount_display: string;
-  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  threshold?: ThresholdView;
   certainty?: Certainty;
   /**
    * 거래상대방 이름이 이 문서의 회사 목록(재무현황·포털 소속회사·매트릭스 행)에서
@@ -432,30 +354,6 @@ export interface SecuritySignal {
     | 'not_applicable_foreign_affiliate'
     | 'not_judged';
   reason?: string;
-  j001_search?: { from: string; to: string; type_filter: string };
-  matching_filings?: FilingRef[];
-  matching_filings_total?: number;
-  cancellations_of_type_in_window?: number;
-  search_partial?: boolean;
-  other_j001_in_window?: number;
-  /**
-   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
-   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
-   * 대조하라는 뜻으로 함께 낸다.
-   */
-  matching_filings_unconfirmed?: FilingRef[];
-  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
-  counterparty_confirmed_by_document?: true;
-  /**
-   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
-   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
-   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
-   */
-  matching_filings_not_examined_total?: number;
-  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
-  type_ambiguous_filings?: FilingRef[];
-  /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
-  type_ambiguous_resolved_by_document?: true;
   /** 매도회사 쪽 의무 — 유가증권은 상대방 지분 요건이 없어 각자의 기준금액만 본다 */
   seller_side?: CounterpartySide;
 }
@@ -477,17 +375,16 @@ export interface SecuritySignal {
  * ⚠️ (5)에는 (6)과 달리 **품목이 없다.** 실측(미래에셋 20260819000341)상 (5)에는 배당금수익이
  * 실리지 않지만, 품목을 볼 수 없으므로 item_caveat(배당·이자·임대차 분리)을 적용하지 못한다.
  */
-export interface GoodsMatrixSignal {
+export interface GoodsMatrixSignal extends J001CheckFields {
   /** 매출회사 (매트릭스 행) — 이 회사의 J001 을 대조한다 */
   company: string;
-  corp_code?: string;
   /** 매입회사 (매트릭스 열) */
   counterparty: string;
   source: '(5)총괄';
   /** 직전 사업연도 1년 합계 (원) */
   annual_amount: number;
   annual_amount_display: string;
-  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  threshold?: ThresholdView;
   certainty?: Certainty;
   /**
    * 연간 총액과 기준금액의 관계. `annual_geq_4x_threshold` 만 비둘기집 논증이 성립한다.
@@ -525,30 +422,6 @@ export interface GoodsMatrixSignal {
     | 'not_applicable_foreign_affiliate'
     | 'not_judged';
   reason?: string;
-  j001_search?: { from: string; to: string; type_filter: string };
-  matching_filings?: FilingRef[];
-  matching_filings_total?: number;
-  cancellations_of_type_in_window?: number;
-  search_partial?: boolean;
-  other_j001_in_window?: number;
-  /**
-   * 같은 유형·같은 창의 공시이지만 **원문 거래상대방이 이 거래 상대방과 달랐던** 건 (최대 5).
-   * "공시 없음"이 아니라 "이 거래의 공시로 확인되지 않은 공시"다 — doc_counterparties 를 직접
-   * 대조하라는 뜻으로 함께 낸다.
-   */
-  matching_filings_unconfirmed?: FilingRef[];
-  /** matching_filings 의 **원문 거래상대방**까지 이 거래 상대방과 일치함을 확인했다 */
-  counterparty_confirmed_by_document?: true;
-  /**
-   * 상대방이 확인돼 판정이 끝났거나(또는 원문 예산이 소진돼) **열어 보지 않은** 매칭 공시 수.
-   * ⚠️ "상대방이 다른 공시"가 아니라 **보지 않은 공시**다 — 확인된 건이 있으면 더 볼 필요가
-   * 없어서, 없으면 예산이 없어서다(후자는 reason 에 명시된다).
-   */
-  matching_filings_not_examined_total?: number;
-  /** 이름만으로 유형을 알 수 없어 판정을 보류시킨 공시 — "공시 있음" 확인이 아니다 */
-  type_ambiguous_filings?: FilingRef[];
-  /** 유형 미상 공시의 **원문 거래상대방**이 이 거래 상대방과 일치해 "공시 존재"로 확정했다 */
-  type_ambiguous_resolved_by_document?: true;
   /** 매입(구매)회사 쪽 의무 — 거래 한 건에 의무자가 둘이다 (매뉴얼 lit26-001) */
   buyer_side?: CounterpartySide;
 }
@@ -561,7 +434,7 @@ export interface GoodsCaveatRow {
   annual_amount: number;
   annual_amount_display: string;
   item_caveat: string;
-  threshold?: { value: number; value_display: string; formula: string; source_row: string };
+  threshold?: ThresholdView;
   certainty?: Certainty;
   quarterly_logic: GoodsSignal['quarterly_logic'];
   /** 회사가 다른 신호로 이미 검색된 경우에 한해, 참고용 J001 존재 정보를 동봉 (교차검토 S-9) */

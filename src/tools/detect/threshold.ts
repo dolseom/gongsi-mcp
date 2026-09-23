@@ -4,7 +4,7 @@
 
 import type { extractCapitals } from '../../parsers/j004-transactions.js';
 import { normalizeCompanyName } from '../../parsers/md-table.js';
-import { calcThreshold, CAP_100 } from '../../rules/thresholds.js';
+import { calcThreshold, CAP_100, formatWon } from '../../rules/thresholds.js';
 import type { GoodsSignal } from './types.js';
 
 /** 회사별 기준금액 (J004 재무현황 기반 근사치) */
@@ -13,6 +13,23 @@ export interface ApproxThreshold {
   formula: string;
   /** 재무현황 표에서 매칭된 원문 회사명 */
   source_row: string;
+}
+
+/** 신호에 싣는 기준금액 표시 — 키 순서(value → value_display → formula → source_row)가 출력 순서다 */
+export interface ThresholdView {
+  value: number;
+  value_display: string;
+  formula: string;
+  source_row: string;
+}
+
+export function thresholdView(th: ApproxThreshold): ThresholdView {
+  return {
+    value: th.value,
+    value_display: formatWon(th.value),
+    formula: th.formula,
+    source_row: th.source_row,
+  };
 }
 
 /**

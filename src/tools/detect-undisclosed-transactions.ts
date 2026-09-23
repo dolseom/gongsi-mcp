@@ -114,6 +114,7 @@ import {
 import type {
   DetectDeps,
   FilingRef,
+  J001CheckFields,
   LenderStatus,
   LenderSide,
   CounterpartySide,
@@ -2439,13 +2440,7 @@ export async function detectUndisclosedTransactions(
 
   /** 존재/부재 공통 필드를 대상 객체에 옮겨 담는다 */
   function applyCommon(
-    target:
-      | JudgedBorrowing
-      | GoodsSignal
-      | GoodsMatrixSignal
-      | SecuritySignal
-      | LenderSide
-      | CounterpartySide,
+    target: J001CheckFields,
     chk: CompanyCheck,
     counterparty: string,
     typeLabel: string,
