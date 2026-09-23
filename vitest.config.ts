@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 /**
  * `node:sqlite` 로드는 src/lib/store.ts 가 `createRequire` 로 처리한다 (사유는 그 파일 주석 참조).
@@ -6,6 +6,8 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    // 에이전트 git worktree(.claude/worktrees)·로컬 증거(.omo)의 사본 테스트까지 수집하지 않는다
+    exclude: [...configDefaults.exclude, '.claude/**', '.omo/**'],
     onConsoleLog(logText) {
       if (logText.includes('ExperimentalWarning') && logText.includes('SQLite')) return false;
       return undefined;

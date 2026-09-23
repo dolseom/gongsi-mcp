@@ -145,6 +145,15 @@ export class Store {
       this.db.exec('DROP TABLE bodies');
       this.db.exec('COMMIT');
       log.info('원문 캐시를 bodies(FTS5) → docs 로 이관했습니다', { rows: Number(r.changes ?? 0) });
+      // 복사 후 DROP 이라 옛 FTS 페이지가 빈 페이지로 남아 파일이 커진다(실측 33 → 41MB) — 1회만 압축한다.
+      // 실패해도 캐시 동작에는 영향이 없다.
+      try {
+        this.db.exec('VACUUM');
+      } catch (err) {
+        log.warn('이관 후 VACUUM 실패 — 파일 크기만 줄지 않습니다', {
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
     } catch (err) {
       try {
         this.db.exec('ROLLBACK');
