@@ -71,7 +71,7 @@ import {
   MAX_JURIR_LOOKUPS,
   budgetSeconds,
 } from './detect/budget.js';
-import { addDaysYmd, daysBetween } from './detect/dates.js';
+import { addDaysYmd, compareNewestFirst, daysBetween } from './detect/dates.js';
 import {
   normalizeReportNm,
   isBorrowingReport,
@@ -2152,7 +2152,7 @@ export async function detectUndisclosedTransactions(
       notExamined: number;
       detail: string;
     }> {
-      const byDateDesc = [...ambiguous].sort((a, b) => (a.rcept_dt < b.rcept_dt ? 1 : -1));
+      const byDateDesc = [...ambiguous].sort(compareNewestFirst);
       const examined: Disclosure[] = [];
       let covering: Disclosure | undefined;
       let stoppedByBudget = false;
@@ -2260,13 +2260,20 @@ export async function detectUndisclosedTransactions(
       //   건수만 남긴다.
       // ★ 정렬 기준: 근접 대조를 하는 판정(차입·대여)은 **거래일에 가까운 순**으로 연다. 최신순으로
       //   열면 먼저 확인된 한 건이 최근접 공시가 아닐 수 있어 near_date 판정이 뒤집힌다.
+      // ★ 창이 비대칭(−NEAR_BEFORE_DAYS ~ +NEAR_AFTER_DAYS)이라 |거리|만으로 열면 창 **밖** +35일 공시가
+      //   창 **안** −60일 공시보다 먼저 열려, 그것으로 확인되고 멈추면 filing_far_from_date 과잉 경보가 난다
+      //   (2026-09-24 점검 지적). 창 안을 먼저, 그다음 거리순. 끝의 접수번호 비교는 동률에서도 순서를
+      //   결정적으로 만든다 — 원문 예산에 걸리면 여는 순서가 결과를 바꾸기 때문이다.
       const ordered = [...matching].sort((a, b) => {
         if (nearDate) {
-          const da = Math.abs(daysBetween(a.rcept_dt, nearDate));
-          const db = Math.abs(daysBetween(b.rcept_dt, nearDate));
-          if (da !== db) return da - db;
+          const ga = daysBetween(a.rcept_dt, nearDate);
+          const gb = daysBetween(b.rcept_dt, nearDate);
+          const inA = ga >= -NEAR_BEFORE_DAYS && ga <= NEAR_AFTER_DAYS ? 0 : 1;
+          const inB = gb >= -NEAR_BEFORE_DAYS && gb <= NEAR_AFTER_DAYS ? 0 : 1;
+          if (inA !== inB) return inA - inB;
+          if (Math.abs(ga) !== Math.abs(gb)) return Math.abs(ga) - Math.abs(gb);
         }
-        return a.rcept_dt < b.rcept_dt ? 1 : -1;
+        return compareNewestFirst(a, b);
       });
       const examined: Disclosure[] = [];
       let confirmed: Disclosure | undefined;
