@@ -479,7 +479,9 @@ export function checkDisclosureDuty(
         missingInputs.push({
           field: 'boardDate',
           purpose: 'deadline',
-          label: '이사회 의결일 — 공시기한의 기산일입니다 (의결일 다음 날부터 기산)',
+          label:
+            '이사회 의결일 — 공시기한의 기산일입니다 (의결일 다음 날부터 상장 3영업일 / 비상장·공익법인 7영업일, ' +
+            '고시 제6조제1항)',
         });
       }
       if (!input.listing) {
@@ -499,7 +501,11 @@ export function checkDisclosureDuty(
         missingInputs.push({
           field: 'occurredDate',
           purpose: 'deadline',
-          label: '사유 발생일 — 공시기한의 기산일입니다',
+          // ★ 날짜가 없어도 **규칙**은 말한다 — b2a c01 2차: 기한 규칙을 못 받은 모델이 7영업일을 빠뜨렸다
+          label:
+            input.materialItem === 'shareholding_change'
+              ? '사유 발생일 — 공시기한의 기산일입니다'
+              : '사유 발생일 — 공시기한의 기산일입니다 (사유 발생일부터 7영업일 이내, 초일 불산입 — 고시 제5조의2제4항)',
         });
       }
       // 주요주주 지분변동만 분기별 공시 — 최대주주 변동·그 외 사유는 전부 7영업일 (§5의2④)

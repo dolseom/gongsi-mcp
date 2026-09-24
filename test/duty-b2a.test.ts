@@ -178,3 +178,24 @@ describe('비상장 중요사항 안내 보강 (P2, 비상장사 매뉴얼)', ()
     expect(n).toContain('원문 미확인');
   });
 });
+
+describe('기산일이 없어도 기한 **규칙**은 알린다 (b2a c01 2차 — 모델이 7영업일을 빠뜨렸다)', () => {
+  it('비상장 중요사항: 고시 제5조의2제4항 "사유 발생일부터 7영업일 이내"', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'unlisted_material', materialItem: 'guarantee', listing: 'unlisted' }));
+    const m = r.missing_inputs!.find((x) => x.field === 'occurredDate')!;
+    expect(m.label).toContain('7영업일');
+  });
+
+  it('주요주주 지분변동은 기한 유형이 달라 7영업일을 단정하지 않는다', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'unlisted_material', materialItem: 'shareholding_change' }));
+    const m = r.missing_inputs!.find((x) => x.field === 'occurredDate')!;
+    expect(m.label).not.toContain('7영업일');
+  });
+
+  it('대규모내부거래: 고시 제6조제1항 "상장 3영업일 / 비상장 7영업일"', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 30 * 억, totalEquity: 400 * 억 }));
+    const m = r.missing_inputs!.find((x) => x.field === 'boardDate')!;
+    expect(m.label).toContain('3영업일');
+    expect(m.label).toContain('7영업일');
+  });
+});
