@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { bigrams, clampQuery, scoreFields, shortCompoundMatched, tokenize } from './text-search.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -103,26 +104,6 @@ export interface QnaMatch {
   score: number;
 }
 
-/** 질의를 공백·구두점 기준 토큰으로 나눈다. 1글자 토큰은 잡음이라 버린다. */
-function tokenize(query: string): string[] {
-  return [
-    ...new Set(
-      query
-        .split(/[\s.,?!·()\[\]"'“”‘’]+/)
-        .map((t) => t.trim())
-        .filter((t) => t.length >= 2),
-    ),
-  ];
-}
-
-/** 한글 질의 대비 문자 bigram — 조사가 붙은 토큰("공시의무가")도 부분 매칭되게 한다 */
-function bigrams(s: string): string[] {
-  const chars = [...s.replace(/\s+/g, '')];
-  const out: string[] = [];
-  for (let i = 0; i + 1 < chars.length; i++) out.push(`${chars[i]}${chars[i + 1]}`);
-  return [...new Set(out)];
-}
-
 /**
  * 유사 Q&A 검색.
  *
@@ -140,7 +121,7 @@ export function searchQna(
   const limit = opts.limit ?? 5;
   // 도구 입력 스키마와 별개로 직접 호출 경계에서도 길이를 막는다 —
   // bigram 생성이 O(질의 길이 × 코퍼스)라 무제한 입력은 이벤트 루프를 점유한다 (Codex 지적)
-  const trimmed = query.length > 500 ? query.slice(0, 500) : query;
+  const trimmed = clampQuery(query);
   const tokens = tokenize(trimmed);
   const grams = bigrams(trimmed);
   if (!tokens.length && !grams.length) return [];
@@ -148,28 +129,13 @@ export function searchQna(
   const matches: QnaMatch[] = [];
   for (const entry of kb.entries) {
     if (opts.category && entry.category !== opts.category) continue;
-    const q = entry.question;
-    const a = entry.answer ?? '';
-
-    let score = 0;
-    for (const t of tokens) {
-      if (q.includes(t)) score += 3;
-      else if (a.includes(t)) score += 1;
-    }
-    let gramHits = 0;
-    let qGramCount = 0; // 질문에서 일치한 서로 다른 bigram 수 (아래 짧은 복합어 하한용)
-    let qFirstGram = false;
-    let qLastGram = false;
-    for (let gi = 0; gi < grams.length; gi++) {
-      const g = grams[gi]!;
-      if (q.includes(g)) {
-        gramHits += 2;
-        qGramCount += 1;
-        if (gi === 0) qFirstGram = true;
-        if (gi === grams.length - 1) qLastGram = true;
-      } else if (a.includes(g)) gramHits += 1;
-    }
-    score += gramHits * 0.05;
+    // 질문 3점 > 답변 1점 (bigram 은 질문 2 > 답변 1, ×0.05) — 공통 규칙은 text-search.ts
+    const s = scoreFields(tokens, grams, [
+      { text: entry.question, tokenWeight: 3, gramWeight: 2 },
+      { text: entry.answer ?? '', tokenWeight: 1, gramWeight: 1 },
+    ]);
+    const gramHits = s.gramScore;
+    const score = s.tokenScore + gramHits * 0.05;
 
     // 신뢰 하한 — 토큰이 하나도 안 맞으면 bigram 우연 일치(예: "강아지 예방접종"의 '접종' 1개)만으로
     // "공정위 공식 근거"처럼 반환되면 안 된다. bigram 뭉치가 실질적으로 겹칠 때만 통과시킨다.
@@ -184,9 +150,7 @@ export function searchQna(
     // 끝 bigram 이 빠졌다는 건 마지막 형태소가 다르다는 뜻 — "금융상품권"(상품권 질의)이 끝 글자만
     // 무시된 채 "금융상품" Q&A 를 공식 근거처럼 받던 오탐 경로를 막는다 (실측 반례).
     const tokenMatched = score >= 1;
-    const shortCompoundMatched =
-      qGramCount >= 3 && qGramCount >= grams.length * 0.75 && qFirstGram && qLastGram;
-    if (tokenMatched || gramHits >= 8 || shortCompoundMatched) matches.push({ entry, score });
+    if (tokenMatched || gramHits >= 8 || shortCompoundMatched(s, grams.length)) matches.push({ entry, score });
   }
 
   matches.sort((x, y) => {
