@@ -140,9 +140,14 @@ function finalize(
  * 대규모내부거래 공시기한 — 고시 §6①
  * 상장 3영업일 / 비상장·공익법인 7영업일
  */
-export function litDeadline(boardDate: YMD, listing: ListingStatus): DeadlineResult {
+export function litDeadline(
+  boardDate: YMD,
+  listing: ListingStatus | 'public_interest_corp',
+): DeadlineResult {
+  // ★ 공익법인은 상장 여부와 무관하게 7영업일 — 고시 제6조제1항 "상장회사가 아니거나 공익법인인 경우에는 … 7영업일 이내"
   const n = listing === 'listed' ? 3 : 7;
-  const label = listing === 'listed' ? '상장회사' : '비상장회사·공익법인';
+  const label =
+    listing === 'listed' ? '상장회사' : listing === 'public_interest_corp' ? '공익법인' : '비상장회사·공익법인';
   const raw = addBusinessDays(boardDate, n);
   return finalize(
     raw,
