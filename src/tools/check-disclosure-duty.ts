@@ -55,6 +55,12 @@ import {
   type ReviewMemo,
 } from './disclosure-review.js';
 import { evaluateOmnibus, type OmnibusEvaluation } from './duty/omnibus.js';
+import {
+  evaluateLitConditions,
+  exclusionConditionsNote,
+  GOODS_SERVICES_SPECIAL_NOTE,
+  LEASE_GOODS_SERVICES_NOTE,
+} from './duty/lit-conditions.js';
 
 const YMD = ymdSchema;
 
@@ -228,6 +234,43 @@ export const checkDisclosureDutyInput = z.object({
     .boolean()
     .optional()
     .describe('청산 절차 진행 중 또는 1년 이상 휴업 중인지 (고시 §2②2호 단서의 제외 요건)'),
+
+  counterpartyForeignAffiliate: z
+    .boolean()
+    .optional()
+    .describe(
+      '대규모내부거래·공익법인 — 거래상대방이 국외 계열회사인지. 법 제26조제1항은 상대방 특수관계인에서 국외 계열회사를 ' +
+        '제외합니다(직접 거래는 대상 아님, 공정위 문답 lit26-020). true 면 forSpecialRelatedParty 도 알려 주세요',
+    ),
+  forSpecialRelatedParty: z
+    .boolean()
+    .optional()
+    .describe(
+      '국외 계열회사 상대 거래가 특수관계인을 **위한** 거래인지 (예: 국외 계열회사를 통해 간접적으로 특수관계인 발행 주식 ' +
+        '매입 — 이 경우는 국외 제외가 적용되지 않아 대상, lit26-020 단서)',
+    ),
+  stockTradeVenue: z
+    .enum(['exchange_regular', 'exchange_after_hours', 'off_exchange'])
+    .optional()
+    .describe(
+      '주식 취득·처분일 때 거래 방식. exchange_regular=계열증권사 등을 통한 장내시장 정규 매매(거래조건 결정 불가 → ' +
+        '대규모내부거래로 보지 않음, 고시 제4조제6항제2호·매뉴얼 6절), exchange_after_hours=장 종료 후 시간외거래(장내 제외 ' +
+        '없음 — "시간외거래는 공시대상"), off_exchange=장외 직접 거래. 공익법인의 소속 국내회사 주식은 장내라도 대상',
+    ),
+  incidentalTransaction: z
+    .boolean()
+    .optional()
+    .describe(
+      '이미 공시대상인 거래의 권리 행사·의무 이행에 따른 부수적 거래로 새로운 거래관계가 성립하지 않는지 (예: 채권·CP 매입 ' +
+        '또는 차입 후 만기 상환, 거래에 수반한 할부금융·카드결제) — true 면 대규모내부거래로 보지 않음 (고시 제4조제6항제1호)',
+    ),
+  picGroupShareTrade: z
+    .boolean()
+    .optional()
+    .describe(
+      'public_interest_corp 전용 — 공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래인지. true 면 거래상대방·' +
+        '금액과 관계없이 대상이고 부수적 거래·장내 제외도 적용되지 않습니다 (고시 제4조제2항제1호·제6항 단서)',
+    ),
 
   actualDisclosureDate: YMD.optional()
     .describe('실제 공시일. 주면 기한 준수 여부와 지연일수를 함께 판정한다'),
@@ -610,6 +653,45 @@ export function checkDisclosureDuty(
         }
       }
     }
+
+    // ── 제외 사유·금액 무관 대상 (법 제26조제1항 괄호, 고시 제4조제2항제1호·제6항, lit26-020) ──
+    // 입력된 사실은 verdict 에 반영하고, 입력되지 않은 사실은 조건으로만 안내한다.
+    const entity = input.duty === 'public_interest_corp' ? 'public_interest_corp' : 'company';
+    const lc = evaluateLitConditions(input, entity);
+    notes.push(...lc.notes);
+    const dropDutyMissing = () => {
+      for (let k = missingInputs.length - 1; k >= 0; k--) {
+        if (missingInputs[k]!.purpose === 'duty') missingInputs.splice(k, 1);
+      }
+    };
+    if (lc.picShareForced) {
+      verdict = 'required';
+      summary =
+        '공시 대상입니다. 공익법인의 소속 국내회사 주식 취득·처분은 거래상대방·거래금액과 관계없이 미리 이사회 의결을 ' +
+        '거치고 공시해야 합니다 (법 제29조제1항제1호, 고시 제4조제2항제1호).';
+      dropDutyMissing();
+    } else if (lc.excluded) {
+      verdict = 'not_required';
+      summary = `공시 대상이 아닙니다 — ${lc.excluded.reason}.` + (threshold ? ` (참고: 기준금액 ${fmtWon(threshold.amount)})` : '');
+      dropDutyMissing();
+    } else if (lc.conditional) {
+      if (verdict === 'required') {
+        verdict = 'insufficient_data';
+        summary = `금액 기준으로는 대상입니다(${summary.replace(/^공시 대상입니다\. /, '')}) — 그러나 ${lc.conditional.reason}.`;
+      } else if (verdict === 'insufficient_data') {
+        notes.push(`※ ${lc.conditional.reason}.`);
+      }
+      if (verdict !== 'not_required') {
+        missingInputs.push({ field: lc.conditional.field, purpose: 'duty', label: lc.conditional.label });
+      }
+    } else if (verdict === 'required') {
+      notes.push(exclusionConditionsNote(input, entity));
+    }
+    if (entity === 'public_interest_corp' && verdict === 'not_required' && !lc.excluded && input.picGroupShareTrade === undefined) {
+      summary += ' 단, 소속 국내회사 주식의 취득·처분이라면 금액과 무관하게 대상입니다 (고시 제4조제2항제1호 — picGroupShareTrade).';
+    }
+    if (input.amountBasis === 'quarterly_sum') notes.push(GOODS_SERVICES_SPECIAL_NOTE);
+    if (input.amountBasis === 'lease_annualized') notes.push(LEASE_GOODS_SERVICES_NOTE);
   } else if (input.duty === 'unlisted_material') {
     // ── 0단계: 대상회사 판정 (§2②) — 사유를 보기 전에 회사 자체가 대상인지부터 ──
     const subjectCheck = checkUnlistedSubjectCompany({

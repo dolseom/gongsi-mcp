@@ -239,8 +239,9 @@ export function buildReview(src: ReviewSource): ReviewMemo {
   }
   if (src.duty === 'large_internal_transaction' && src.verdict === 'required') {
     unresolved.push(
-      '금액 기준 충족은 대규모내부거래 요건의 일부입니다 — 상대방이 특수관계인인지, 상품·용역이면 ' +
-        '상대방 지분 요건(법 §26①4호)에 해당하는지는 이 도구가 확인하지 않습니다.',
+      '금액 기준 충족은 대규모내부거래 요건의 일부입니다 — 상대방이 특수관계인(국외 계열회사 제외)인지, 상품·용역이면 ' +
+        '상대방이 "자연인 동일인이 단독으로 또는 친족과 합하여 발행주식총수의 20% 이상을 소유한 계열회사 또는 그 계열회사의 ' +
+        '상법상 자회사(50% 초과)인 계열회사"인지(법 제26조제1항제4호, 시행령 제33조제2항)는 이 도구가 확인하지 않습니다.',
     );
   }
   for (const n of src.notes) {
