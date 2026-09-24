@@ -20,6 +20,7 @@ import {
   UNLISTED_MATERIAL_UNCONDITIONAL,
   effectiveEquity,
   formatWon,
+  incompleteCapitalFlipPoint,
 } from '../rules/thresholds.js';
 import {
   litDeadline,
@@ -103,8 +104,24 @@ export const checkDisclosureDutyInput = z.object({
         'insurance_premium_total=보험은 보험료총액, quarterly_sum=상품용역은 분기 합계액',
     ),
 
-  totalEquity: z.number().optional().describe('자본총계 (원). 주총 승인된 최근 사업연도말 재무제표 기준'),
-  paidInCapital: z.number().optional().describe('자본금 (원). 이사회 의결일 직전일 기준'),
+  totalEquity: z
+    .number()
+    .optional()
+    .describe(
+      '자본총계 (원). 대규모내부거래: 주주총회에서 승인된 최근 사업연도말 **개별(별도)재무제표**상 자본총계 — ' +
+        '연결재무제표가 아닙니다 (공정위 매뉴얼 2026-04 제6절, 문답 lit26-011). 공익법인은 순자산총계(이사회 승인 최근 ' +
+        '회계연도말). 비상장사 중요사항(unlisted_material)에서는 "자기자본"으로 쓰며, 최근 사업연도말 별도재무제표의 ' +
+        '자산총액−부채총액에 사업연도말 이후 사유 발생일까지의 자본금·자본잉여금 증감을 반영한 금액입니다(합병·분할이 ' +
+        '있었으면 그 효력발생일 재무제표 기준). 직전 사업연도 결산 수치는 사업연도 종료 후 3개월이 지난 날부터 1년간 ' +
+        '적용합니다 (비상장사 매뉴얼 주요용어)',
+    ),
+  paidInCapital: z
+    .number()
+    .optional()
+    .describe(
+      '자본금 (원). 대규모내부거래: 이사회 의결일 직전일의 자본금 (공익법인은 기본순자산). 자본총계와 둘 중 큰 금액이 ' +
+        '기준금액의 기초라, 한쪽만 주면 그 값으로 계산한 하한값이 됩니다',
+    ),
   totalAssets: z.number().optional().describe('자산총액 (원). 비상장사 중요사항 중 고정자산 판정용'),
 
   materialItem: z
@@ -430,7 +447,9 @@ export function checkDisclosureDuty(
       missingInputs.push({
         field: 'totalEquity',
         purpose: 'duty',
-        label: '자본총계 (원) — 기준금액 계산의 기준. 자본금(paidInCapital)만 있어도 계산됩니다',
+        label:
+          '자본총계 (원) — 기준금액 계산의 기준. 주주총회 승인 최근 사업연도말 개별(별도)재무제표 기준(연결 아님). ' +
+          '자본금(paidInCapital)만 있어도 계산은 되지만 그 경우 기준금액의 하한값입니다',
         alternatives: ['paidInCapital'],
       });
     }
@@ -461,15 +480,50 @@ export function checkDisclosureDuty(
             '보험(보험료총액)·상품용역(분기 합계액)은 산정 방식이 달라 판정이 뒤집힐 수 있습니다.',
         );
       }
+      const isPic = input.duty === 'public_interest_corp';
+      const equityWord = isPic ? '순자산총계' : '자본총계';
+      const capitalWord = isPic ? '기본순자산' : '자본금';
       if (input.amount === undefined) {
         verdict = 'insufficient_data';
-        summary = `기준금액은 ${fmtWon(t.threshold)}입니다. amount(거래금액)를 주면 대상 여부를 판정합니다.`;
+        summary =
+          `기준금액은 ${fmtWon(t.threshold)}입니다` +
+          (t.missingSide
+            ? ` (${t.missingSide === 'totalEquity' ? equityWord : capitalWord} 미입력 — 입력된 값만으로 계산한 하한값이며, 미입력 쪽이 더 크면 올라갑니다)`
+            : '') +
+          '. amount(거래금액)를 주면 대상 여부를 판정합니다.';
       } else {
         const required = isLargeInternalTransaction(input.amount, t.threshold);
-        verdict = required ? 'required' : 'not_required';
-        summary = required
-          ? `공시 대상입니다. 거래금액 ${fmtWon(input.amount)} ≥ 기준금액 ${fmtWon(t.threshold)}. 이사회 사전 의결이 필요합니다.`
-          : `공시 대상이 아닙니다. 거래금액 ${fmtWon(input.amount)} < 기준금액 ${fmtWon(t.threshold)}.`;
+        // ★ 한쪽 자본 미입력: 미입력 값은 기준금액을 **올리기만** 한다. 그래서 "대상 아님"은 확정이고,
+        //   "대상"은 미입력 값에 따라 뒤집힐 수 있다 (거래 100억 이상이면 확정). 뒤집힐 수 있을 때만 전제를 밝힌다.
+        const flip = incompleteCapitalFlipPoint(input.amount, t);
+        if (flip !== null && t.missingSide === 'totalEquity') {
+          // 자본금만 입력 — 자본총계는 보통 자본금보다 크므로 "대상"은 확정할 수 없다 (거짓 확정 방지).
+          verdict = 'insufficient_data';
+          summary =
+            `${capitalWord}만으로 계산한 기준금액 ${fmtWon(t.threshold)} 기준으로는 대상이지만(거래금액 ${fmtWon(input.amount)}), ` +
+            `${equityWord}이(가) ${fmtWon(flip)}을 넘으면 기준금액이 거래금액보다 커져 **대상이 아닙니다**. ` +
+            `${equityWord}(주주총회 승인 최근 사업연도말 개별재무제표 기준)을 주면 확정합니다.`;
+          missingInputs.push({
+            field: 'totalEquity',
+            purpose: 'duty',
+            label:
+              `${equityWord} (원) — ${fmtWon(flip)} 이하면 대상, 초과면 대상 아님. ` +
+              '주주총회에서 승인된 최근 사업연도말 개별(별도)재무제표상 금액 (연결 아님)',
+          });
+        } else {
+          verdict = required ? 'required' : 'not_required';
+          summary = required
+            ? `공시 대상입니다. 거래금액 ${fmtWon(input.amount)} ≥ 기준금액 ${fmtWon(t.threshold)}. 이사회 사전 의결이 필요합니다.`
+            : `공시 대상이 아닙니다. 거래금액 ${fmtWon(input.amount)} < 기준금액 ${fmtWon(t.threshold)}.`;
+          if (flip !== null) {
+            // 자본총계만 입력 — 자본금이 자본총계보다 큰 경우는 자본잠식뿐이라 결론이 뒤집힐 여지는 좁다. 전제로 밝힌다.
+            notes.push(
+              `[전제] ${capitalWord}(이사회 의결일 직전일 기준)이 입력되지 않아 ${equityWord}만으로 기준금액을 계산했습니다. ` +
+                `${capitalWord}이 ${fmtWon(flip)}을 넘으면(자본잠식으로 ${capitalWord}이 ${equityWord}보다 큰 경우 등) ` +
+                '기준금액이 거래금액보다 커져 대상이 아닙니다 — 그렇지 않으면 이 결론은 그대로입니다.',
+            );
+          }
+        }
         if (!required && input.amount >= t.threshold * 0.9) {
           notes.push(
             '기준금액의 90% 이상입니다. 분기 합산이나 관련 거래 합산 시 대상이 될 수 있으니 확인하세요.',
@@ -663,7 +717,8 @@ export function checkDisclosureDuty(
           ? `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이지만, ` +
             `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 §26, 별표 9 "의결 X/공시" 칸). ` +
             `기한 준수가 이 위반을 치유하지 않습니다.`
-          : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이므로 **적법**합니다.`
+          : `실제 공시 ${input.actualDisclosureDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다 ` +
+            '(기한 준수만 판정한 것입니다 — 공시 내용의 누락·거짓, 사전 이사회 의결의 적법성은 판정하지 않았습니다).'
         : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.` +
           (noBoardResolution ? ' 이사회 의결 없이 공시한 위반도 별도로 성립합니다 (별표 9 "의결 X" 칸).' : ''));
 

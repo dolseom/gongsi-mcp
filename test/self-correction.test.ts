@@ -85,14 +85,18 @@ describe('의결 없는 공시 — 기한 준수가 위반을 가리지 않는�
     expect(r.summary).toContain('의결 X');
   });
 
-  it('boardResolution:true + 기한 내는 종전대로 적법 + 과태료 없음', () => {
+  it('boardResolution:true + 기한 내는 "기한은 지켰다"로 한정 + 과태료 없음 (적법 단정 금지 — Codex 적대 검토)', () => {
     const r = checkDisclosureDuty({
       ...base,
       boardResolution: true,
       actualDisclosureDate: '20260702',
     });
     if ('error' in r) throw new Error(String(r.message));
-    expect(r.summary).toContain('적법');
+    // 기한 준수는 내용 누락·거짓·사전 의결 적법성까지 검증한 결과가 아니다 — "적법합니다"는 과장이다
+    expect(r.summary).toContain('공시기한');
+    expect(r.summary).toContain('지켰습니다');
+    expect(r.summary).not.toContain('적법합니다');
+    expect(r.summary).toContain('판정하지 않았습니다');
     expect(r.penalty).toBeUndefined();
   });
 

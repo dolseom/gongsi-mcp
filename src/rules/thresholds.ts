@@ -69,6 +69,9 @@ export function calcThreshold(
   if (totalEquity === undefined && paidInCapital === undefined) return null;
 
   const isPic = opts.entity === 'public_interest_corp';
+  // ⚠️ 한쪽이 미입력이면 **입력된 쪽만으로** 계산한다. 미입력을 0 으로 표기하면 "자본금 0원"이라는
+  //    존재하지 않는 사실이 산식에 박힌다. 미입력 쪽이 더 크면 실제 기준금액은 이보다 **높을 수만**
+  //    있다(max) — 그래서 이 값은 기준금액의 하한이다. 결론이 뒤집히는지는 호출자가 판단한다.
   const base = Math.max(totalEquity ?? 0, paidInCapital ?? 0);
   const byRate = base * CAPITAL_RATE;
   const rateApplied = Math.max(FLOOR_5, byRate);
@@ -76,19 +79,51 @@ export function calcThreshold(
 
   const equityLabel = isPic ? '순자산총계' : '자본총계';
   const capitalLabel = isPic ? '기본순자산' : '자본금';
+  const show = (v: number | undefined) => (v === undefined ? '미입력' : fmt(v));
+  const missingSide: ThresholdResult['missingSide'] =
+    totalEquity === undefined ? 'totalEquity' : paidInCapital === undefined ? 'paidInCapital' : undefined;
 
   const parts: string[] = [];
-  parts.push(`max(${equityLabel} ${fmt(totalEquity ?? 0)}, ${capitalLabel} ${fmt(paidInCapital ?? 0)}) = ${fmt(base)}`);
+  parts.push(
+    `max(${equityLabel} ${show(totalEquity)}, ${capitalLabel} ${show(paidInCapital)}) = ${fmt(base)}` +
+      (missingSide ? ' (입력된 값만으로 계산)' : ''),
+  );
   parts.push(`× 5% = ${fmt(byRate)}`);
   if (byRate < FLOOR_5) parts.push(`→ 5억원 미만이므로 하한 적용 = ${fmt(FLOOR_5)}`);
   parts.push(`min(100억원, ${fmt(rateApplied)}) = ${fmt(threshold)}`);
+  if (missingSide) {
+    parts.push(
+      `※ ${missingSide === 'totalEquity' ? equityLabel : capitalLabel} 미입력 — 그 값이 더 크면 기준금액은 이보다 높아질 수 있습니다(하한값)`,
+    );
+  }
 
   return {
     threshold,
     formula: parts.join('  '),
     inputs: { totalEquity, paidInCapital },
     legalBasis: isPic ? REF_PIC : REF_LIT,
+    ...(missingSide ? { missingSide } : {}),
   };
+}
+
+/**
+ * 자본총계·자본금 중 한쪽만 입력된 상태에서 **결론이 미입력 값에 따라 뒤집힐 수 있는가.**
+ *
+ * 기준금액 = min(100억, max(5억, max(A, B) × 5%)) 이므로 미입력 쪽은 기준금액을 **올리기만** 한다.
+ *  - 거래금액 < 계산된 기준금액  → 미입력 값이 무엇이든 대상 아님 (확정)
+ *  - 거래금액 ≥ 100억원          → 미입력 값이 무엇이든 대상 (확정)
+ *  - 그 사이                     → 미입력 값 × 5% 가 거래금액을 넘으면(= 미입력 값 > 거래금액 × 20) 뒤집힌다
+ *
+ * @returns 뒤집힐 수 있으면 그 경계값(미입력 값이 이 금액을 **초과**하면 대상 아님), 아니면 null
+ */
+export function incompleteCapitalFlipPoint(
+  amount: number,
+  t: ThresholdResult,
+): number | null {
+  if (!t.missingSide) return null;
+  if (amount < t.threshold) return null;
+  if (amount >= CAP_100) return null;
+  return amount / CAPITAL_RATE;
 }
 
 /**

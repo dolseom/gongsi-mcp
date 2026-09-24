@@ -161,6 +161,7 @@ export function buildReview(src: ReviewSource): ReviewMemo {
   for (const n of src.notes) {
     // 대상회사 미확정·자본금 대체 적용·이사회 의결 가정처럼 **판정의 전제**인 note 만 올린다.
     if (
+      n.startsWith('[전제]') ||
       n.includes('전제한 참고값') ||
       n.includes('대상회사임을 전제') ||
       n.includes('자본금을 자기자본으로 보아') ||

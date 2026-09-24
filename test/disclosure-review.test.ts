@@ -65,8 +65,23 @@ describe('대상 판정과 기한 계산은 독립적이다', () => {
       }),
     );
     expect(r.threshold?.amount).toBe(60 * 억);
-    expect(r.components.duty.status).toBe('evaluated');
-    expect(r.missing_inputs.some((m) => m.field === 'totalEquity')).toBe(false);
+    // ★ 2026-09-24 변경: 기준금액 = min(100억, max(자본총계, 자본금)×5%) — 미입력 자본총계가 1,600억원을
+    //   넘으면 기준이 80억원을 넘어 이 거래는 대상이 아니다. 자본금만으로 "대상" 을 확정하면 거짓 확정이라
+    //   대상 판정은 미확정 + 결론을 가르는 값(자본총계)만 되묻는다. 기준금액 계산 자체는 여전히 나간다.
+    expect(r.components.duty.status).toBe('insufficient_data');
+    expect(r.missing_inputs.some((m) => m.field === 'totalEquity')).toBe(true);
+
+    // 결론이 미입력 값과 무관하면(거래 100억 이상) 자본금만으로 판정이 끝난다 — 대안 관계는 그대로다
+    const settled = ok(
+      checkDisclosureDuty({
+        duty: 'large_internal_transaction',
+        paidInCapital: 1200 * 억,
+        amount: 100 * 억,
+      }),
+    );
+    expect(settled.components.duty.status).toBe('evaluated');
+    expect(settled.verdict).toBe('required');
+    expect(settled.missing_inputs.some((m) => m.field === 'totalEquity')).toBe(false);
   });
 
   it('공익법인도 같은 분리가 적용된다', () => {

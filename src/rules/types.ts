@@ -50,6 +50,11 @@ export interface ThresholdResult {
     paidInCapital?: number;
   };
   legalBasis: LegalRef[];
+  /**
+   * 자본총계·자본금 중 **미입력된 쪽** (둘 다 있으면 없음).
+   * 있으면 `threshold` 는 입력된 쪽만으로 계산한 **하한값**이다 — 미입력 쪽이 크면 기준금액이 올라간다.
+   */
+  missingSide?: 'totalEquity' | 'paidInCapital';
 }
 
 /** 기한 계산 결과 */
