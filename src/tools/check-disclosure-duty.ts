@@ -21,6 +21,8 @@ import {
   effectiveEquity,
   formatWon,
   incompleteCapitalFlipPoint,
+  CAP_100,
+  억,
 } from '../rules/thresholds.js';
 import {
   litDeadline,
@@ -593,7 +595,10 @@ export function checkDisclosureDuty(
       { entity: input.duty === 'public_interest_corp' ? 'public_interest_corp' : 'company' },
     );
     // 대상 판정에 부족한 입력을 **먼저** 적는다 — 기준금액을 못 구해 조기 종료해도 목록은 온전해야 한다.
-    if (!t) {
+    // 기준금액은 자본과 무관하게 [5억원, 100억원] 안에 있다 — 거래 100억 이상·5억 미만은 자본 없이도 결론이 확정된다.
+    const settledWithoutCapital =
+      !t && input.amount !== undefined && (input.amount >= CAP_100 || input.amount < 5 * 억);
+    if (!t && !settledWithoutCapital) {
       missingInputs.push({
         field: 'totalEquity',
         purpose: 'duty',
@@ -610,10 +615,21 @@ export function checkDisclosureDuty(
         label: '거래금액 (원) — 기준금액과 비교해 대상 여부를 판정합니다',
       });
     }
-    if (!t) {
+    if (!t && settledWithoutCapital) {
+      const amt = input.amount!;
+      verdict = amt >= CAP_100 ? 'required' : 'not_required';
+      summary =
+        amt >= CAP_100
+          ? `공시 대상입니다. 거래금액 ${fmtWon(amt)}이 100억원 이상이라 자본 규모와 무관하게 기준금액(최대 100억원) 이상입니다. 이사회 사전 의결이 필요합니다.`
+          : `공시 대상이 아닙니다. 거래금액 ${fmtWon(amt)}이 기준금액의 최저값(5억원)에도 못 미칩니다 — 자본 규모와 무관합니다.`;
+    } else if (!t) {
       verdict = 'insufficient_data';
       summary =
         '자본총계 또는 자본금이 없어 기준금액을 계산할 수 없습니다. ' +
+        (input.amount !== undefined
+          ? `결론을 가르는 값: 자본총계·자본금 중 큰 금액이 ${fmtWon(input.amount / 0.05)}(거래금액 ${fmtWon(input.amount)} × 20) ` +
+            '이하면 대상, 초과면 대상 아닙니다. '
+          : '') +
         'get_financials 로 해당 회사의 자본총계·자본금을 먼저 조회하세요.';
       notes.push('※ 통용되는 "50억원 기준"은 폐지된 옛 기준입니다. 현행은 min(100억, max(5억, 자본×5%))입니다.');
     } else {
@@ -712,8 +728,16 @@ export function checkDisclosureDuty(
       if (verdict !== 'not_required') {
         missingInputs.push({ field: lc.conditional.field, purpose: 'duty', label: lc.conditional.label });
       }
-    } else if (verdict === 'required') {
+    } else if (verdict === 'required' || (verdict === 'insufficient_data' && input.amount !== undefined)) {
       notes.push(exclusionConditionsNote(input, entity));
+    }
+    // 이미 거래했는데 사전 의결 여부를 모르는 경우 — 대규모내부거래는 "미리" 의결이 요건이다 (d06 "빌려줬는데요")
+    if (verdict !== 'not_required' && input.boardResolution === undefined && !input.boardDate && !lc.picShareForced) {
+      notes.push(
+        '이미 거래를 했다면 **거래 전에** 이사회 의결을 거쳤는지 확인하세요 — 대규모내부거래는 미리 이사회 의결을 거친 후 ' +
+          '공시해야 하며(법 제26조제1항), 의결 없이 거래했다면 공시기한과 별개로 별표 9의 "의결 X" 칸이 적용됩니다 ' +
+          '(과태료 산정 시 boardResolution 으로 알려 주세요).',
+      );
     }
     if (entity === 'public_interest_corp' && verdict === 'not_required' && !lc.excluded && input.picGroupShareTrade === undefined) {
       summary += ' 단, 소속 국내회사 주식의 취득·처분이라면 금액과 무관하게 대상입니다 (고시 제4조제2항제1호 — picGroupShareTrade).';

@@ -83,6 +83,23 @@ describe('자본총계·자본금 한쪽 미입력 — 0 으로 계산하지 않
     expect(r.missing_inputs.map((m) => m.field)).not.toContain('totalEquity');
   });
 
+  it('자본이 없어도 결론이 확정되면 판정한다 — 시행령 제33조제1항: 기준금액은 100억원을 넘지 않고 5억원 밑으로 내려가지 않는다', () => {
+    const big = ok(checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 100 * 억, amountBasis: 'quarterly_sum' }));
+    expect(big.verdict).toBe('required'); // c09: 분기 100억 용역
+    expect(big.missing_inputs.map((m) => m.field)).not.toContain('totalEquity');
+    const small = ok(checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 4 * 억, amountBasis: 'actual' }));
+    expect(small.verdict).toBe('not_required');
+  });
+
+  it('d06 "계열사한테 30억 빌려줬는데요": 결론을 가르는 값(자본 600억)과 사전 의결 확인을 알린다', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 30 * 억, amountBasis: 'actual' }));
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.summary).toContain('600억원');
+    expect(r.notes.some((n) => n.includes('거래 전에') && n.includes('의결 X'))).toBe(true);
+    // 국외 계열사 등 제외 조건도 함께 (대상 미확정이라도 금액이 있으면)
+    expect(r.notes.some((n) => n.startsWith('판정이 달라지는 경우') && n.includes('국외 계열회사'))).toBe(true);
+  });
+
   it('자본총계 입력 설명에 "개별재무제표" 기준을 적는다 — 매뉴얼 "주주총회에서 승인된 최근 사업연도 말 개별재무제표에 표시된 자본총계"', async () => {
     const { checkDisclosureDutyInput } = await import('../src/tools/check-disclosure-duty.js');
     const d = checkDisclosureDutyInput.shape.totalEquity.description ?? '';
