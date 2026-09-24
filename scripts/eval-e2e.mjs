@@ -3,7 +3,7 @@
 // claude CLI 헤드리스 실행으로 회귀 검증한다.
 //
 // 사용법:
-//   node scripts/eval-e2e.mjs [--suite eval/b2a] [--only id1,id2] [--concurrency N]
+//   node scripts/eval-e2e.mjs [--suite eval/b2a] [--only id1,id2] [--concurrency N] [--repeat N]
 //
 // --suite: 문항 묶음 폴더 (기본 eval/e2e). <폴더>/questions.json 을 읽고 결과는 <폴더>/results 에 쓴다.
 //   MCP 설정·채점 규칙은 묶음과 무관하게 eval/e2e 것을 쓴다.
@@ -37,7 +37,7 @@ const RAW_KEEP_CHARS = 1000;
 
 /** 인자 파싱 */
 function parseArgs(argv) {
-  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR };
+  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR, repeat: 1 };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--only') {
@@ -54,6 +54,10 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg.startsWith('--suite=')) {
       opts.suiteDir = join(REPO_ROOT, arg.slice('--suite='.length));
+    } else if (arg === '--repeat' || arg.startsWith('--repeat=')) {
+      // 문항당 N회 — 답변 1건으로는 회차 간 흔들림이 개선 효과보다 컸다 (b2a 2차 A9 → 3차 A7, 대부분 모델 재서술)
+      const value = arg === '--repeat' ? argv[++i] : arg.slice('--repeat='.length);
+      opts.repeat = Number(value);
     } else if (arg === '--concurrency') {
       const value = argv[i + 1];
       if (!value) throw new Error('--concurrency 옵션에 숫자가 필요합니다.');
@@ -349,6 +353,15 @@ async function main() {
     if (missing.length > 0) {
       throw new Error(`questions.json 에 없는 문항 id 입니다: ${missing.join(', ')}`);
     }
+  }
+  if (!Number.isInteger(opts.repeat) || opts.repeat < 1) {
+    throw new Error('--repeat 는 1 이상의 정수여야 합니다.');
+  }
+  if (opts.repeat > 1) {
+    // 반복분은 id 에 @k 를 붙인다 — 스트림 파일이 겹치지 않고, regrade 는 @ 앞을 문항 id 로 본다
+    items = items.flatMap((item) =>
+      Array.from({ length: opts.repeat }, (_, k) => (k === 0 ? item : { ...item, id: `${item.id}@${k + 1}` })),
+    );
   }
   if (items.length === 0) {
     throw new Error('실행할 문항이 없습니다.');

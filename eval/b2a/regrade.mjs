@@ -14,12 +14,19 @@ const si = args.indexOf('--suite');
 const suiteDir = si >= 0 ? args[si + 1] : 'eval/b2a';
 const suite = JSON.parse(readFileSync(join(suiteDir, 'questions.json'), 'utf8'));
 
+// --repeat 실행분은 `<id>@2.stream.jsonl` 처럼 @k 가 붙는다 — @ 앞이 문항 id 다
+const byId = new Map(suite.items.map((it) => [it.id, it]));
+const runs = readdirSync(resolve(dir))
+  .filter((f) => f.endsWith('.stream.jsonl'))
+  .map((f) => f.slice(0, -'.stream.jsonl'.length))
+  .filter((runId) => byId.has(runId.split('@')[0]))
+  .sort();
+
 let pass = 0;
 let total = 0;
-for (const item of suite.items) {
-  const file = join(resolve(dir), `${item.id}.stream.jsonl`);
-  let text;
-  try { text = readFileSync(file, 'utf8'); } catch { continue; }
+for (const runId of runs) {
+  const item = { ...byId.get(runId.split('@')[0]), id: runId };
+  const text = readFileSync(join(resolve(dir), `${runId}.stream.jsonl`), 'utf8');
   total += 1;
   const rec = parseStream(text);
   const env = environmentProblem(rec);
