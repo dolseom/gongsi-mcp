@@ -16,6 +16,7 @@ import { getStore } from '../lib/store.js';
 import { DAILY_LIMIT } from '../clients/dart.js';
 import { holidayYearsStatus } from '../rules/business-days.js';
 import { loadQnaKb } from '../kb/qna.js';
+import { loadManualKb } from '../kb/manual.js';
 
 export const serverInfoInput = z.object({});
 
@@ -39,6 +40,12 @@ export function serverInfo(): unknown {
     qnaManualCheckDue = kb.manualCheckDue ?? null;
   } catch {
     // KB 로드 실패는 진단 응답 자체를 막지 않는다
+  }
+  let manualPassages: number | null = null;
+  try {
+    manualPassages = loadManualKb().passages.length;
+  } catch {
+    // 매뉴얼 KB 로드 실패도 진단 응답을 막지 않는다
   }
 
   const dartCallsToday = store.todayCallCount('dart');
@@ -70,6 +77,7 @@ export function serverInfo(): unknown {
       holiday_years: holidayYearsStatus(),
       qna_entries: qnaEntries,
       qna_manual_check_due: qnaManualCheckDue,
+      manual_passages: manualPassages,
     },
     config: {
       max_pages: cfg.maxPages,

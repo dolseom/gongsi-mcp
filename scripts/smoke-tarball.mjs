@@ -160,6 +160,12 @@ try {
   }
   ok('키 격리', 'dart_api_key_set=false');
 
+  // ── 지식베이스 동봉 — package.json files 에서 빠지면 tarball 에서만 조용히 사라진다 ──
+  if (!(info.data?.qna_entries > 0) || !(info.data?.manual_passages > 0)) {
+    fail(`지식베이스 누락: qna_entries=${info.data?.qna_entries}, manual_passages=${info.data?.manual_passages} — package.json files 확인`);
+  }
+  ok('지식베이스 동봉', `문답 ${info.data.qna_entries}건, 매뉴얼 본문 ${info.data.manual_passages}구절`);
+
   // ── 회사명·키·의결일 없는 대상 판정 ──
   const dutyRes = await callTool('check_disclosure_duty', {
     duty: 'large_internal_transaction',

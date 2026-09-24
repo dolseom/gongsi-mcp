@@ -17,7 +17,9 @@ export const SERVER_INSTRUCTIONS = `공정거래위원회 기업집단 공시(J�
 - 공시 원문 읽기 → read_disclosure / 공시 찾기·기간 전수 수집 → search_disclosures
 - 다른 회사는 이 항목을 어떻게 썼나(문안 참고) → find_precedents
 - 집단 소속회사 전수·계열 재무 → get_group_structure / 단일회사 재무제표 → get_financials
-- 규칙만으로 안 풀리는 경계사례에 공정위 공식 답변 → search_ftc_qna
+- 규칙만으로 안 풀리는 경계사례에 공정위 공식 근거(공식 문답 + 2026. 4. 27. 공시 업무 매뉴얼 본문) → search_ftc_qna
+  (대상에서 빠지는 거래·서식을 누가 작성하나·두 공시가 겹칠 때·제출 시각 같은 실무 규칙은 매뉴얼 본문
+  manualPassages 에 있습니다. 매뉴얼 본문은 현행 원문이라 옛 문답(2008~2015)과 다르면 매뉴얼이 우선합니다)
 - 정정하면 과태료가 나오나 → assess_correction_risk
 - J004 **이미 접수된 공시의 접수번호**로 수치 자가점검(항등식·소계·단위) → check_j004_consistency
   (아직 제출하지 않은 초안 파일은 점검할 수 없습니다 — 그렇게 요청받으면 먼저 알리세요)
