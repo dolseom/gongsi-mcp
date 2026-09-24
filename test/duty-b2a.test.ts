@@ -112,3 +112,52 @@ describe('기한 준수 ≠ 적법 (P0-3)', () => {
     expect(r.summary).toContain('누락·거짓');
   });
 });
+
+describe('조문 표기는 "제4조제3항" 식으로 풀어 쓴다 (P2 — 모델이 "고시§4③"을 "고시 §43"으로 옮겨 적은 사고, d02)', () => {
+  it('입력 설명에 § 원문자 표기가 없다', async () => {
+    const { checkDisclosureDutyInput } = await import('../src/tools/check-disclosure-duty.js');
+    for (const [key, field] of Object.entries(checkDisclosureDutyInput.shape)) {
+      const d = (field as { description?: string }).description ?? '';
+      expect(d, key).not.toMatch(/§/);
+    }
+    expect(checkDisclosureDutyInput.shape.amountBasis.description).toContain('고시 제4조제3항');
+  });
+
+  it('대표 출력(요약·notes·검토 메모)에 § 표기가 없다', () => {
+    const inputs: Parameters<typeof checkDisclosureDuty>[0][] = [
+      { duty: 'large_internal_transaction', amount: 30 * 억, totalEquity: 400 * 억, amountBasis: 'quarterly_sum' },
+      { duty: 'unlisted_material', materialItem: 'guarantee', amount: 30 * 억, totalEquity: 400 * 억, occurredDate: '20260701' },
+      { duty: 'unlisted_material', materialItem: 'shareholding_change', shareChangePct: 2, shareholderType: 'major' },
+      { duty: 'omnibus_financial', isFinancialCompany: false, listing: 'listed' },
+      { duty: 'goods_services_reduced', quarterEnd: '20260630' },
+    ];
+    for (const inp of inputs) {
+      const r = ok(checkDisclosureDuty(inp));
+      const { penalty: _p, ...rest } = r; // 과태료 모듈 문자열은 이 범위 밖
+      expect(JSON.stringify(rest), inp.duty).not.toMatch(/§/);
+    }
+  });
+});
+
+describe('비상장 중요사항 안내 보강 (P2, 비상장사 매뉴얼)', () => {
+  it('내부거래공시 갈음 시 "기타 란에 비상장회사 등의 중요사항 공시사항에도 해당된다는 것을 표시" + 양식에 없는 부분 추가 기재', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'unlisted_material', materialItem: 'capital_change' }));
+    const n = r.notes.join(' ');
+    expect(n).toContain('기타란');
+    expect(n).toContain('추가 기재');
+  });
+
+  it('채무보증 제외에 "건설업을 영위하는 법인이 건설사업을 위하여 발주처 또는 입주예정자 등에게 채무를 보증하는 경우"를 매뉴얼 기준(원문 미확인)으로 붙인다', () => {
+    const r = ok(
+      checkDisclosureDuty({
+        duty: 'unlisted_material',
+        materialItem: 'guarantee',
+        amount: 30 * 억,
+        totalEquity: 400 * 억,
+      }),
+    );
+    const n = r.notes.find((x) => x.includes('건설업'))!;
+    expect(n).toContain('건설사업을 위하여');
+    expect(n).toContain('원문 미확인');
+  });
+});

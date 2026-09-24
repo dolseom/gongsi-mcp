@@ -67,7 +67,7 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
   if (input.isFinancialOrInsurance === true) {
     return {
       subject: false,
-      reasons: ['금융업 또는 보험업을 영위하는 회사는 제외됩니다 (§2②).'],
+      reasons: ['금융업 또는 보험업을 영위하는 회사는 제외됩니다 (고시 제2조제2항).'],
       legalBasis: REF_SUBJECT,
     };
   }
@@ -77,7 +77,7 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
       subject: 'insufficient_data',
       reasons: [
         '직전 사업연도말 자산총액이 필요합니다. 100억원 이상이면 대상, 미만이면 ' +
-          '동일인·친족 지분 요건(§2②2호)을 추가로 확인해야 합니다.',
+          '동일인·친족 지분 요건(고시 제2조제2항제2호)을 추가로 확인해야 합니다.',
       ],
       legalBasis: REF_SUBJECT,
     };
@@ -97,7 +97,7 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
       : '※ 공시대상기업집단 소속을 전제한 판정입니다.';
 
   if (input.totalAssets >= 100 * 억) {
-    reasons.push(`직전 사업연도말 자산총액이 100억원 이상입니다 (§2②1호).`);
+    reasons.push(`직전 사업연도말 자산총액이 100억원 이상입니다 (고시 제2조제2항제1호).`);
     reasons.push(preconditionNote);
     return { subject: true, reasons, legalBasis: REF_SUBJECT };
   }
@@ -108,7 +108,7 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
       subject: 'insufficient_data',
       reasons: [
         '자산총액이 100억원 미만입니다. 동일인·친족이 합산 20% 이상 주식을 소유했는지(또는 그런 회사의 ' +
-          '50% 초과 자회사인지)에 따라 대상 여부가 갈립니다 — specialRelated20pct 를 지정하세요 (§2②2호).',
+          '50% 초과 자회사인지)에 따라 대상 여부가 갈립니다 — specialRelated20pct 를 지정하세요 (고시 제2조제2항제2호).',
       ],
       legalBasis: REF_SUBJECT,
     };
@@ -125,13 +125,13 @@ export function checkUnlistedSubjectCompany(input: SubjectCompanyInput): Subject
       subject: false,
       reasons: [
         '동일인·친족 20% 소유 요건에는 해당하나, 청산 절차 진행 중이거나 1년 이상 휴업 중인 회사는 ' +
-          '제외됩니다 (§2②2호 단서).',
+          '제외됩니다 (고시 제2조제2항제2호 단서).',
       ],
       legalBasis: REF_SUBJECT,
     };
   }
   reasons.push(
-    '자산총액 100억원 미만이지만 동일인·친족이 합산 20% 이상 소유한 회사(또는 그 50% 초과 자회사)로서 대상입니다 (§2②2호).',
+    '자산총액 100억원 미만이지만 동일인·친족이 합산 20% 이상 소유한 회사(또는 그 50% 초과 자회사)로서 대상입니다 (고시 제2조제2항제2호).',
   );
   reasons.push(preconditionNote);
   return { subject: true, reasons, legalBasis: REF_SUBJECT };
@@ -180,9 +180,9 @@ export const UNLISTED_UNCONDITIONAL_ITEMS: Record<
 /** §5의2⑤3호 — 결정형 사유의 사유 발생일 정의 */
 export const DECISION_DATE_NOTE =
   '결정형 사유의 "사유 발생일"은 이사회 결의(이사회 내 위원회 결의 포함) 또는 대표이사 등 ' +
-  '사실상 권한 있는 임원·주요주주의 결정이 있은 때입니다 (고시 §5의2⑤3호).';
+  '사실상 권한 있는 임원·주요주주의 결정이 있은 때입니다 (고시 제5조의2제5항제3호).';
 
 /** §5의2⑥ — 자본시장법 공시와 중복 시 갈음 */
 export const CAPITAL_MARKET_OVERLAP_NOTE =
   '이 사항이 자본시장법상 신고·공시사항과 중복되면 자본시장법에 따라 공시하면 됩니다. ' +
-  '이 경우 공정거래법상 공시의무사항에도 해당함을 표시해야 합니다 (고시 §5의2⑥).';
+  '이 경우 공정거래법상 공시의무사항에도 해당함을 표시해야 합니다 (고시 제5조의2제6항).';

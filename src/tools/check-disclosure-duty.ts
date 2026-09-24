@@ -76,9 +76,9 @@ export const checkDisclosureDutyInput = z.object({
       'goods_services_reduced',
     ])
     .describe(
-      '공시의무 유형. large_internal_transaction=대규모내부거래(법§26), unlisted_material=비상장사 중요사항(법§27), ' +
-        'group_status=기업집단현황(법§28), public_interest_corp=공익법인(법§29), ' +
-        'omnibus_financial=약관에 의한 금융거래 특례(고시§9), goods_services_reduced=상품·용역 20%↑ 감소(고시§9의2)',
+      '공시의무 유형. large_internal_transaction=대규모내부거래(법 제26조), unlisted_material=비상장사 중요사항(법 제27조), ' +
+        'group_status=기업집단현황(법 제28조), public_interest_corp=공익법인(법 제29조), ' +
+        'omnibus_financial=약관에 의한 금융거래 특례(고시 제9조), goods_services_reduced=상품·용역 20%↑ 감소(고시 제9조의2)',
     ),
 
   listing: z
@@ -110,7 +110,7 @@ export const checkDisclosureDutyInput = z.object({
     .enum(['actual', 'collateral_limit', 'lease_annualized', 'insurance_premium_total', 'quarterly_sum'])
     .optional()
     .describe(
-      '거래금액 산정 방식 (고시§4③). ⚠️ 틀리면 판정이 뒤집힌다. ' +
+      '거래금액 산정 방식 (고시 제4조제3항). ⚠️ 틀리면 판정이 뒤집힌다. ' +
         'collateral_limit=담보제공은 담보한도액, lease_annualized=부동산임대차는 연간임대료+보증금환산, ' +
         'insurance_premium_total=보험은 보험료총액, quarterly_sum=상품용역은 분기 합계액',
     ),
@@ -165,7 +165,7 @@ export const checkDisclosureDutyInput = z.object({
     .enum(['largest', 'major'])
     .optional()
     .describe(
-      'shareholding_change 전용 — largest=최대주주(7영업일 공시) / major=주요주주(분기별 공시, 고시 §5의2④ 단서). ' +
+      'shareholding_change 전용 — largest=최대주주(7영업일 공시) / major=주요주주(분기별 공시, 고시 제5조의2제4항 단서). ' +
         '기한이 완전히 달라지므로 반드시 구분하세요',
     ),
   shareChangePct: z
@@ -229,12 +229,12 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe(
       '자산총액 100억 미만 회사의 대상 판정용 — 동일인·친족이 합산 20% 이상 소유한 회사(또는 그 회사가 ' +
-        '50% 초과 소유한 자회사)인지 (고시 §2②2호)',
+        '50% 초과 소유한 자회사)인지 (고시 제2조제2항제2호)',
     ),
   inLiquidationOrDormant: z
     .boolean()
     .optional()
-    .describe('청산 절차 진행 중 또는 1년 이상 휴업 중인지 (고시 §2②2호 단서의 제외 요건)'),
+    .describe('청산 절차 진행 중 또는 1년 이상 휴업 중인지 (고시 제2조제2항제2호 단서의 제외 요건)'),
 
   counterpartyForeignAffiliate: z
     .boolean()
@@ -311,7 +311,7 @@ export const checkDisclosureDutyInput = z.object({
     .boolean()
     .optional()
     .describe(
-      '과태료 산정용: 이사회 의결을 실제로 거쳤는지. 대규모내부거래·공익법인(§26 계열)에서 의결 없이 ' +
+      '과태료 산정용: 이사회 의결을 실제로 거쳤는지. 대규모내부거래·공익법인(법 제26조 계열)에서 의결 없이 ' +
         '공시하거나 미공시한 사건은 별표 9의 "의결 X" 칸(기본금액 5,000만~7,000만원)이 적용되어 금액이 ' +
         '크게 달라집니다. 생략하면 의결을 거친 것으로 가정하고 그 가정을 caveat 로 알립니다',
     ),
@@ -508,7 +508,7 @@ export function checkDisclosureDuty(
           purpose: 'deadline',
           label:
             '최대주주(largest)인지 주요주주(major)인지 — 최대주주 변동은 7영업일, 주요주주 변동은 ' +
-            '분기 종료 후 2개월로 기한이 완전히 다릅니다 (고시 §5의2④ 단서). 추정하지 않습니다',
+            '분기 종료 후 2개월로 기한이 완전히 다릅니다 (고시 제5조의2제4항 단서). 추정하지 않습니다',
         });
       }
       if (input.occurredDate) {
@@ -744,7 +744,10 @@ export function checkDisclosureDuty(
         notes.push(`대상회사 확인: ${subjectCheck.reasons.join(' ')}`);
       }
       notes.push(
-        '※ 법 §26(대규모내부거래)에 따라 공시되는 사항은 비상장사 중요사항 공시에서 제외됩니다 (고시 §5의2① 단서).',
+        '※ 법 제26조(대규모내부거래)에 따라 공시되는 사항은 비상장사 중요사항 공시에서 제외됩니다 (고시 제5조의2제1항 단서). ' +
+          '공시양식이 내부거래공시와 같으면 내부거래공시로 갈음하되 **기타란에 비상장회사 등의 중요사항 공시사항에도 해당한다는 ' +
+          '것을 표시**하고, 두 양식이 상당히 유사하면 내부거래공시를 하면서 내부거래 양식에 없는 부분을 추가 기재할 수 있습니다 ' +
+          '(공정위 비상장사 매뉴얼 2026-04 "공시유의사항").',
       );
 
       if (!input.materialItem) {
@@ -783,7 +786,7 @@ export function checkDisclosureDuty(
           const required = changeMagnitude >= 1;
           verdict = required ? 'required' : 'not_required';
           summary = required
-            ? `공시 대상입니다. 지분 변동 ${changeMagnitude}%p ≥ 1%p (고시 §5의2①1호가목).`
+            ? `공시 대상입니다. 지분 변동 ${changeMagnitude}%p ≥ 1%p (고시 제5조의2제1항제1호가목).`
             : `공시 대상이 아닙니다. 지분 변동 ${changeMagnitude}%p < 1%p.`;
           threshold = {
             amount: 1,
@@ -792,7 +795,7 @@ export function checkDisclosureDuty(
           };
         }
         notes.push(
-          '변동 기준일은 시행령 §17제1호에서 규정한 날입니다. 주요주주 변동은 분기별 공시입니다 (§5의2④ 단서).',
+          '변동 기준일은 시행령 제17조제1호에서 규정한 날입니다. 주요주주 변동은 분기별 공시입니다 (고시 제5조의2제4항 단서).',
         );
       } else {
         // ── 임계 비율형 사유 ──
@@ -824,7 +827,7 @@ export function checkDisclosureDuty(
           );
           summary = `${spec.label} 판정에는 ${spec.base === 'totalAssets' ? '자산총액' : '자기자본'}이 필요합니다.`;
           notes.push(
-            '신설 회사로 최근 사업연도 대차대조표가 없으면 설립 당시 납입자본금을 기준으로 합니다 (고시 §5의2②).',
+            '신설 회사로 최근 사업연도 대차대조표가 없으면 설립 당시 납입자본금을 기준으로 합니다 (고시 제5조의2제2항).',
           );
         } else if (input.amount === undefined) {
           verdict = 'insufficient_data';
@@ -847,7 +850,12 @@ export function checkDisclosureDuty(
             inputs: { base },
           };
           if (input.materialItem === 'guarantee') {
-            notes.push('계약 등의 이행보증·납세보증을 위한 채무보증은 제외됩니다 (고시 §5의2①2호라목).');
+            notes.push('계약 등의 이행보증·납세보증을 위한 채무보증은 제외됩니다 (고시 제5조의2제1항제2호라목).');
+            notes.push(
+              '건설업을 영위하는 법인이 건설사업을 위하여 발주처 또는 입주예정자 등에게 채무를 보증하는 경우도 제외됩니다 — ' +
+                '공정위 비상장사 매뉴얼(2026-04) "타인을 위한 채무보증 결정" 항목 기준이며, 이 제외의 고시 조문 원문은 이 도구가 ' +
+                '확인하지 않았습니다(원문 미확인). 두 조건(건설업 영위 법인 · 건설사업을 위한 보증) 모두 해당해야 합니다.',
+            );
           }
         }
         if (
@@ -856,7 +864,7 @@ export function checkDisclosureDuty(
           input.totalEquity < input.paidInCapital
         ) {
           notes.push(
-            '자기자본이 자본금에 미달하여 고시 §5의2③에 따라 **자본금을 자기자본으로 보아** 계산했습니다.',
+            '자기자본이 자본금에 미달하여 고시 제5조의2제3항에 따라 **자본금을 자기자본으로 보아** 계산했습니다.',
           );
         }
         notes.push(DECISION_DATE_NOTE);
@@ -933,7 +941,7 @@ export function checkDisclosureDuty(
       (c.onTime
         ? noBoardResolution
           ? `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이지만, ` +
-            `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 §26, 별표 9 "의결 X/공시" 칸). ` +
+            `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 제26조, 별표 9 "의결 X/공시" 칸). ` +
             `기한 준수가 이 위반을 치유하지 않습니다.`
           : `실제 공시 ${input.actualDisclosureDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다 ` +
             '(기한 준수만 판정한 것입니다 — 공시 내용의 누락·거짓, 사전 이사회 의결의 적법성은 판정하지 않았습니다).'
@@ -963,7 +971,7 @@ export function checkDisclosureDuty(
     // 공시 전이라도 의결 없는 진행은 경고한다 — 의결부터가 의무의 일부다
     notes.push(
       '⚠️ 이사회 의결 없이 진행 중이라고 입력하셨습니다. 대규모내부거래는 **사전 이사회 의결 + 공시**가 ' +
-        '모두 의무입니다 (법 §26) — 의결 없이 공시하면 기한을 지켜도 별표 9 "의결 X" 칸의 과태료 대상입니다.',
+        '모두 의무입니다 (법 제26조) — 의결 없이 공시하면 기한을 지켜도 별표 9 "의결 X" 칸의 과태료 대상입니다.',
     );
   }
 

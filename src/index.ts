@@ -136,7 +136,12 @@ server.registerTool(
       '그때는 get_financials 로 재무수치를 먼저 조회하세요.\n\n' +
       '⚠️ 거래금액 산정 방식(amountBasis)에 주의하세요 — 담보제공은 담보한도액, ' +
       '부동산임대차는 연간임대료+보증금환산액, 보험은 보험료총액, 상품·용역은 분기 합계액입니다. ' +
-      '틀리면 판정이 뒤집힙니다.',
+      '틀리면 판정이 뒤집힙니다.\n\n' +
+      '- 약관 금융거래(omnibus_financial): 이사회 의결 생략은 금융·보험회사가 자기 일상적 금융·보험업무로 하는 약관거래뿐입니다 ' +
+      '(고시 제9조제1항). isFinancialCompany·routineFinancialBusiness 를 모르면 도구가 경로별 조건부 결과(omnibus.scenarios)를 줍니다 — ' +
+      '"의결 불요"로 단정해 전달하지 마세요.\n' +
+      '- 국외 계열회사 직접 거래·장내시장 주식거래·부수적 거래·공익법인의 소속회사 주식 거래는 해당 입력을 주면 판정에 반영됩니다.\n' +
+      '- 날짜 없이 "N일 늦었다"만 알면 delayDays(+delayDayBasis·delayFilingState)로 조건부 과태료(delayScenario)를 받습니다.',
     inputSchema: checkDisclosureDutyInput.shape,
   },
   wrap('check_disclosure_duty', checkDisclosureDuty),
