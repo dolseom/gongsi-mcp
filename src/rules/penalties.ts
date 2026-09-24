@@ -29,8 +29,24 @@ export interface ViolationInput {
   hasOmissionOrFalse?: boolean;
   /** 과태료 처분 사전통지서 발송일 전날까지 보완했는지 */
   supplemented?: boolean;
-  /** 지연일수 (달력일). 기한 초과 또는 보완 지연 일수 */
+  /**
+   * 지연일수 (달력일). 기한 초과 또는 보완 지연 일수 — **종전 호환 필드**.
+   * 아래 두 필드를 주지 않으면 이 값을 가산일수와 공시지연 일수 양쪽에 쓴다.
+   * ⚠️ 단 보완 사건(기한 내 공시 + 누락·거짓 + 보완)에서는 이 값을 "공시지연 일수" 감경
+   *    (고시 Ⅵ.3.다(4)(나))에 쓰지 않는다 — 원 공시는 기한을 지켰고, 보완 경과일을 공시지연
+   *    일수로 보는 해석은 원문 미확인이다 (`unconfirmedScenarios` 로만 제시).
+   */
   delayDays?: number;
+  /**
+   * 공시지연 일수 (달력일) — 공시기한을 넘겨 공시한 일수. 고시 Ⅵ.3.다(4)(나)
+   * "공시지연 일수가 3일 이하인 경우 75% …" 감경 판정에 쓴다. 기한 내 공시(onTime=true)면 0 으로 본다.
+   */
+  filingDelayDays?: number;
+  /**
+   * 보완 경과일수 (달력일) — 별표 9 "공시기한을 넘긴 날의 다음 날부터 보완을 마친 날까지 1일마다 …
+   * 가산" 의 가산일수. supplemented=true 일 때 일수가산에 쓴다.
+   */
+  supplementationElapsedDays?: number;
   /**
    * 위반행위별 거래금액 (원). art26_29 전용 — 100억원 미만이면 고시 Ⅵ.2 적용비율로
    * 기준금액이 낮아진다(최저 50%). 미지정 시 비율을 적용하지 않아 산정값은 상한선이 된다.
@@ -143,10 +159,49 @@ const DELAY_TIERS: Array<{ maxDays: number; rate: number }> = [
 ];
 
 function delayMitigationRate(delayDays: number): number {
-  for (const t of DELAY_TIERS) {
-    if (delayDays <= t.maxDays) return t.rate;
-  }
-  return 0;
+  if (delayDays <= 0) return 0; // 지연이 없으면 지연 감경도 없다
+  return currentDelayTier(delayDays)?.rate ?? 0;
+}
+
+/** delayDays 가 속한 감경 구간 ("N일 이하") — 30일 초과면 undefined */
+function currentDelayTier(delayDays: number): { maxDays: number; rate: number } | undefined {
+  return DELAY_TIERS.find((t) => delayDays <= t.maxDays);
+}
+
+/** 산정 결과에 붙는 가정·미확인 시나리오 — 본 산정값(amount)과 분리해 보여 준다 */
+export interface PenaltyScenario {
+  /** 시나리오 식별자 */
+  id: 'board_resolution_not_obtained' | 'supplementation_counted_as_filing_delay';
+  label: string;
+  /** 이 시나리오일 때의 산정값 (원) */
+  amount: number;
+  formula: string;
+  /**
+   * alternative_fact = 가정한 사실이 다르면 원문상 이 칸이 적용된다 (예: 의결을 거치지 않았다면)
+   * unconfirmed_interpretation = 원문이 적용 여부를 정하지 않은 해석 — 확정 숫자로 쓰지 말 것
+   */
+  status: 'alternative_fact' | 'unconfirmed_interpretation';
+  note: string;
+}
+
+/** estimatePenalty 반환값 — PenaltyResult 에 선택 필드만 더했다 (하위호환) */
+export interface PenaltyEstimate extends PenaltyResult {
+  /**
+   * 호출자가 주지 않아 **가정으로 채운 입력**. 현재는 §26·§29 의 이사회 의결 여부뿐이다.
+   * caveats 문장을 놓쳐도 이 필드로 가정 여부를 기계적으로 알 수 있게 한다.
+   */
+  assumptions?: Array<{ field: 'boardResolution'; assumedValue: true; reason: string }>;
+  /** 가산일수·공시지연 일수를 분리해 무엇을 썼는지 (보완 사건 여부 포함) */
+  dayCounts?: {
+    /** 별표 9 일수가산에 쓴 일수 */
+    surchargeDays: number;
+    /** Ⅵ.3.다(4)(나) 공시지연 감경에 쓴 일수 — undefined 면 확정 감경에 쓰지 않았다 */
+    filingDelayDays?: number;
+    /** 보완 사건(누락·거짓 공시를 사전통지서 발송일 전날까지 보완)으로 산정했는가 */
+    supplementationCase: boolean;
+  };
+  /** 본 산정값과 분리한 대안·미확인 해석 시나리오 */
+  scenarios?: PenaltyScenario[];
 }
 
 /**
@@ -164,8 +219,101 @@ function applySmallCapCap(base: number, regime: PenaltyRegime, capitalBase?: num
   return Math.min(base, capitalBase * 0.01);
 }
 
-export function estimatePenalty(v: ViolationInput): PenaltyResult {
-  const delayDays = v.delayDays ?? 0;
+/** 보완 사건 = 누락·거짓 공시를 사전통지서 발송일 전날까지 보완 (§26 은 의결을 거친 사건만 보완 칸이 있다) */
+function isSupplementationCase(v: ViolationInput): boolean {
+  if (!v.disclosed || !v.hasOmissionOrFalse || !v.supplemented) return false;
+  return v.regime === 'art27_28' || (v.boardResolution ?? true);
+}
+
+/**
+ * 가산일수·공시지연 일수 분리 (Codex 검토 §2 권고).
+ * - 가산일수: 별표 9 "공시기한을 넘긴 날의 다음 날부터 보완을 마친 날까지" — 보완 사건이면 보완 경과일수.
+ * - 공시지연 일수: 고시 Ⅵ.3.다(4)(나). 기한 내 공시면 0. 보완 사건인데 명시 입력이 없으면 미상(undefined).
+ */
+function resolveDayCounts(v: ViolationInput): { surchargeDays: number; filingDelayDays?: number; supp: boolean } {
+  const supp = isSupplementationCase(v);
+  const surchargeDays = supp
+    ? (v.supplementationElapsedDays ?? v.delayDays ?? v.filingDelayDays ?? 0)
+    : (v.filingDelayDays ?? v.delayDays ?? 0);
+  let filingDelayDays: number | undefined;
+  if (v.onTime === true) filingDelayDays = 0;
+  else if (v.filingDelayDays !== undefined) filingDelayDays = v.filingDelayDays;
+  else if (!supp) filingDelayDays = v.delayDays ?? 0;
+  return { surchargeDays, ...(filingDelayDays !== undefined ? { filingDelayDays } : {}), supp };
+}
+
+export function estimatePenalty(v: ViolationInput): PenaltyEstimate {
+  const core = estimateCore(v);
+  const scenarios: PenaltyScenario[] = [];
+
+  // ① 의결 여부 미입력 → 의결 O 가정. 반대 사실이면 원문상 다른 칸이므로 금액을 나란히 보여 준다.
+  if (v.regime === 'art26_29' && v.boardResolution === undefined && core.basicTotal > 0) {
+    const alt = estimateCore({ ...v, boardResolution: false });
+    scenarios.push({
+      id: 'board_resolution_not_obtained',
+      label: '이사회 의결을 거치지 않았다면 (별표 9 제2호 가목 "이사회 의결을 거치지 않은 경우" 칸)',
+      amount: alt.amount,
+      formula: alt.formula,
+      status: 'alternative_fact',
+      note: '의결 여부가 입력되지 않아 본 산정은 "의결을 거친 경우" 칸을 가정했습니다. 의결이 없었다면 이 값이 적용 칸입니다.',
+    });
+  }
+
+  // ② 보완 사건에 "공시지연 일수" 감경을 적용하는 해석 — 원문 미확인이라 본 산정에서 빼고 시나리오로만 둔다.
+  const days = resolveDayCounts(v);
+  if (days.supp && days.surchargeDays > 0 && core.basicTotal > 0 && !v.inArrears) {
+    const rateIfCounted = delayMitigationRate(days.surchargeDays);
+    const confirmedRate = delayMitigationRate(days.filingDelayDays ?? 0);
+    if (rateIfCounted > confirmedRate) {
+      const alt = estimateCore(v, days.surchargeDays);
+      scenarios.push({
+        id: 'supplementation_counted_as_filing_delay',
+        label: `보완 경과 ${days.surchargeDays}일을 "공시지연 일수"로 보아 ${Math.round(rateIfCounted * 100)}% 감경한다면`,
+        amount: alt.amount,
+        formula: alt.formula,
+        status: 'unconfirmed_interpretation',
+        note:
+          '고시 Ⅵ.3.다(4)(나)는 "공시지연 일수가 3일 이하인 경우 75% …"라고만 정하고, 기한 내 공시한 뒤 누락·거짓을 ' +
+          '보완한 사건의 보완 경과일을 공시지연 일수로 보는지는 정하지 않았습니다(원문 미확인). 확정 산정값으로 쓰지 마세요.',
+      });
+    }
+  }
+
+  const assumptions: PenaltyEstimate['assumptions'] =
+    v.regime === 'art26_29' && v.boardResolution === undefined && core.basicTotal > 0
+      ? [
+          {
+            field: 'boardResolution',
+            assumedValue: true,
+            reason: '이사회 의결 여부가 입력되지 않아 "의결을 거친 경우" 칸으로 산정했습니다.',
+          },
+        ]
+      : undefined;
+
+  return {
+    ...core,
+    ...(assumptions ? { assumptions } : {}),
+    // 두 일수가 갈리는 경우(보완 사건·공시지연 미상)에만 싣는다 — 일반 지연 건에선 delayDays 하나로 충분하다
+    ...(days.supp || days.filingDelayDays === undefined || days.filingDelayDays !== days.surchargeDays
+      ? {
+          dayCounts: {
+            surchargeDays: days.surchargeDays,
+            ...(days.filingDelayDays !== undefined ? { filingDelayDays: days.filingDelayDays } : {}),
+            supplementationCase: days.supp,
+          },
+        }
+      : {}),
+    ...(scenarios.length > 0 ? { scenarios } : {}),
+  };
+}
+
+/**
+ * 본 산정. `mitigationDaysOverride` 는 미확인 해석 시나리오 계산 전용 — 공시지연 감경에 쓸 일수를 강제한다.
+ */
+function estimateCore(v: ViolationInput, mitigationDaysOverride?: number): PenaltyResult {
+  const days = resolveDayCounts(v);
+  const delayDays = days.surchargeDays;
+  const mitigationDays = mitigationDaysOverride ?? days.filingDelayDays ?? 0;
   const raw = v.regime === 'art26_29' ? baseArt26(v) : baseArt27(v);
 
   const baseAmount = applySmallCapCap(raw.base, v.regime, v.capitalBase);
@@ -243,9 +391,10 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
     if (v.newlyDesignatedWithin30Days) {
       minorCandidates.push({ reason: '신규 지정·편입일 후 30일 이내 위반', rate: 0.5 });
     }
-    if (delayDays > 0) {
-      const r = delayMitigationRate(delayDays);
-      if (r > 0) minorCandidates.push({ reason: `공시지연 ${delayDays}일`, rate: r });
+    // 고시 Ⅵ.3.다(4)(나) "공시지연 일수" — 가산일수(보완 경과일)와 분리한 공시지연 일수로만 판정한다.
+    if (mitigationDays > 0) {
+      const r = delayMitigationRate(mitigationDays);
+      if (r > 0) minorCandidates.push({ reason: `공시지연 ${mitigationDays}일`, rate: r });
     }
     if (minorCandidates.length > 0) {
       minorCandidates.sort((a, b) => b.rate - a.rate);
@@ -306,17 +455,30 @@ export function estimatePenalty(v: ViolationInput): PenaltyResult {
   // 1만원 단위 미만 절사
   amount = Math.max(0, Math.floor(amount / 만) * 만);
 
-  // 다음 감경 구간 경계
+  // 다음 감경 구간 경계 — **현재 구간**의 끝 다음 날. 예: 3일(75% 구간) → 4일부터 50%.
+  // (종전엔 find(maxDays > d) 라 3·7·15일이면 현재 구간을 건너뛰어 8·16·31일로 안내했다.)
+  // 확정 감경(공시지연 일수)이 있는 경로에서만 만든다 — 보완 사건의 미확인 감경으로는 만들지 않는다.
   let nextThreshold: PenaltyResult['nextThreshold'];
-  if (delayDays > 0 && raw.base > 0) {
-    const nextTier = DELAY_TIERS.find((t) => t.maxDays > delayDays);
-    if (nextTier) {
-      const futureDelay = nextTier.maxDays + 1;
-      const future = estimatePenalty({ ...v, delayDays: futureDelay });
+  if (mitigationDaysOverride === undefined && mitigationDays > 0 && raw.base > 0 && !v.inArrears) {
+    const tier = currentDelayTier(mitigationDays);
+    if (tier) {
+      const futureDelay = tier.maxDays + 1;
+      const shift = futureDelay - mitigationDays;
+      const future = estimateCore({
+        ...v,
+        ...(v.delayDays !== undefined ? { delayDays: v.delayDays + shift } : {}),
+        ...(v.filingDelayDays !== undefined ? { filingDelayDays: v.filingDelayDays + shift } : {}),
+        ...(v.supplementationElapsedDays !== undefined
+          ? { supplementationElapsedDays: v.supplementationElapsedDays + shift }
+          : {}),
+      });
+      const nextRate = delayMitigationRate(futureDelay);
       nextThreshold = {
         delayDays: futureDelay,
         amountIfDelayed: future.amount,
-        note: `지연 ${nextTier.maxDays}일까지는 ${Math.round(delayMitigationRate(nextTier.maxDays) * 100)}% 감경이지만, ${futureDelay}일이 되면 감경률이 떨어집니다.`,
+        note:
+          `공시지연 ${tier.maxDays}일까지는 ${Math.round(tier.rate * 100)}% 감경 구간이지만, ${futureDelay}일이 되면 ` +
+          (nextRate > 0 ? `${Math.round(nextRate * 100)}%로 떨어집니다.` : '공시지연 감경이 없어집니다.'),
       };
     }
   }
