@@ -100,6 +100,9 @@ describe('check_disclosure_duty — 비상장사 중요사항 확장', () => {
       materialItem: 'shareholding_change',
       shareholderType: 'largest',
       shareChangePct: 0.5,
+      // 비상장사 매뉴얼 "합계의 변동이 없더라도 그 구성원 간 주식의 비율이 100분의 1이상 변동이 있을 때에는 공시" —
+      // 구성원 간 변동을 모르면 확정하지 않으므로(묶음 결함 8) 구성원 간 변동도 1%p 미만임을 준다
+      memberShareShiftPct: 0.5,
       occurredDate: '20260722',
       totalAssets: 200 * 억,
     });

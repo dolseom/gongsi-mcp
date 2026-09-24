@@ -62,7 +62,12 @@ import {
   exclusionConditionsNote,
   GOODS_SERVICES_SPECIAL_NOTE,
   LEASE_GOODS_SERVICES_NOTE,
+  LIT_CAPITAL_MARKET_OVERLAP_NOTE,
+  SPLIT_AGGREGATION_NOTE,
+  STOCK_DAILY_SUM_REASON,
 } from './duty/lit-conditions.js';
+import { applyFilingTimeRule, lastDayFilingTimeNote } from './duty/filing-time.js';
+import { dedupRelatedQna } from './duty/qna-dedup.js';
 import { evaluateDelayScenario, formatPenaltyWon, type DelayScenarioOutput } from './duty/delay.js';
 
 const YMD = ymdSchema;
@@ -113,8 +118,10 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe(
       '거래금액 산정 방식 (고시 제4조제3항). ⚠️ 틀리면 판정이 뒤집힌다. ' +
-        'collateral_limit=담보제공은 담보한도액, lease_annualized=부동산임대차는 연간임대료+보증금환산, ' +
-        'insurance_premium_total=보험은 보험료총액, quarterly_sum=상품용역은 분기 합계액',
+        'collateral_limit=담보제공은 담보한도액, lease_annualized=부동산임대차는 연간임대료+보증금환산(관리비·부가가치세 ' +
+        '제외 — 문답 lit26-046), insurance_premium_total=보험은 보험료총액(총액 약정 없는 퇴직연금 등은 회계연도 중 회사 ' +
+        '납입 보험료 누적액이 기준에 이르기 전에 의결·공시, 개인부담분 제외 — 문답 lit26-032·lit26-039), ' +
+        'quarterly_sum=상품용역은 분기 합계액',
     ),
 
   totalEquity: z
@@ -168,12 +175,28 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe(
       'shareholding_change 전용 — largest=최대주주(7영업일 공시) / major=주요주주(분기별 공시, 고시 제5조의2제4항 단서). ' +
-        '기한이 완전히 달라지므로 반드시 구분하세요',
+        '기한이 완전히 달라지므로 반드시 구분하세요. ★ 여기서 "최대주주"는 동일인이 단독으로 또는 동일인관련자와 합산하여 ' +
+        '최다출자자가 되는 경우 그 **동일인 및 동일인관련자 전체**(계열회사 등 포함)입니다 — 자본시장법상 최대주주 개념과 ' +
+        '다릅니다(비상장사 매뉴얼 "공정거래법령상의 동일인과 동일인관련자를 모두 포함"). 그래서 동일인측 구성원(예: 지분 10% ' +
+        '이상인 계열회사)의 변동도 largest 이고, 주요주주 분기공시(major)는 이 최대주주 측을 **제외**한 주요주주만입니다 ' +
+        '(매뉴얼 "최대주주 … 를 제외한 주요주주")',
     ),
   shareChangePct: z
     .number()
     .optional()
-    .describe('shareholding_change 전용 — 발행주식총수 대비 지분 변동 크기 (%p). 1 이상이면 공시 대상'),
+    .describe(
+      'shareholding_change 전용 — 발행주식총수 대비 지분 변동 크기 (%p). 최대주주는 동일인측 합계 기준. 1 이상이면 공시 대상. ' +
+        '합계가 1 미만이어도 구성원 간 이동은 memberShareShiftPct 로 따로 봅니다',
+    ),
+  memberShareShiftPct: z
+    .number()
+    .optional()
+    .describe(
+      'shareholding_change·largest 전용 — 동일인측이 최대주주일 때 구성원(동일인·동일인관련자) **각각의** 지분율 변동 중 가장 큰 ' +
+        '값 (%p). 비상장사 매뉴얼: "동일인측 최대주주(동일인 및 동일인 관련자)의 주식수나 지분율 합계의 변동이 없더라도 그 구성원 ' +
+        '간 주식의 비율이 100분의 1이상 변동이 있을 때에는 공시". 동일인측이 최대주주가 아니면 0 을 넣으세요 (그 경우 "최대주주의 ' +
+        '주식보유비율이 변경되지 않으면" 의무 없음)',
+    ),
 
   isFinancialCompany: z
     .boolean()
@@ -274,9 +297,45 @@ export const checkDisclosureDutyInput = z.object({
       'public_interest_corp 전용 — 공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래인지. true 면 거래상대방·' +
         '금액과 관계없이 대상이고 부수적 거래·장내 제외도 적용되지 않습니다 (고시 제4조제2항제1호·제6항 단서)',
     ),
+  sameDayStockTotal: z
+    .number()
+    .nonnegative('같은 날 합계 금액은 0 이상이어야 합니다')
+    .optional()
+    .describe(
+      '주식 거래(stockTradeVenue 지정) 전용 — 같은 거래상대방과 같은 주식에 대한 **같은 날 매입 합계(또는 매도 합계)** (원). ' +
+        '주식은 1회 거래 개념이 모호해 "1일 매입 또는 매도 금액의 총합계를 1회 거래로 봄"(공정위 문답 lit26-043)이고, 같은 상대방·같은 ' +
+        '대상 1건을 나눠 거래하면 합산해 1건으로 봅니다(매뉴얼 "공시대상 1건 거래행위 판단기준", 고시 제4조제3항). 건별 금액(amount)이 ' +
+        '기준 미만이어도 이 합계가 기준 이상이면 대상입니다. 건별 금액이 곧 그날 합계면 같은 값을 넣으세요',
+    ),
+  subsidiaryIncorporation: z
+    .boolean()
+    .optional()
+    .describe(
+      '대규모내부거래 — 자회사를 **설립하기 위한** 출자인지. true 면 특수관계인을 상대방으로 하거나 특수관계인을 위한 거래가 ' +
+        '아니므로 금액과 무관하게 이사회 의결·공시의무가 없습니다 (공정위 문답 lit26-003). 이미 설립된 자회사(계열회사)에 ' +
+        '추가로 출자하는 것은 이 문답의 범위가 아닙니다',
+    ),
+  noBoardCompany: z
+    .boolean()
+    .optional()
+    .describe(
+      '대규모내부거래 — 상법(제3편 제4장 제3절 제2관 이사와 이사회)상 이사회를 구성할 수 없는 회사인지 (예: 이사 1인 회사). ' +
+        'true 면 이사회 의결 의무는 없으나 공시의무는 있고, 공시기한은 이사회 의결일 기산이 아니라 "거래행위를 하기 전까지"입니다 ' +
+        '(공정위 문답 lit26-041). 이사 2인 회사가 여기에 해당하는지는 상법 해석 문제로 이 도구는 원문 미확인입니다',
+    ),
 
   actualDisclosureDate: YMD.optional()
     .describe('실제 공시일. 주면 기한 준수 여부와 지연일수를 함께 판정한다'),
+  actualDisclosureTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, '제출 시각은 HH:MM (00:00~23:59) 형식으로 넣으세요')
+    .optional()
+    .describe(
+      '실제 공시(전자문서 제출) 시각 HH:MM — actualDisclosureDate 와 함께. 기업집단현황·비상장사 중요사항은 18:00 이후 ' +
+        '제출이면 다음 업무일에 공시한 것으로 처리되므로(공정위 기업집단현황 매뉴얼 "18:00 이후에 제출할 경우 다음 업무 일에 ' +
+        '공시한 것으로 처리됨", 비상장사 매뉴얼 "18:00 이후 제출 시 다음 업무일에 공시처리됨") 그 날로 보아 준수·지연을 판정합니다. ' +
+        '대규모내부거래 매뉴얼에는 이 규칙이 적혀 있지 않아 조건부로만 알립니다',
+    ),
   today: YMD.optional().describe('오늘 날짜 (기본: 시스템 날짜). D-day 계산 기준'),
 
   delayDays: z
@@ -366,7 +425,8 @@ interface DutyResult {
    * 단위가 이름에 드러나는 두 필드를 함께 준다 (음수 = 기한 경과).
    */
   deadline?: DeadlineResult & { dDay?: number; businessDaysRemaining?: number; calendarDaysRemaining?: number };
-  compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
+  /** processedDisclosureDate: 18:00 이후 제출이라 다음 업무일 공시로 처리한 날 (기업집단현황·비상장사만) */
+  compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string; processedDisclosureDate?: string };
   penalty?: unknown;
   selfCorrection?: SelfCorrectionResult;
   /** 날짜 없이 지연일수(delayDays)만 받은 경우의 조건부 과태료 산정 */
@@ -477,8 +537,28 @@ export function checkDisclosureDuty(
   let deadline: DeadlineResult | undefined;
   let omnibusEval: OmnibusEvaluation | undefined;
   switch (input.duty) {
-    case 'large_internal_transaction':
     case 'public_interest_corp': {
+      // ★ 공익법인은 상장 여부와 무관하게 7영업일 — 고시 제6조제1항 "상장회사가 아니거나 공익법인인 경우에는 …
+      //   이사회 의결 후 7영업일 이내". listing 을 묻지 않는다 (종전: listing 을 묻고 listed 면 3영업일로 계산하던 오답).
+      if (!input.boardDate) {
+        missingInputs.push({
+          field: 'boardDate',
+          purpose: 'deadline',
+          label: '이사회 의결일 — 공시기한의 기산일입니다 (공익법인은 의결 후 7영업일, 고시 제6조제1항)',
+        });
+      } else {
+        deadline = litDeadline(input.boardDate, 'public_interest_corp');
+      }
+      if (input.listing === 'listed') {
+        notes.push('공익법인은 상장 여부와 관계없이 이사회 의결 후 7영업일 이내에 공시합니다 (고시 제6조제1항) — listing 입력은 기한에 쓰지 않았습니다.');
+      }
+      break;
+    }
+    case 'large_internal_transaction': {
+      if (input.noBoardCompany === true) {
+        // ★ 이사회 불성립 회사 — 의결일이 없으므로 의결일 기산 기한이 성립하지 않는다 (lit26-041 "공시기한은 거래행위를 하기 전까지")
+        break;
+      }
       if (!input.boardDate) {
         missingInputs.push({
           field: 'boardDate',
@@ -599,6 +679,24 @@ export function checkDisclosureDuty(
   let summary = '';
   let threshold: DutyResult['threshold'];
 
+  // ── 주식 1일 합산 (lit26-043) ──
+  // 장외·시간외 주식 거래는 "1일 매입 또는 매도 금액의 총합계를 1회 거래로 봄" — 같은 날 합계를 받았으면 그 값이
+  // 판정 금액이다 (건별 금액과 둘 중 큰 값). 장내 정규 매매는 제4조제6항제2호 제외 경로라 여기서 다루지 않는다.
+  const stockSumApplies =
+    (input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp') &&
+    (input.stockTradeVenue === 'off_exchange' || input.stockTradeVenue === 'exchange_after_hours');
+  const dutyAmount =
+    stockSumApplies && input.sameDayStockTotal !== undefined
+      ? Math.max(input.amount ?? 0, input.sameDayStockTotal)
+      : input.amount;
+  if (stockSumApplies && input.sameDayStockTotal !== undefined && dutyAmount !== input.amount) {
+    notes.push(
+      `주식 거래는 1일 매입(또는 매도) 금액의 총합계를 1회 거래로 봅니다 (공정위 문답 lit26-043) — 입력하신 같은 날 합계 ` +
+        `${fmtWon(dutyAmount!)}로 판정했습니다` +
+        (input.amount !== undefined ? ` (건별 금액 ${fmtWon(input.amount)}).` : '.'),
+    );
+  }
+
   if (input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp') {
     const t = calcThreshold(
       { totalEquity: input.totalEquity, paidInCapital: input.paidInCapital },
@@ -607,7 +705,7 @@ export function checkDisclosureDuty(
     // 대상 판정에 부족한 입력을 **먼저** 적는다 — 기준금액을 못 구해 조기 종료해도 목록은 온전해야 한다.
     // 기준금액은 자본과 무관하게 [5억원, 100억원] 안에 있다 — 거래 100억 이상·5억 미만은 자본 없이도 결론이 확정된다.
     const settledWithoutCapital =
-      !t && input.amount !== undefined && (input.amount >= CAP_100 || input.amount < 5 * 억);
+      !t && dutyAmount !== undefined && (dutyAmount >= CAP_100 || dutyAmount < 5 * 억);
     if (!t && !settledWithoutCapital) {
       missingInputs.push({
         field: 'totalEquity',
@@ -618,7 +716,7 @@ export function checkDisclosureDuty(
         alternatives: ['paidInCapital'],
       });
     }
-    if (input.amount === undefined) {
+    if (dutyAmount === undefined) {
       missingInputs.push({
         field: 'amount',
         purpose: 'duty',
@@ -626,7 +724,7 @@ export function checkDisclosureDuty(
       });
     }
     if (!t && settledWithoutCapital) {
-      const amt = input.amount!;
+      const amt = dutyAmount!;
       verdict = amt >= CAP_100 ? 'required' : 'not_required';
       summary =
         amt >= CAP_100
@@ -636,8 +734,8 @@ export function checkDisclosureDuty(
       verdict = 'insufficient_data';
       summary =
         '자본총계 또는 자본금이 없어 기준금액을 계산할 수 없습니다. ' +
-        (input.amount !== undefined
-          ? `결론을 가르는 값: 자본총계·자본금 중 큰 금액이 ${fmtWon(input.amount / 0.05)}(거래금액 ${fmtWon(input.amount)} × 20) ` +
+        (dutyAmount !== undefined
+          ? `결론을 가르는 값: 자본총계·자본금 중 큰 금액이 ${fmtWon(dutyAmount / 0.05)}(거래금액 ${fmtWon(dutyAmount)} × 20) ` +
             '이하면 대상, 초과면 대상 아닙니다. '
           : '') +
         'get_financials 로 해당 회사의 자본총계·자본금을 먼저 조회하세요.';
@@ -659,7 +757,7 @@ export function checkDisclosureDuty(
       const isPic = input.duty === 'public_interest_corp';
       const equityWord = isPic ? '순자산총계' : '자본총계';
       const capitalWord = isPic ? '기본순자산' : '자본금';
-      if (input.amount === undefined) {
+      if (dutyAmount === undefined) {
         verdict = 'insufficient_data';
         summary =
           `기준금액은 ${fmtWon(t.threshold)}입니다` +
@@ -668,15 +766,15 @@ export function checkDisclosureDuty(
             : '') +
           '. amount(거래금액)를 주면 대상 여부를 판정합니다.';
       } else {
-        const required = isLargeInternalTransaction(input.amount, t.threshold);
+        const required = isLargeInternalTransaction(dutyAmount, t.threshold);
         // ★ 한쪽 자본 미입력: 미입력 값은 기준금액을 **올리기만** 한다. 그래서 "대상 아님"은 확정이고,
         //   "대상"은 미입력 값에 따라 뒤집힐 수 있다 (거래 100억 이상이면 확정). 뒤집힐 수 있을 때만 전제를 밝힌다.
-        const flip = incompleteCapitalFlipPoint(input.amount, t);
+        const flip = incompleteCapitalFlipPoint(dutyAmount, t);
         if (flip !== null && t.missingSide === 'totalEquity') {
           // 자본금만 입력 — 자본총계는 보통 자본금보다 크므로 "대상"은 확정할 수 없다 (거짓 확정 방지).
           verdict = 'insufficient_data';
           summary =
-            `${capitalWord}만으로 계산한 기준금액 ${fmtWon(t.threshold)} 기준으로는 대상이지만(거래금액 ${fmtWon(input.amount)}), ` +
+            `${capitalWord}만으로 계산한 기준금액 ${fmtWon(t.threshold)} 기준으로는 대상이지만(거래금액 ${fmtWon(dutyAmount)}), ` +
             `${equityWord}이(가) ${fmtWon(flip)}을 넘으면 기준금액이 거래금액보다 커져 **대상이 아닙니다**. ` +
             `${equityWord}(주주총회 승인 최근 사업연도말 개별재무제표 기준)을 주면 확정합니다.`;
           missingInputs.push({
@@ -692,8 +790,8 @@ export function checkDisclosureDuty(
           const thresholdText =
             fmtWon(t.threshold) + (t.missingSide ? ` (${t.missingSide === 'paidInCapital' ? '자본금' : '자본총계'} 미입력 — 하한값)` : '');
           summary = required
-            ? `공시 대상입니다. 거래금액 ${fmtWon(input.amount)} ≥ 기준금액 ${thresholdText}. 이사회 사전 의결이 필요합니다.`
-            : `공시 대상이 아닙니다. 거래금액 ${fmtWon(input.amount)} < 기준금액 ${thresholdText}.`;
+            ? `공시 대상입니다. 거래금액 ${fmtWon(dutyAmount)} ≥ 기준금액 ${thresholdText}. 이사회 사전 의결이 필요합니다.`
+            : `공시 대상이 아닙니다. 거래금액 ${fmtWon(dutyAmount)} < 기준금액 ${thresholdText}.`;
           if (flip !== null) {
             // 자본총계만 입력 — 자본금이 자본총계보다 큰 경우는 자본잠식뿐이라 결론이 뒤집힐 여지는 좁다. 전제로 밝힌다.
             notes.push(
@@ -703,7 +801,7 @@ export function checkDisclosureDuty(
             );
           }
         }
-        if (!required && input.amount >= t.threshold * 0.9) {
+        if (!required && dutyAmount >= t.threshold * 0.9) {
           notes.push(
             '기준금액의 90% 이상입니다. 분기 합산이나 관련 거래 합산 시 대상이 될 수 있으니 확인하세요.',
           );
@@ -741,11 +839,92 @@ export function checkDisclosureDuty(
       if (verdict !== 'not_required') {
         missingInputs.push({ field: lc.conditional.field, purpose: 'duty', label: lc.conditional.label });
       }
-    } else if (verdict === 'required' || (verdict === 'insufficient_data' && input.amount !== undefined)) {
+    } else if (verdict === 'required' || (verdict === 'insufficient_data' && dutyAmount !== undefined)) {
       notes.push(exclusionConditionsNote(input, entity));
     }
+
+    // ── 금액 미달 not_required 를 확정하면 안 되는 경우 (거짓 안심 차단) ──
+    // 금액으로 "대상 아님"이 나왔어도, 아직 입력되지 않은 사실 하나로 대상이 되는 경로가 원문에 있으면 조건부로 돌린다.
+    const notRequiredByAmount = verdict === 'not_required' && !lc.excluded;
+    const flipReasons: string[] = [];
+    // (a) 공익법인 + 주식 거래 신호 — 소속 국내회사 주식이면 금액·상대방·장내 여부와 무관하게 대상 (금액 이상일 때와 대칭)
+    if (
+      verdict === 'not_required' &&
+      entity === 'public_interest_corp' &&
+      input.picGroupShareTrade === undefined &&
+      input.stockTradeVenue !== undefined
+    ) {
+      flipReasons.push(
+        '공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래라면 거래상대방·거래금액·장내 여부와 관계없이 ' +
+          '미리 이사회 의결을 거쳐 공시해야 합니다 (고시 제4조제2항제1호·제4조제6항 단서, 공정위 문답 lit26-010 ※ "거래상대방, ' +
+          '거래금액 등과 관계없이 이사회 의결 및 공시의무가 있음")',
+      );
+      if (!missingInputs.some((m) => m.field === 'picGroupShareTrade')) {
+        missingInputs.push({
+          field: 'picGroupShareTrade',
+          purpose: 'duty',
+          label: '공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래인지 — 그렇다면 금액·제외 사유와 무관하게 대상',
+        });
+      }
+    }
+    // (b) 주식 1일 합산 — 건별 금액만 받았고 같은 날 합계를 모른다 (lit26-043)
+    if (notRequiredByAmount && stockSumApplies && input.sameDayStockTotal === undefined) {
+      flipReasons.push(STOCK_DAILY_SUM_REASON);
+      missingInputs.push({
+        field: 'sameDayStockTotal',
+        purpose: 'duty',
+        label:
+          '같은 거래상대방·같은 주식의 같은 날 매입 합계(또는 매도 합계, 원) — 기준금액 이상이면 대상 (lit26-043). ' +
+          '건별 금액이 곧 그날 합계면 같은 값을 넣으세요',
+      });
+    }
+    if (flipReasons.length) {
+      const base = summary.replace(/^공시 대상이 아닙니다[.\s—-]*/, '').replace(/\.$/, '');
+      verdict = 'insufficient_data';
+      summary = `금액 기준으로는 대상이 아닙니다(${base}) — 그러나 ${flipReasons.join('. 또한 ')}.`;
+    }
+    if (notRequiredByAmount) notes.push(SPLIT_AGGREGATION_NOTE);
+
+    // ── 이사회를 구성할 수 없는 회사 (lit26-041) ──
+    const noBoardSignal =
+      input.situation !== undefined &&
+      /이사\s*(가|는)?\s*(1|한)\s*(명|인)|1인\s*이사|이사회(를|가)?\s*(구성|성립)\s*(할 수 없|하지 않|이? ?안|불가)/.test(input.situation);
+    if (entity === 'company' && input.noBoardCompany === true && verdict !== 'not_required') {
+      summary =
+        summary.replace(/ ?이사회 사전 의결이 필요합니다\.?/, '') +
+        ' 이사회를 구성할 수 없는 회사로 입력하셨습니다 — 대규모내부거래 이사회 의결 의무는 없으나 거래에 대한 공시의무는 ' +
+        '있고, 공시기한은 이사회 의결일 기산이 아니라 **거래행위를 하기 전까지**입니다 (공정위 문답 lit26-041).';
+      notes.push(
+        '이사회 불성립 회사(lit26-041): 상법 제3편 제4장 제3절 제2관(이사와 이사회)상 이사회를 구성할 수 없는 회사가 대상입니다. ' +
+          '문답은 이 경우 이사회 의결 의무가 없다고만 답하며, 주주총회 등 다른 기관의 결의를 요건으로 두지 않았습니다. ' +
+          '이사 2인 회사가 "이사회를 구성할 수 없는 회사"에 해당하는지는 상법 해석 문제로 이 도구는 원문 미확인입니다.',
+      );
+    } else if (entity === 'company' && input.noBoardCompany === undefined && noBoardSignal && verdict !== 'not_required') {
+      missingInputs.push({
+        field: 'noBoardCompany',
+        purpose: 'deadline',
+        label:
+          '상법상 이사회를 구성할 수 없는 회사(이사 1인 등)인지 — 그렇다면 이사회 의결 의무는 없고 공시의무만 있으며 공시기한은 ' +
+          '"거래행위를 하기 전까지"입니다 (lit26-041). 이사 2인 회사의 해당 여부는 원문 미확인',
+      });
+      notes.push(
+        '※ 상황 서술에 이사회 불성립 신호가 있습니다. 상법상 이사회를 구성할 수 없는 회사라면 "대규모내부거래 이사회 의결 의무는 ' +
+          '없으나 거래에 대한 공시의무는 있음 ※ 공시기한은 거래행위를 하기 전까지"입니다 (공정위 문답 lit26-041) — noBoardCompany 로 ' +
+          '알려 주시면 그 기준으로 답합니다.',
+      );
+    }
+
+    // ── 고시 제10조 — 자본시장법 공시와 중복 (공시만 갈음, 사전 의결은 별도) ──
+    if (entity === 'company' && verdict !== 'not_required') notes.push(LIT_CAPITAL_MARKET_OVERLAP_NOTE);
+
     // 이미 거래했는데 사전 의결 여부를 모르는 경우 — 대규모내부거래는 "미리" 의결이 요건이다 (d06 "빌려줬는데요")
-    if (verdict !== 'not_required' && input.boardResolution === undefined && !input.boardDate && !lc.picShareForced) {
+    if (
+      verdict !== 'not_required' &&
+      input.boardResolution === undefined &&
+      !input.boardDate &&
+      !lc.picShareForced &&
+      !(entity === 'company' && input.noBoardCompany === true)
+    ) {
       notes.push(
         '이미 거래를 했다면 **거래 전에** 이사회 의결을 거쳤는지 확인하세요 — 대규모내부거래는 미리 이사회 의결을 거친 후 ' +
           '공시해야 하며(법 제26조제1항), 의결 없이 거래했다면 공시기한과 별개로 별표 9의 "의결 X" 칸이 적용됩니다 ' +
@@ -835,6 +1014,32 @@ export function checkDisclosureDuty(
           summary = required
             ? `공시 대상입니다. 지분 변동 ${changeMagnitude}%p ≥ 1%p (고시 제5조의2제1항제1호가목).`
             : `공시 대상이 아닙니다. 지분 변동 ${changeMagnitude}%p < 1%p.`;
+          // ★ 최대주주 구성원 간 이동 — 비상장사 매뉴얼 "동일인측이 최대주주인 경우에는 동일인측 최대주주(동일인 및 동일인
+          //   관련자)의 주식수나 지분율 합계의 변동이 없더라도 그 구성원 간 주식의 비율이 100분의 1이상 변동이 있을 때에는 공시".
+          //   합계만 받고 "대상 아님"을 확정하면 거짓 안심이다. 주요주주(major)에는 이 규칙이 없다.
+          if (!required && input.shareholderType !== 'major') {
+            const member = input.memberShareShiftPct;
+            if (member !== undefined && Math.abs(member) >= 1) {
+              verdict = 'required';
+              summary =
+                `공시 대상입니다. 동일인측 최대주주 합계 변동은 ${changeMagnitude}%p 이지만 구성원 간 지분율 변동 ` +
+                `${Math.abs(member)}%p ≥ 1%p 입니다 — "합계의 변동이 없더라도 그 구성원 간 주식의 비율이 100분의 1이상 변동이 있을 ` +
+                '때에는 공시" (공정위 비상장사 매뉴얼 2026-04 "최대주주 등의 주식보유 변동").';
+            } else if (member === undefined) {
+              verdict = 'insufficient_data';
+              summary =
+                `합계 기준으로는 대상이 아닙니다(지분 변동 ${changeMagnitude}%p < 1%p) — 그러나 동일인측이 최대주주라면 합계 변동이 ` +
+                '없어도 구성원(동일인·동일인관련자) 간 지분율이 1%p 이상 움직였으면 공시 대상입니다 (공정위 비상장사 매뉴얼 ' +
+                '2026-04 "그 구성원 간 주식의 비율이 100분의 1이상 변동이 있을 때에는 공시").';
+              missingInputs.push({
+                field: 'memberShareShiftPct',
+                purpose: 'duty',
+                label:
+                  '동일인측이 최대주주일 때 구성원 각각의 지분율 변동 중 가장 큰 값(%p) — 1 이상이면 합계 변동이 없어도 대상. ' +
+                  '동일인측이 최대주주가 아니면 0',
+              });
+            }
+          }
           threshold = {
             amount: 1,
             formula: `발행주식총수 대비 변동폭 |${input.shareChangePct}|%p vs 임계 1%p`,
@@ -843,6 +1048,11 @@ export function checkDisclosureDuty(
         }
         notes.push(
           '변동 기준일은 시행령 제17조제1호에서 규정한 날입니다. 주요주주 변동은 분기별 공시입니다 (고시 제5조의2제4항 단서).',
+        );
+        notes.push(
+          '※ 이 공시의 "최대주주"는 동일인이 단독으로 또는 동일인관련자와 합산하여 최다출자자면 그 동일인 및 동일인관련자 전체로, ' +
+            '자본시장법상 최대주주와 다릅니다(비상장사 매뉴얼 "공정거래법령상의 동일인과 동일인관련자를 모두 포함"). 동일인측 구성원의 ' +
+            '변동은 주요주주(분기공시)가 아니라 최대주주(7영업일) 공시입니다 — 주요주주 공시는 "최대주주 … 를 제외한 주요주주"입니다.',
         );
       } else {
         // ── 임계 비율형 사유 ──
@@ -962,8 +1172,9 @@ export function checkDisclosureDuty(
   // 의결형 의무인데 입력이 없으면 undefined 로 넘겨 estimatePenalty 가 가정 caveat 를 붙인다 (P2-다 10).
   // 약관 금융거래는 경로에 따라 갈린다 — 계열 금융회사의 일상적 약관거래(제9조제1항)만 의결 요건이 없고,
   // 제9조제2항 경로·약관 아님은 의결이 필요하다. 경로 미확정이면 과태료 자체를 확정하지 않는다(아래 게이트).
+  // 이사회 불성립 회사(lit26-041)는 "이사회 의결 의무는 없으나" — 의결형 칸(별표9 "의결 X")이 성립하지 않는다.
   const boardResolutionDuty =
-    input.duty === 'large_internal_transaction' ||
+    (input.duty === 'large_internal_transaction' && input.noBoardCompany !== true) ||
     input.duty === 'public_interest_corp' ||
     omnibusEval?.boardResolutionRequired === true;
   // 약관거래 경로 미확정·상품 속성 미확인이면 대표 기한은 조건부다 — 지연·과태료·자진시정을 확정하지 않는다.
@@ -981,18 +1192,30 @@ export function checkDisclosureDuty(
         '경로·공시별 준수 여부를 조건부로 적었습니다.',
     );
   } else if (deadline && input.actualDisclosureDate && verdict !== 'not_required') {
-    const c = evaluateCompliance(deadline.deadline, input.actualDisclosureDate);
-    compliance = { ...c, actualDisclosureDate: input.actualDisclosureDate };
+    // ★ DART 18:00 규칙 — 기업집단현황·비상장사는 18:00 이후 제출이면 다음 업무일 공시로 처리 (매뉴얼 원문).
+    //   대규모내부거래 계열은 매뉴얼에 없어 조건부 경고만 (filing-time.ts).
+    const ft = applyFilingTimeRule(input.duty, deadline.deadline, input.actualDisclosureDate, input.actualDisclosureTime);
+    notes.push(...ft.notes);
+    const c = evaluateCompliance(deadline.deadline, ft.effectiveDate);
+    compliance = {
+      ...c,
+      actualDisclosureDate: input.actualDisclosureDate,
+      ...(ft.shifted ? { processedDisclosureDate: ft.effectiveDate } : {}),
+    };
+    const shownDate = ft.shifted
+      ? `${input.actualDisclosureDate} ${input.actualDisclosureTime}(18:00 이후 → ${ft.effectiveDate} 공시로 처리)`
+      : input.actualDisclosureDate;
     summary +=
       ' ' +
       (c.onTime
         ? noBoardResolution
-          ? `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 내이지만, ` +
+          ? `실제 공시 ${shownDate} — 기한(${deadline.deadline}) 내이지만, ` +
             `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 제26조, 별표 9 "의결 X/공시" 칸). ` +
             `기한 준수가 이 위반을 치유하지 않습니다.`
-          : `실제 공시 ${input.actualDisclosureDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다 ` +
-            '(기한 준수만 판정한 것입니다 — 공시 내용의 누락·거짓, 사전 이사회 의결의 적법성은 판정하지 않았습니다).'
-        : `실제 공시 ${input.actualDisclosureDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.` +
+          : `실제 공시 ${shownDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다 ` +
+            '(기한 준수만 판정한 것입니다 — 공시 내용의 누락·거짓, 사전 이사회 의결의 적법성은 판정하지 않았습니다).' +
+            (ft.summaryCaveat ? ` ${ft.summaryCaveat}` : '')
+        : `실제 공시 ${shownDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.` +
           (noBoardResolution ? ' 이사회 의결 없이 공시한 위반도 별도로 성립합니다 (별표 9 "의결 X" 칸).' : ''));
 
     if ((!c.onTime || noBoardResolution) && (input.estimatePenaltyIfLate ?? true)) {
@@ -1005,7 +1228,7 @@ export function checkDisclosureDuty(
         delayDays: c.delayDays,
         // 거래금액별 적용비율(고시 Ⅵ.2)은 §26·§29 전용이다. 그 게이트는 estimatePenalty 안에 있으므로
         // 여기서는 그대로 넘긴다 — §27·§28(비상장사 중요사항·기업집단현황)에서는 무시된다.
-        ...(input.amount !== undefined ? { transactionAmount: input.amount } : {}),
+        ...(dutyAmount !== undefined ? { transactionAmount: dutyAmount } : {}),
         capitalBase:
           capitalInputs.length > 0
             ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0)
@@ -1033,12 +1256,16 @@ export function checkDisclosureDuty(
         compliance && deadline
           ? {
               calendarDays: compliance.delayDays,
-              businessDays: compliance.onTime ? 0 : -businessDaysRemaining(compliance.actualDisclosureDate, deadline.deadline),
-              source: `기한 ${deadline.deadline} → 공시 ${compliance.actualDisclosureDate}`,
+              businessDays: compliance.onTime
+                ? 0
+                : -businessDaysRemaining(compliance.processedDisclosureDate ?? compliance.actualDisclosureDate, deadline.deadline),
+              source: `기한 ${deadline.deadline} → 공시 ${compliance.processedDisclosureDate ?? compliance.actualDisclosureDate}`,
             }
           : undefined;
       const boardRequired: boolean | 'undetermined' =
-        input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
+        input.duty === 'large_internal_transaction' && input.noBoardCompany === true
+          ? false
+          : input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
           ? true
           : input.duty === 'omnibus_financial'
             ? (omnibusEval?.boardResolutionRequired ?? 'undetermined')
@@ -1050,7 +1277,7 @@ export function checkDisclosureDuty(
         regime,
         boardRequired,
         boardResolution: input.boardResolution,
-        transactionAmount: input.amount,
+        transactionAmount: dutyAmount,
         capitalBase: capitalInputs.length > 0 ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0) : undefined,
         capitalBaseIncomplete: capitalInputs.length === 1,
         dateBased,
@@ -1077,6 +1304,12 @@ export function checkDisclosureDuty(
     : undefined;
 
   if (deadline?.warnings.length) notes.push(...deadline.warnings);
+
+  // 기한이 아직 안 지났으면 마지막 날 18:00 규칙을 미리 알린다 (기업집단현황·비상장사 — 매뉴얼 원문)
+  if (deadline && !input.actualDisclosureDate && verdict !== 'not_required' && toDate(today) <= toDate(deadline.deadline)) {
+    const lastDay = lastDayFilingTimeNote(input.duty, deadline.deadline);
+    if (lastDay) notes.push(lastDay);
+  }
 
   // ── 자진시정 골든타임 ──
   // 리서치 결론의 포지셔닝: "위반 통보"가 아니라 "면제 골든타임 내 구조".
@@ -1127,10 +1360,14 @@ export function checkDisclosureDuty(
     // 지식베이스 문제(파일 손상 등)가 본 판정을 죽이면 안 된다 — Q&A 첨부는 부가 기능이다
     let matches: ReturnType<typeof searchQna> = [];
     try {
-      matches = searchQna(input.situation, {
-        category: DUTY_TO_QNA_CATEGORY[input.duty],
-        limit: 3,
-      });
+      // 개정판 중복(연도만 다른 같은 문답)을 접고도 3칸을 채울 수 있게 넉넉히 받아 최신판만 남긴다 (qna-dedup.ts)
+      matches = dedupRelatedQna(
+        searchQna(input.situation, {
+          category: DUTY_TO_QNA_CATEGORY[input.duty],
+          limit: 10,
+        }),
+        3,
+      );
     } catch (err) {
       notes.push(
         `공정위 Q&A 지식베이스 검색에 실패해 relatedOfficialQna 를 첨부하지 못했습니다 ` +
@@ -1156,7 +1393,9 @@ export function checkDisclosureDuty(
   // 대상 판정(duty)과 기한(deadline)의 상태를 **따로** 보고한다. 한쪽이 미확정이어도
   // 다른 쪽 결과는 그대로 유효하다는 것을 모델·사용자가 필드로 확인할 수 있어야 한다.
   const deadlineOnlyDuty = input.duty === 'goods_services_reduced' || input.duty === 'group_status';
-  const deadlineStatus: ComponentStatus = deadline ? 'evaluated' : 'insufficient_data';
+  // 이사회 불성립 회사(lit26-041)는 의결일 기산 기한이 없다 — "거래행위를 하기 전까지"라 날짜 계산 대상이 아니다
+  const noBoardDeadline = input.duty === 'large_internal_transaction' && input.noBoardCompany === true;
+  const deadlineStatus: ComponentStatus = deadline ? 'evaluated' : noBoardDeadline ? 'not_applicable' : 'insufficient_data';
   const dutyStatus: ComponentStatus = omnibusEval
     ? // 약관거래의 "대상 판정" = 경로(의결 필요 여부) 판정이다
       omnibusEval.path === 'undetermined'
@@ -1184,7 +1423,12 @@ export function checkDisclosureDuty(
 
   // 실제 공시일을 줬는데 기한을 못 구한 경우 — 준수 여부를 만들지 않았다는 사실을 밝힌다.
   // (가짜 기한·가짜 지연일을 만들지 않는다. today 로 의결일을 대신하지도 않는다.)
-  if (!deadline && input.actualDisclosureDate) {
+  if (!deadline && input.actualDisclosureDate && noBoardDeadline) {
+    notes.push(
+      `actualDisclosureDate(${input.actualDisclosureDate})를 받았지만 이사회 불성립 회사의 공시기한은 "거래행위를 하기 전까지"라 ` +
+        '날짜 계산으로 준수 여부를 판정하지 않았습니다 — 거래 전에 공시했는지로 확인하세요 (lit26-041).',
+    );
+  } else if (!deadline && input.actualDisclosureDate) {
     notes.push(
       `actualDisclosureDate(${input.actualDisclosureDate})를 받았지만 기한을 계산하지 못해 ` +
         '준수 여부·지연일수·과태료를 산정하지 않았습니다 — "기한 내"도 "지연"도 아닙니다. ' +

@@ -54,8 +54,13 @@ describe('장내시장 주식거래 — 매뉴얼 "주식을 계열증권사를 
     const r = ok(checkDisclosureDuty({ ...big, stockTradeVenue: 'exchange_after_hours' }));
     expect(r.verdict).toBe('required');
     expect(r.notes.join(' ')).toContain('시간외거래');
+    // 건별 3억만으로는 확정하지 않는다 — lit26-043 "1일 매입 또는 매도 금액의 총합계를 1회 거래로 봄" (묶음4 결함 1)
     const small = ok(checkDisclosureDuty({ ...big, amount: 3 * 억, stockTradeVenue: 'exchange_after_hours' }));
-    expect(small.verdict).toBe('not_required');
+    expect(small.verdict).toBe('insufficient_data');
+    const smallDay = ok(
+      checkDisclosureDuty({ ...big, amount: 3 * 억, sameDayStockTotal: 3 * 억, stockTradeVenue: 'exchange_after_hours' }),
+    );
+    expect(smallDay.verdict).toBe('not_required');
   });
 
   it('공익법인 — 고시 제4조제6항 단서 "공익법인의 … 국내 회사 주식의 취득 또는 처분 행위는 제외한다": 소속회사 주식이면 금액·장내 무관 대상', () => {

@@ -23,7 +23,21 @@ export interface LitConditionInput {
   stockTradeVenue?: 'exchange_regular' | 'exchange_after_hours' | 'off_exchange' | undefined;
   incidentalTransaction?: boolean | undefined;
   picGroupShareTrade?: boolean | undefined;
+  subsidiaryIncorporation?: boolean | undefined;
+  /** 상황 서술 — 자회사 설립 신호("설립"·"신설") 감지에만 쓴다 */
+  situation?: string | undefined;
 }
+
+/** 상황 서술에 자회사 설립 출자 신호가 있는가 — lit26-003 조건 안내용 (단정에는 쓰지 않는다) */
+export function hasIncorporationSignal(situation: string | undefined): boolean {
+  return situation !== undefined && /설립|신설/.test(situation);
+}
+
+/** 자회사 설립 출자 (lit26-003) 범위 경계 — 설립 이후 추가 출자는 이 문답이 다루지 않는다 */
+export const SUBSIDIARY_AFTER_INCORPORATION_NOTE =
+  '※ 문답 lit26-003 은 자회사를 **설립하기 위한** 출자에 관한 것입니다. 설립 이후 그 자회사(이미 계열회사 = 특수관계인)에 ' +
+  '추가로 출자하거나 유상증자에 참여하는 거래가 같은 결론인지는 이 문답의 범위 밖입니다(원문 미확인) — 그 경우는 일반 ' +
+  '대규모내부거래 기준(특수관계인 상대 거래·기준금액)으로 확인하세요.';
 
 export interface LitConditionResult {
   /** 입력된 사실로 제외가 확정됨 → not_required */
@@ -122,8 +136,54 @@ export function evaluateLitConditions(
     return { excluded: { reason }, notes };
   }
 
+  // ④ 자회사 설립 출자 — lit26-003 "자회사를 설립하기 위하여 출자하는 경우에는 특수관계인을 상대방으로 하거나
+  //    특수관계인을 위한 거래가 아니므로 출자금액이 100억 원 이상(…)이더라도 이사회 의결 및 공시의무가 없음"
+  if (i.subsidiaryIncorporation === true) {
+    notes.push(SUBSIDIARY_AFTER_INCORPORATION_NOTE);
+    return {
+      excluded: {
+        reason:
+          '자회사를 설립하기 위한 출자는 특수관계인을 상대방으로 하거나 특수관계인을 위한 거래가 아니므로 금액과 무관하게 ' +
+          '이사회 의결·공시의무가 없습니다 (공정위 문답 lit26-003)',
+      },
+      notes,
+    };
+  }
+  if (i.subsidiaryIncorporation === undefined && hasIncorporationSignal(i.situation)) {
+    notes.push(SUBSIDIARY_AFTER_INCORPORATION_NOTE);
+    return {
+      conditional: {
+        reason:
+          '상황 서술에 "설립·신설"이 있습니다 — 자회사를 **설립하기 위한** 출자라면 특수관계인을 상대방으로 하거나 특수관계인을 ' +
+          '위한 거래가 아니어서 금액과 무관하게 이사회 의결·공시의무가 없습니다(공정위 문답 lit26-003). 이미 있는 계열회사에 ' +
+          '출자하는 것이면 금액 기준대로입니다',
+        field: 'subsidiaryIncorporation',
+        label:
+          '자회사를 설립하기 위한 출자인지 — true 면 대상 아님 (lit26-003). 이미 설립된 계열회사에 대한 출자면 false',
+      },
+      notes,
+    };
+  }
+
   return { notes };
 }
+
+/** 분할 거래 합산 — 매뉴얼(2026-04) "공시대상 1건 거래행위 판단기준" */
+export const SPLIT_AGGREGATION_NOTE =
+  '※ 1건 판단: 동일 거래상대방과의 동일 거래대상에 대한 거래행위를 기준으로 판단하며, "동일 거래상대방과의 동일 거래대상에 ' +
+  '대한 1건의 거래행위를 분할하여 거래하는 경우에는 이를 합산하여 1건의 거래행위로 봄" (공정위 대규모내부거래 매뉴얼 2026-04, ' +
+  '고시 제4조제3항). 상품·용역거래는 동일 거래상대방과의 분기 합계액입니다. 나눠서 한 거래라면 합계액으로 다시 판정하세요.';
+
+/** 주식 1일 합산 — lit26-043 */
+export const STOCK_DAILY_SUM_REASON =
+  '주식 거래는 "1회 거래라는 개념이 모호하므로 1일 매입 또는 매도 금액의 총합계를 1회 거래로 봄"(공정위 문답 lit26-043) — ' +
+  '같은 거래상대방·같은 주식의 같은 날 매입(또는 매도) 합계가 기준금액 이상이면 건별 금액과 관계없이 대상입니다';
+
+/** 고시 제10조 — 자본시장법 공시와 중복 (비상장사 제5조의2제6항 노트와 대칭) */
+export const LIT_CAPITAL_MARKET_OVERLAP_NOTE =
+  '이 공시사항이 자본시장법상 신고·공시사항과 중복되면 자본시장법에 따라 신고·공시해도 이 고시에 따른 공시의무를 이행한 ' +
+  '것으로 봅니다. 다만 공정거래법상의 공시의무사항에도 해당되는 사항임을 표시해야 합니다 (대규모내부거래 고시 제10조). ' +
+  '⚠️ 이것은 **공시**를 갈음할 뿐입니다 — 미리 이사회 의결을 거쳐야 하는 의무(법 제26조제1항)는 따로 지켜야 합니다.';
 
 /** 금액 기준으로 "대상"일 때, 아직 입력되지 않은 제외 사유를 **조건**으로 알린다 (verdict 는 바꾸지 않는다) */
 export function exclusionConditionsNote(
@@ -148,9 +208,12 @@ export function exclusionConditionsNote(
       '기존 공시대상 거래의 권리 행사·의무 이행에 따른 부수적 거래(만기 상환 등, incidentalTransaction) — 대상 아님 (고시 제4조제6항제1호)',
     );
   }
-  items.push(
-    '자회사 설립을 위한 출자처럼 특수관계인을 상대방으로 하거나 특수관계인을 위한 거래가 아닌 경우 — 대상 아님 (문답 lit26-003)',
-  );
+  if (i.subsidiaryIncorporation === undefined) {
+    items.push(
+      '자회사를 설립하기 위한 출자(subsidiaryIncorporation)처럼 특수관계인을 상대방으로 하거나 특수관계인을 위한 거래가 아닌 경우 — ' +
+        '대상 아님 (문답 lit26-003)',
+    );
+  }
   if (entity === 'public_interest_corp') {
     items.unshift(
       '공익법인의 소속 국내회사 주식 취득·처분(picGroupShareTrade) — 금액과 무관하게 대상이며 위 제외들도 적용 안 됨 ' +
