@@ -26,7 +26,6 @@ import {
   litDeadline,
   unlistedMaterialDeadline,
   unlistedMajorShareholderDeadline,
-  omnibusQuarterlyDeadline,
   goodsServicesReducedDeadline,
   groupStatusAnnualDeadline,
   groupStatusQuarterlyDeadline,
@@ -55,6 +54,7 @@ import {
   type MissingInput,
   type ReviewMemo,
 } from './disclosure-review.js';
+import { evaluateOmnibus, type OmnibusEvaluation } from './duty/omnibus.js';
 
 const YMD = ymdSchema;
 
@@ -79,9 +79,13 @@ export const checkDisclosureDutyInput = z.object({
     .optional()
     .describe('상장 여부. 대규모내부거래 기한이 갈린다 (상장 3영업일 / 비상장 7영업일)'),
 
-  boardDate: YMD.optional().describe('이사회 의결일 (대규모내부거래·공익법인)'),
+  boardDate: YMD.optional().describe(
+    '이사회 의결일 (대규모내부거래·공익법인. 약관 금융거래는 분기 일괄 또는 건별 사전 의결일 — 의결내용 공시기한의 기산일)',
+  ),
   occurredDate: YMD.optional().describe('사유 발생일 (비상장사 중요사항)'),
-  quarterEnd: YMD.optional().describe('분기 종료일 (약관 금융거래·상품용역 감소)'),
+  quarterEnd: YMD.optional().describe(
+    '분기 종료일 (약관 금융거래의 분기 일괄 공시·상품용역 감소). 3/31·6/30·9/30·12/31 중 하나',
+  ),
   year: z.number().int().optional().describe('연도 (기업집단현황)'),
   quarter: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional()
     .describe('분기. 지정하면 분기공시(종료 후 2개월), 생략하면 연1회(5/31)'),
@@ -165,7 +169,54 @@ export const checkDisclosureDutyInput = z.object({
   isFinancialCompany: z
     .boolean()
     .optional()
-    .describe('금융업·보험업 영위 여부 (비상장사 중요사항 대상회사 판정용 — 영위하면 제외)'),
+    .describe(
+      '공시하는 회사가 금융업·보험업을 영위하는지. ① 비상장사 중요사항: 영위하면 대상회사에서 제외. ' +
+        '② 약관 금융거래(omnibus_financial): 금융·보험회사가 자기 금융·보험업의 일상적 거래분야에서 약관에 따라 하는 ' +
+        '거래만 이사회 의결을 생략할 수 있다(대규모내부거래 고시 제9조제1항). 금융·보험회사가 아니면 계열 금융회사와의 ' +
+        '약관거래도 사전 이사회 의결이 필요하다(같은 조 제2항 — 분기별 일괄 가능). 모르면 비워 두세요 — 추측하지 않고 경로별로 답합니다',
+    ),
+  routineFinancialBusiness: z
+    .boolean()
+    .optional()
+    .describe(
+      'omnibus_financial 전용 — 금융·보험회사라면, 이 거래가 그 회사가 영위하는 금융·보험업(표준산업분류 K64~66)과 관련한 ' +
+        '일상적 거래분야(관련 시장 영업 중 비중이 높고 거래빈도가 높은 거래)인지 (고시 제9조제1항, 매뉴얼 11-1절). ' +
+        'false 면 금융·보험회사라도 제9조제2항 경로(사전 의결 필요)입니다',
+    ),
+  standardTermsContract: z
+    .boolean()
+    .optional()
+    .describe(
+      'omnibus_financial 전용 — 약관(약관규제법 제2조: 한쪽이 거래조건을 미리 정하고 상대방은 동의 여부만 결정)에 따른 ' +
+        '거래인지. false(거래조건을 협의로 정함, 사모사채 인수 등 특정 조건 부기)면 제9조 특례가 없고 일반 대규모내부거래 절차입니다',
+    ),
+  beneficiaryCertificate: z
+    .boolean()
+    .optional()
+    .describe(
+      'omnibus_financial 전용 — 자본시장법상 수익증권 거래인지. 계열 금융회사와의 약관거래(제9조제2항)에서 수익증권만 ' +
+        '1년 이내의 거래기간을 정해 일괄 의결할 수 있고, 그 밖의 상품은 분기별 일괄까지입니다 (같은 항 단서, 문답 lit26-029)',
+    ),
+  shortTermDemandProduct: z
+    .boolean()
+    .optional()
+    .describe(
+      'omnibus_financial 전용 — 만기가 없고, 중도환매수수료가 없고, 수시입출금이 가능한 단기금융상품인지(세 요건 모두 — 예: ' +
+        'MMF 등 초단기수익증권, 상품 약관으로 확인). true 면 계열 금융회사와의 약관거래의 **실제 거래내역**을 거래 후 3·7영업일 ' +
+        '대신 분기 종료 후 익월 10영업일까지 분기 일괄 공시할 수 있습니다 (고시 제9조제5항). 사전 의결내용 공시에는 적용되지 않습니다',
+    ),
+  transactionDate: YMD.optional().describe(
+    'omnibus_financial 전용 — 실제 거래일. 계열 금융회사와의 약관거래는 거래 후 상장 3·비상장 7영업일 이내에 거래내역을 ' +
+      '공시합니다(고시 제9조제4항). quarterEnd 를 안 주면 이 날짜가 속한 분기의 종료일로 계산합니다',
+  ),
+  omnibusFiling: z
+    .enum(['resolution', 'transaction'])
+    .optional()
+    .describe(
+      'omnibus_financial 전용 — actualDisclosureDate·대표 기한이 어느 공시에 대한 것인지. resolution=사전(분기 일괄 또는 건별) ' +
+        '의결내용 공시(의결 후 3·7영업일), transaction=실제 거래내역 공시(거래 후 3·7영업일 / 단기금융상품은 분기 일괄 선택). ' +
+        '두 기한을 모두 계산할 수 있는데 공시일을 주면서 이 값을 빼면 추측하지 않고 되묻습니다',
+    ),
   specialRelated20pct: z
     .boolean()
     .optional()
@@ -243,6 +294,15 @@ interface DutyResult {
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: unknown;
   selfCorrection?: SelfCorrectionResult;
+  /** 약관 금융거래(고시 제9조) 경로 판정·경로별 공시기한 — omnibus_financial 에서만 */
+  omnibus?: {
+    path: OmnibusEvaluation['path'];
+    pathReason: string;
+    boardResolutionRequired: OmnibusEvaluation['boardResolutionRequired'];
+    mainFiling?: OmnibusEvaluation['mainFiling'];
+    mainDeadlineConditional: boolean;
+    scenarios: OmnibusEvaluation['scenarios'];
+  };
   relatedOfficialQna?: Array<{
     question: string;
     answer: string | null;
@@ -293,6 +353,9 @@ function dutyEventDate(
     case 'unlisted_material':
       return input.occurredDate ? { date: input.occurredDate, label: '사유 발생일' } : null;
     case 'omnibus_financial':
+      // 약관거래는 경로·공시 종류(사전 의결내용 / 거래내역 / 분기 일괄)마다 기산일이 달라 evaluateOmnibus 가 고른다.
+      // (종전: 모든 약관거래를 분기말로 고정 → 거래 후 3영업일 공시를 "분기말보다 앞섬" 오류로 거부할 수 있었다)
+      return null;
     case 'goods_services_reduced':
       return input.quarterEnd ? { date: input.quarterEnd, label: '분기 종료일' } : null;
     case 'group_status': {
@@ -335,6 +398,7 @@ export function checkDisclosureDuty(
   //      공시일이 기준일보다 앞섬). 부족과 오류를 뭉개면 오타가 조용히 통과한다.
   const missingInputs: MissingInput[] = [];
   let deadline: DeadlineResult | undefined;
+  let omnibusEval: OmnibusEvaluation | undefined;
   switch (input.duty) {
     case 'large_internal_transaction':
     case 'public_interest_corp': {
@@ -390,16 +454,34 @@ export function checkDisclosureDuty(
       }
       break;
     }
-    case 'omnibus_financial':
-    case 'goods_services_reduced': {
-      // 약관특례 안내는 **기한 계산과 무관한 이 의무 자체의 성질**이다 — 분기말을 아직 몰라도 알린다.
-      if (input.duty === 'omnibus_financial') {
-        notes.push(
-          '약관에 의한 금융업 일상거래는 고시 §9 특례로 **이사회 의결이 필요 없습니다**. 분기별로 모아 공시합니다. ' +
-            '단, 사모사채 인수 등 당사자간 계약으로 특정 거래조건을 부기한 금융거래는 특례에서 제외되어 ' +
-            '이사회 의결을 거쳐야 합니다 (§9① 단서 — 이 경우 large_internal_transaction 으로 판정하세요).',
+    case 'omnibus_financial': {
+      // 값을 주기는 했는데 분기말이 아니면 **오류다** — 기한이 밀려 지연이 "적법"으로 뒤집힌다.
+      if (input.quarterEnd && !isQuarterEndYMD(input.quarterEnd)) {
+        return errorResponse(
+          'invalid_argument',
+          `quarterEnd(${input.quarterEnd})가 분기 종료일이 아닙니다. 3/31·6/30·9/30·12/31 중 하나를 넣으세요 — ` +
+            '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
         );
       }
+      // ★ 경로(금융사 일상업무 / 계열 금융회사와의 약관거래 / 약관 아님)를 먼저 가른다 — 의결 필요 여부와 기한이 전부 갈린다.
+      omnibusEval = evaluateOmnibus(input);
+      if (omnibusEval.error) return errorResponse('invalid_argument', omnibusEval.error);
+      if (input.actualDisclosureDate && omnibusEval.eventDate) {
+        const ev = omnibusEval.eventDate;
+        if (toDate(input.actualDisclosureDate) < toDate(ev.date)) {
+          return errorResponse(
+            'invalid_argument',
+            `actualDisclosureDate(${input.actualDisclosureDate})가 ${ev.label}(${ev.date})보다 앞섭니다. ` +
+              '날짜 오타(특히 연도)나 공시 종류(omnibusFiling)를 확인하세요.',
+          );
+        }
+      }
+      missingInputs.push(...omnibusEval.missing);
+      notes.push(...omnibusEval.notes);
+      deadline = omnibusEval.mainDeadline;
+      break;
+    }
+    case 'goods_services_reduced': {
       if (!input.quarterEnd) {
         missingInputs.push({
           field: 'quarterEnd',
@@ -416,10 +498,7 @@ export function checkDisclosureDuty(
             '예: 2분기 종료일은 7월 말이 아니라 6월 30일입니다.',
         );
       }
-      deadline =
-        input.duty === 'omnibus_financial'
-          ? omnibusQuarterlyDeadline(input.quarterEnd)
-          : goodsServicesReducedDeadline(input.quarterEnd);
+      deadline = goodsServicesReducedDeadline(input.quarterEnd);
       break;
     }
     case 'group_status': {
@@ -674,17 +753,32 @@ export function checkDisclosureDuty(
         notes.push(CAPITAL_MARKET_OVERLAP_NOTE);
       }
     }
+  } else if (omnibusEval) {
+    verdict = omnibusEval.verdict;
+    summary = omnibusEval.summary;
   } else if (deadline) {
-    // 기한만 계산하는 유형 — 기한이 **실제로 계산된** 경우에만 required 라고 말한다
+    // 기한만 계산하는 유형 — 기한이 **실제로 계산된** 경우에만 required 라고 말한다.
+    // ⚠️ 상품·용역 감소 특례는 "이미 의결·공시한 상품·용역 거래가 20% 이상 감소했다"는 **입력 전제** 위의 결론이다 —
+    //    전제를 [전제] note 로 밝혀 review.assumptions 에 올린다 (기한 계산 성공 ≠ 특례 대상 확인).
     verdict = 'required';
-    summary = '해당 의무의 공시기한을 계산했습니다.';
+    summary =
+      input.duty === 'goods_services_reduced'
+        ? '입력하신 전제(이미 이사회 의결·공시한 상품·용역 거래의 실제 거래금액이 의결금액보다 20% 이상 감소)라면 ' +
+          '이사회 의결 없이 분기 종료 후 45일 이내에 실제 거래금액을 공시해야 합니다 (고시 제9조의2제2항).'
+        : '해당 의무의 공시기한을 계산했습니다.';
   } else {
     // ★ 기한을 계산하지 못했는데 "required · 기한을 계산했습니다" 를 내면 그 문장 자체가 거짓이다.
     //   기한 전용 유형은 기한이 곧 이 도구의 답이므로, 못 구했으면 판정도 미확정이다.
     verdict = 'insufficient_data';
-    summary =
-      `공시기한을 계산할 수 없습니다 — ${missingLabelList(missingInputs, 'deadline')} 가 필요합니다. ` +
-      '이 유형은 기한이 달력으로 고정돼 있어 금액 기준 대상 판정이 따로 없습니다.';
+    summary = `공시기한을 계산할 수 없습니다 — ${missingLabelList(missingInputs, 'deadline')} 가 필요합니다.`;
+  }
+  if (input.duty === 'goods_services_reduced') {
+    notes.push(
+      '[전제] 이미 이사회 의결·공시한 상품·용역 대규모내부거래의 실제 거래금액이 의결금액보다 20% 이상 **감소**한 경우라는 ' +
+        '전제입니다. 감소 후 금액이 기준금액 아래로 내려가도 실제 거래금액 공시는 해야 합니다 (공정위 문답 lit26-072: ' +
+        '100억원 의결 후 실제 20억원 → "분기 종료 후 45일 이내에 실제 거래금액을 공시하여야 함"). 20% 이상 **증가**가 ' +
+        '예상되면 이 특례가 아니라 분기 중에 미리 이사회 의결을 거친 후 공시합니다 (매뉴얼 11-2절).',
+    );
   }
 
   // ── 기한 준수·과태료 ──
@@ -701,13 +795,27 @@ export function checkDisclosureDuty(
   // 이사회 의결 여부는 §26 계열 의결형 의무에서만 과태료 칸을 가른다. 약관특례(§9)·상품용역
   // 감소(§9의2)·하도급 결제조건은 의결 요건 자체가 없어 "의결 X" 칸이 성립하지 않는다 → true 고정.
   // 의결형 의무인데 입력이 없으면 undefined 로 넘겨 estimatePenalty 가 가정 caveat 를 붙인다 (P2-다 10).
+  // 약관 금융거래는 경로에 따라 갈린다 — 계열 금융회사의 일상적 약관거래(제9조제1항)만 의결 요건이 없고,
+  // 제9조제2항 경로·약관 아님은 의결이 필요하다. 경로 미확정이면 과태료 자체를 확정하지 않는다(아래 게이트).
   const boardResolutionDuty =
-    input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp';
+    input.duty === 'large_internal_transaction' ||
+    input.duty === 'public_interest_corp' ||
+    omnibusEval?.boardResolutionRequired === true;
+  // 약관거래 경로 미확정·상품 속성 미확인이면 대표 기한은 조건부다 — 지연·과태료·자진시정을 확정하지 않는다.
+  const conditionalDeadline =
+    omnibusEval !== undefined &&
+    (omnibusEval.path === 'undetermined' || omnibusEval.mainDeadlineConditional);
   // 의결형 의무에서 의결 없이 공시한 것은 **기한과 무관하게** 별도 위반이다 (별표9 "의결 X/공시" 칸).
   // 기한 내라고 "적법"이라 말하면 최악의 거짓 안심이 된다 (Codex 7차 치명 1)
   const noBoardResolution = boardResolutionDuty && input.boardResolution === false;
 
-  if (deadline && input.actualDisclosureDate && verdict !== 'not_required') {
+  if (deadline && input.actualDisclosureDate && conditionalDeadline) {
+    notes.push(
+      `⚠️ 실제 공시일(${input.actualDisclosureDate})의 기한 준수 여부를 확정하지 않았습니다 — 적용 기한이 ` +
+        '입력되지 않은 사실(경로 또는 단기금융상품 여부)에 따라 달라집니다. omnibus.scenarios 의 ifDisclosedOn 에 ' +
+        '경로·공시별 준수 여부를 조건부로 적었습니다.',
+    );
+  } else if (deadline && input.actualDisclosureDate && verdict !== 'not_required') {
     const c = evaluateCompliance(deadline.deadline, input.actualDisclosureDate);
     compliance = { ...c, actualDisclosureDate: input.actualDisclosureDate };
     summary +=
@@ -765,7 +873,7 @@ export function checkDisclosureDuty(
   //    → 지연 공시 사후 판정에는 골든타임을 부착하지 않는다 (면제 요건은 penalty disclaimer가 안내).
   let selfCorrection: DutyResult['selfCorrection'];
   const deadlinePassed = deadline && toDate(today) > toDate(deadline.deadline);
-  if (deadline && deadlinePassed && !input.actualDisclosureDate && verdict === 'required') {
+  if (deadline && deadlinePassed && !input.actualDisclosureDate && verdict === 'required' && !conditionalDeadline) {
     if (input.disclosureStatus === 'not_disclosed') {
       selfCorrection = selfCorrectionWindow(deadline.deadline, regime, today);
       if (selfCorrection.status === 'open') {
@@ -832,16 +940,18 @@ export function checkDisclosureDuty(
   // ── 부분 판정 계약 ──
   // 대상 판정(duty)과 기한(deadline)의 상태를 **따로** 보고한다. 한쪽이 미확정이어도
   // 다른 쪽 결과는 그대로 유효하다는 것을 모델·사용자가 필드로 확인할 수 있어야 한다.
-  const deadlineOnlyDuty =
-    input.duty === 'omnibus_financial' ||
-    input.duty === 'goods_services_reduced' ||
-    input.duty === 'group_status';
+  const deadlineOnlyDuty = input.duty === 'goods_services_reduced' || input.duty === 'group_status';
   const deadlineStatus: ComponentStatus = deadline ? 'evaluated' : 'insufficient_data';
-  const dutyStatus: ComponentStatus = deadlineOnlyDuty
-    ? 'not_applicable'
-    : verdict === 'insufficient_data'
+  const dutyStatus: ComponentStatus = omnibusEval
+    ? // 약관거래의 "대상 판정" = 경로(의결 필요 여부) 판정이다
+      omnibusEval.path === 'undetermined'
       ? 'insufficient_data'
-      : 'evaluated';
+      : 'evaluated'
+    : deadlineOnlyDuty
+      ? 'not_applicable'
+      : verdict === 'insufficient_data'
+        ? 'insufficient_data'
+        : 'evaluated';
   const components: DutyComponents = {
     duty: { status: dutyStatus, missing_fields: missingFieldsFor(missingInputs, 'duty') },
     deadline: { status: deadlineStatus, missing_fields: missingFieldsFor(missingInputs, 'deadline') },
@@ -924,6 +1034,18 @@ export function checkDisclosureDuty(
     ...(penalty ? { penalty } : {}),
     ...(selfCorrection ? { selfCorrection } : {}),
     ...(relatedOfficialQna ? { relatedOfficialQna } : {}),
+    ...(omnibusEval
+      ? {
+          omnibus: {
+            path: omnibusEval.path,
+            pathReason: omnibusEval.pathReason,
+            boardResolutionRequired: omnibusEval.boardResolutionRequired,
+            ...(omnibusEval.mainFiling ? { mainFiling: omnibusEval.mainFiling } : {}),
+            mainDeadlineConditional: omnibusEval.mainDeadlineConditional,
+            scenarios: omnibusEval.scenarios,
+          },
+        }
+      : {}),
     notes,
     disclaimer: DISCLAIMER,
   };

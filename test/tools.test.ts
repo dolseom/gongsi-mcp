@@ -67,11 +67,14 @@ describe('check_disclosure_duty', () => {
     });
     expect('error' in r2 && r2.error).toBe('invalid_argument');
 
-    // 정상 분기말은 기존 동작 유지
+    // 정상 분기말은 기존 동작 유지 — 단, 분기 일괄 공시 기한(제9조제3항)은 계열 금융회사의 일상적 약관거래
+    // 경로에만 있으므로(2026-09-24 경로 재설계) 그 경로임을 입력한다
     const ok = checkDisclosureDuty({
       duty: 'omnibus_financial',
       quarterEnd: '20260630',
       actualDisclosureDate: '20260813',
+      isFinancialCompany: true,
+      routineFinancialBusiness: true,
     });
     if ('error' in ok) throw new Error('예상치 못한 에러 응답');
     expect(ok.deadline?.deadline).toBe('20260714');
@@ -229,10 +232,22 @@ describe('check_disclosure_duty', () => {
     expect(r.selfCorrection).toBeUndefined();
   });
 
-  it('약관 금융거래는 이사회 의결이 불요임을 알린다 — 고시 §9', () => {
+  it('약관 금융거래의 의결 생략은 계열 금융회사의 일상적 약관거래에만 알린다 — 고시 제9조제1항', () => {
+    // 원문: "금융업 또는 보험업을 영위하는 내부거래공시대상회사(계열 금융회사)가 해당 회사가 영위하는 금융업 또는
+    //        보험업과 관련한 일상적인 거래분야에서 … 약관에 따라 … 이사회 의결을 거치지 아니할 수 있다"
+    const fin = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260630',
+      isFinancialCompany: true,
+      routineFinancialBusiness: true,
+    });
+    if ('error' in fin) throw new Error('예상치 못한 에러 응답');
+    expect(fin.summary).toContain('이사회 의결을 거치지 않을 수 있고');
+    // 경로를 모르면 "의결 불요" 를 단정하지 않는다 (2026-09-24 이전에는 금융·비금융 구분 없이 단정했다)
     const r = checkDisclosureDuty({ duty: 'omnibus_financial', quarterEnd: '20260630' });
     if ('error' in r) throw new Error('예상치 못한 에러 응답');
-    expect(r.notes.join(' ')).toContain('이사회 의결이 필요 없습니다');
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.summary).toContain('단정하지 않습니다');
   });
 
   it('기업집단현황 연1회 기한 5/31이 일요일이면 익영업일로 밀린다', () => {

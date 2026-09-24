@@ -35,11 +35,54 @@ const REF_UNLISTED: LegalRef[] = [
   },
 ];
 
-const REF_OMNIBUS: LegalRef[] = [
+// ★ 제9조제3항(의무)과 제5항(선택)은 **적용 대상이 다르다** — 한 문장으로 합치면 "약관 금융거래는 전부
+//   분기 모아 익월 10영업일" 이라는 거짓 안심이 된다(비금융사의 일반 약관거래는 거래 후 3·7영업일, 제9조제4항).
+const REF_OMNIBUS_ART9_3: LegalRef[] = [
   {
-    source: '대규모내부거래 등에 대한 이사회 의결 및 공시에 관한 규정 제9조제3항·제5항',
+    source: '대규모내부거래 등에 대한 이사회 의결 및 공시에 관한 규정 제9조제1항·제3항',
     summary:
-      '약관에 의한 금융거래행위는 분기별로 해당 분기 종료 후 익월 10영업일까지 공시하여야 한다.',
+      '금융업 또는 보험업을 영위하는 내부거래공시대상회사(계열 금융회사)가 해당 회사가 영위하는 금융업·보험업과 ' +
+      '관련한 일상적인 거래분야에서 약관에 따라 대규모내부거래를 한 경우(이사회 의결 생략 가능), 분기별로 ' +
+      '해당 분기 종료 후 익월 10영업일까지 주요내용을 공시하여야 한다.',
+  },
+];
+
+const REF_OMNIBUS_ART9_5: LegalRef[] = [
+  {
+    source: '대규모내부거래 등에 대한 이사회 의결 및 공시에 관한 규정 제9조제5항',
+    summary:
+      '제9조제2항에 따른 약관에 의한 금융거래행위(계열 금융회사와의 약관거래) 중 만기와 중도환매수수료가 없고 ' +
+      '수시입출금이 가능한 단기금융상품의 거래행위는 해당 분기 종료 후 익월 10영업일까지 분기별로 일괄하여 ' +
+      '공시할 수 있다 (선택 — 거래 후 3·7영업일 공시도 가능).',
+  },
+];
+
+const REF_OMNIBUS_ART9_4: LegalRef[] = [
+  {
+    source: '대규모내부거래 등에 대한 이사회 의결 및 공시에 관한 규정 제9조제4항',
+    summary:
+      '제9조제2항에 따른 약관에 의한 금융거래행위를 한 경우에는 해당 행위 후 3영업일 이내에 공시하여야 한다. ' +
+      '다만, 상장회사가 아닌 내부거래공시대상회사등은 해당 금융거래행위 후 7영업일 이내에 공시할 수 있다.',
+  },
+  {
+    source: '같은 규정 제9조제6항 (제6조제2항 준용)',
+    summary: '공시 마지막 날이 영업일이 아닌 때에는 다음의 최초 영업일까지 공시한다.',
+  },
+];
+
+const REF_OMNIBUS_ART9_2: LegalRef[] = [
+  {
+    source: '대규모내부거래 등에 대한 이사회 의결 및 공시에 관한 규정 제9조제2항',
+    summary:
+      '내부거래공시대상회사등이 제1항에 해당하지 않는 사유로 계열 금융회사와 약관에 의한 금융거래행위를 하고자 ' +
+      '하는 때에는 이사회 의결을 분기별로 일괄하여 할 수 있다(수익증권은 1년 이내의 거래기간을 정하여 일괄 가능). ' +
+      '의결내용에는 거래한도·거래대상·거래조건 등 주요내용이 포함되어야 한다.',
+  },
+  {
+    source: '같은 규정 제9조제6항 (제6조제1항·제2항 준용)',
+    summary:
+      '의결내용은 이사회 의결 후 상장회사 3영업일, 상장회사가 아니거나 공익법인은 7영업일 이내에 공시한다 ' +
+      '(공정위 매뉴얼 2026-04 "의결 후 상장 3영업일, 비상장회사 및 공익법인 7영업일 이내").',
   },
 ];
 
@@ -162,21 +205,74 @@ function assertQuarterEnd(quarterEnd: YMD): void {
 }
 
 /**
- * 약관에 의한 금융거래 분기별 공시기한 — 고시 §9③⑤
+ * 약관에 의한 금융거래 분기별 공시기한 — 고시 제9조제3항(의무) / 제9조제5항(선택)
  * 해당 분기 종료 후 익월 10영업일까지
+ *
+ * ⚠️ 날짜 산식은 같지만 **적용 대상이 다르다**:
+ *   - `financial_routine` (기본) — 계열 금융회사의 일상적 금융·보험업무 약관거래. 공시 **의무** 기한.
+ *   - `short_term_option` — 계열 금융회사와의 약관거래(제9조제2항) 중 만기·중도환매수수료 없고 수시입출금
+ *     가능한 단기금융상품. 거래 후 3·7영업일 대신 분기 일괄로 **할 수 있는** 선택지.
+ *   그 밖의 제9조제2항 거래는 이 기한이 아니라 `omnibusTransactionDeadline`(거래 후 3·7영업일)이다.
  *
  * @param quarterEnd 분기 종료일 (예: '20260630')
  */
-export function omnibusQuarterlyDeadline(quarterEnd: YMD): DeadlineResult {
+export function omnibusQuarterlyDeadline(
+  quarterEnd: YMD,
+  basis: 'financial_routine' | 'short_term_option' = 'financial_routine',
+): DeadlineResult {
   assertQuarterEnd(quarterEnd);
   // 분기 종료일 다음 날부터 세면 익월 1일부터의 영업일 카운트와 같아진다.
   const raw = addBusinessDays(quarterEnd, 10);
   return finalize(
     raw,
-    `분기 종료(${quarterEnd}) 후 익월 10영업일까지`,
+    basis === 'financial_routine'
+      ? `계열 금융회사의 일상적 약관거래: 분기 종료(${quarterEnd}) 후 익월 10영업일까지 (제9조제3항)`
+      : `단기금융상품 분기 일괄 공시(선택): 분기 종료(${quarterEnd}) 후 익월 10영업일까지 (제9조제5항)`,
     10,
-    REF_OMNIBUS,
+    basis === 'financial_routine' ? REF_OMNIBUS_ART9_3 : REF_OMNIBUS_ART9_5,
   );
+}
+
+/**
+ * 계열 금융회사와의 약관거래(고시 제9조제2항) — **사전 의결내용** 공시기한.
+ * 분기별(수익증권은 1년 이내) 일괄 의결 또는 건별 의결 후 상장 3영업일 / 비상장·공익법인 7영업일 (제9조제6항 → 제6조제1항).
+ */
+export function omnibusResolutionDeadline(boardDate: YMD, listing: ListingStatus): DeadlineResult {
+  const n = listing === 'listed' ? 3 : 7;
+  const label = listing === 'listed' ? '상장회사' : '비상장회사·공익법인';
+  const raw = addBusinessDays(boardDate, n);
+  return finalize(
+    raw,
+    `약관거래 사전 의결내용 공시 — ${label}: 이사회 의결일(${boardDate}) 다음 날부터 ${n}영업일 이내`,
+    n,
+    REF_OMNIBUS_ART9_2,
+  );
+}
+
+/**
+ * 계열 금융회사와의 약관거래(고시 제9조제2항) — **실제 거래내역** 공시기한 (제9조제4항).
+ * 거래 후 상장 3영업일 / 비상장 7영업일("할 수 있다").
+ * 단기금융상품(제9조제5항 세 요건 충족)이면 `omnibusQuarterlyDeadline(qe, 'short_term_option')` 도 선택 가능.
+ */
+export function omnibusTransactionDeadline(transactionDate: YMD, listing: ListingStatus): DeadlineResult {
+  const n = listing === 'listed' ? 3 : 7;
+  const label = listing === 'listed' ? '상장회사' : '비상장회사';
+  const raw = addBusinessDays(transactionDate, n);
+  return finalize(
+    raw,
+    `약관거래 실제 거래내역 공시 — ${label}: 거래일(${transactionDate}) 다음 날부터 ${n}영업일 이내 (제9조제4항)`,
+    n,
+    REF_OMNIBUS_ART9_4,
+  );
+}
+
+/** 날짜가 속한 분기의 종료일 — 거래일로 분기말을 **계산**할 때만 쓴다(추정 아님) */
+export function quarterEndOf(ymd: YMD): YMD {
+  const y = ymd.slice(0, 4);
+  const m = Number(ymd.slice(4, 6));
+  const qm = Math.ceil(m / 3) * 3;
+  const dd = qm === 3 || qm === 12 ? '31' : '30';
+  return `${y}${String(qm).padStart(2, '0')}${dd}`;
 }
 
 /**

@@ -164,15 +164,15 @@ export function buildReview(src: ReviewSource): ReviewMemo {
       n.startsWith('[전제]') ||
       n.includes('전제한 참고값') ||
       n.includes('대상회사임을 전제') ||
-      n.includes('자본금을 자기자본으로 보아') ||
-      n.includes('이사회 의결이 필요 없습니다')
+      n.includes('자본금을 자기자본으로 보아')
     ) {
       assumptions.push(n);
     }
   }
   if (src.components.duty.status === 'not_applicable') {
     assumptions.push(
-      '이 유형은 기한이 달력으로 고정돼 있어 금액 기준 대상 판정이 따로 없습니다 (components.duty = not_applicable).',
+      '이 유형은 금액 기준 판정 없이, 입력한 사실(의무 유형의 전제)을 바탕으로 기한만 계산합니다 ' +
+        '(components.duty = not_applicable) — 전제가 틀리면 결론도 달라집니다.',
     );
   }
 

@@ -214,6 +214,8 @@ describe('과태료 체계 매핑 (Codex 치명 3)', () => {
         quarterEnd: '20260630',
         disclosureStatus: 'not_disclosed',
         today: '20260901',
+        // 약관특례는 분기 기한이 적용되는 경로(계열 금융회사의 일상적 약관거래)임을 입력한다 — 2026-09-24 경로 재설계
+        ...(duty === 'omnibus_financial' ? { isFinancialCompany: true, routineFinancialBusiness: true } : {}),
       });
       if ('error' in r) throw new Error(r.message);
       expect(r.selfCorrection).toBeDefined();

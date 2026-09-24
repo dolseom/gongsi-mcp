@@ -111,15 +111,22 @@ describe('대상 판정과 기한 계산은 독립적이다', () => {
     expect(r.deadline).toBeUndefined();
   });
 
-  it('기한 전용 유형은 duty 가 not_applicable 이고, 분기말이 없으면 verdict 도 미확정이다', () => {
+  it('약관 금융거래는 경로(의결 필요 여부) 판정이 duty 이고, 경로를 모르면 verdict 도 미확정이다', () => {
+    // 2026-09-24 변경: 종전에는 기한 전용 유형(duty not_applicable)으로 보고 "의결 불요"를 무조건 안내했다.
+    // 원문(고시 제9조제1항·제2항)상 의결 생략은 금융·보험회사의 일상적 약관거래뿐이라 경로가 곧 판정 대상이다.
     const r = ok(checkDisclosureDuty({ duty: 'omnibus_financial' }));
-    expect(r.components.duty.status).toBe('not_applicable');
+    expect(r.components.duty.status).toBe('insufficient_data');
+    expect(r.components.duty.missing_fields).toEqual(['isFinancialCompany', 'routineFinancialBusiness']);
     expect(r.components.deadline.status).toBe('insufficient_data');
     // ★ "required · 기한을 계산했습니다" 라고 하면 그 문장 자체가 거짓이다
     expect(r.verdict).toBe('insufficient_data');
-    expect(r.summary).toContain('quarterEnd');
-    // 약관특례의 의결 불요 안내는 분기말을 몰라도 유지된다
-    expect(r.notes.join(' ')).toContain('이사회 의결이 필요 없습니다');
+    expect(r.notes.join(' ')).not.toContain('이사회 의결이 필요 없습니다');
+    // 경로를 확정해도 분기말이 없으면 기한은 미확정이다
+    const fin = ok(
+      checkDisclosureDuty({ duty: 'omnibus_financial', isFinancialCompany: true, routineFinancialBusiness: true }),
+    );
+    expect(fin.components.duty.status).toBe('evaluated');
+    expect(fin.components.deadline.missing_fields).toContain('quarterEnd');
   });
 
   it('상품·용역 감소 특례도 분기말이 없으면 미확정이다', () => {
