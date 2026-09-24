@@ -10,6 +10,7 @@
     "dist/src",
     "data/holidays.json",
     "data/ftc-qna.json",
+    "data/ftc-manual.json",
     "data/penalty-ratios.json",
     "data/periodic-disclosures.json"
   ],
