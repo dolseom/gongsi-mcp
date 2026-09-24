@@ -28,6 +28,15 @@ function resultHead(content) {
  *   한 문항이 "법제처 원문으로 확인했다"고 답했을 때 **어느 도구로 그랬는지 확정할 수 없었다.**
  *   근거 위조와 정상 조회를 사후에 가르려면 호출 목록이 남아 있어야 한다.
  */
+function pluginName(p) {
+  return typeof p === 'string' ? p : (p?.name ?? JSON.stringify(p));
+}
+
+/** CLI 에 내장된 플러그인인가 — init 이벤트가 path:'builtin' · source:'<이름>@builtin' 으로 알린다 */
+function isBuiltinPlugin(p) {
+  return typeof p === 'object' && p !== null && (p.path === 'builtin' || String(p.source ?? '').endsWith('@builtin'));
+}
+
 export function parseStream(text) {
   const out = {
     tools_available: null,
@@ -75,8 +84,14 @@ export function parseStream(text) {
         cwd: ev.cwd ?? null,
         permission_mode: ev.permissionMode ?? null,
         model: ev.model ?? null,
+        // ★ CLI 내장 플러그인(path 'builtin' — 2.1.281 의 agents-md·telemetry)은 --setting-sources 로
+        //   끌 수 없고 사용자 설정도 아니다. 사용자 플러그인과 섞으면 모든 실행이 환경 오류가 된다
+        //   (2026-09-24 b2a 1차 20/20 무효). 따로 남겨 사후에 볼 수 있게만 한다.
         plugins: Array.isArray(ev.plugins)
-          ? ev.plugins.map((p) => (typeof p === 'string' ? p : (p?.name ?? JSON.stringify(p))))
+          ? ev.plugins.filter((p) => !isBuiltinPlugin(p)).map(pluginName)
+          : [],
+        builtin_plugins: Array.isArray(ev.plugins)
+          ? ev.plugins.filter(isBuiltinPlugin).map(pluginName)
           : [],
         hook_events: 0,
         memory_paths: ev.memory_paths ?? null,

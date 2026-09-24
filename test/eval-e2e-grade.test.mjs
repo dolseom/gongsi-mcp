@@ -154,6 +154,18 @@ describe('맥락 오염도 환경 문제다 (2026-09-13 1차 실행: 저장소 c
     expect(problem).toContain('fablize');
   });
 
+  it('CLI 내장 플러그인(builtin)은 사용자 플러그인이 아니다 — 환경 문제로 세지 않고 따로 남긴다', () => {
+    const builtins = [
+      { name: 'agents-md', path: 'builtin', source: 'agents-md@builtin' },
+      { name: 'telemetry', path: 'builtin', source: 'telemetry@builtin' },
+    ];
+    const rec = parseStream(jsonl({ ...INIT_OK, plugins: builtins }, RESULT_OK));
+    expect(environmentProblem(rec)).toBeNull();
+    expect(rec.context.builtin_plugins).toEqual(['agents-md', 'telemetry']);
+    const mixed = parseStream(jsonl({ ...INIT_OK, plugins: [...builtins, { name: 'fablize', path: 'C:\p' }] }, RESULT_OK));
+    expect(environmentProblem(mixed)).toContain('fablize');
+  });
+
   it('init 전에 훅 이벤트가 있으면 환경 문제다', () => {
     const rec = parseStream(
       jsonl({ type: 'system', subtype: 'hook_response', hook_event: 'SessionStart' }, INIT_OK, RESULT_OK),
@@ -170,6 +182,7 @@ describe('맥락 오염도 환경 문제다 (2026-09-13 1차 실행: 저장소 c
       permission_mode: 'default',
       model: 'm',
       plugins: [],
+      builtin_plugins: [],
       hook_events: 0,
       memory_paths: { auto: 'a' },
     });

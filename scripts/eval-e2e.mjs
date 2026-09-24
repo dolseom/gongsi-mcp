@@ -3,7 +3,10 @@
 // claude CLI 헤드리스 실행으로 회귀 검증한다.
 //
 // 사용법:
-//   node scripts/eval-e2e.mjs [--only id1,id2] [--concurrency N]
+//   node scripts/eval-e2e.mjs [--suite eval/b2a] [--only id1,id2] [--concurrency N]
+//
+// --suite: 문항 묶음 폴더 (기본 eval/e2e). <폴더>/questions.json 을 읽고 결과는 <폴더>/results 에 쓴다.
+//   MCP 설정·채점 규칙은 묶음과 무관하게 eval/e2e 것을 쓴다.
 //
 // 전제: 리포 루트에서 `npm run build` 로 dist/src/cli.js 가 만들어져 있어야 한다
 //       (eval/e2e/mcp-config.json 이 상대경로로 이 파일을 가리킨다).
@@ -23,9 +26,8 @@ import { DISALLOWED_TOOLS } from '../eval/disallowed-tools.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(SCRIPT_DIR);
-const QUESTIONS_PATH = join(REPO_ROOT, 'eval', 'e2e', 'questions.json');
+const DEFAULT_SUITE_DIR = join(REPO_ROOT, 'eval', 'e2e');
 const CLI_PATH = join(REPO_ROOT, 'dist', 'src', 'cli.js');
-const RESULTS_DIR = join(REPO_ROOT, 'eval', 'e2e', 'results');
 
 /** 문항 기본 타임아웃 — 문항에 `timeout_ms` 가 있으면 그것을 쓴다 (집단 탐지처럼 긴 문항) */
 const ITEM_TIMEOUT_MS = 240_000;
@@ -35,7 +37,7 @@ const RAW_KEEP_CHARS = 1000;
 
 /** 인자 파싱 */
 function parseArgs(argv) {
-  const opts = { only: null, concurrency: 2 };
+  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--only') {
@@ -45,6 +47,13 @@ function parseArgs(argv) {
       i += 1;
     } else if (arg.startsWith('--only=')) {
       opts.only = arg.slice('--only='.length).split(',').map((s) => s.trim()).filter(Boolean);
+    } else if (arg === '--suite') {
+      const value = argv[i + 1];
+      if (!value) throw new Error('--suite 옵션에 문항 묶음 폴더가 필요합니다 (예: eval/b2a).');
+      opts.suiteDir = join(REPO_ROOT, value);
+      i += 1;
+    } else if (arg.startsWith('--suite=')) {
+      opts.suiteDir = join(REPO_ROOT, arg.slice('--suite='.length));
     } else if (arg === '--concurrency') {
       const value = argv[i + 1];
       if (!value) throw new Error('--concurrency 옵션에 숫자가 필요합니다.');
@@ -106,7 +115,8 @@ function contextFilesAbove(dir) {
   const found = [];
   let d = dir;
   for (;;) {
-    for (const name of ['CLAUDE.md', 'CLAUDE.local.md']) {
+    // AGENTS.md: CLI 내장 agents-md 플러그인이 읽는다 (2.1.281~)
+    for (const name of ['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md']) {
       if (existsSync(join(d, name))) found.push(join(d, name));
     }
     const parent = dirname(d);
@@ -326,7 +336,10 @@ function timestamp(date) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const suite = JSON.parse(readFileSync(QUESTIONS_PATH, 'utf8'));
+  const questionsPath = join(opts.suiteDir, 'questions.json');
+  if (!existsSync(questionsPath)) throw new Error(`문항 파일이 없습니다: ${questionsPath}`);
+  const suite = JSON.parse(readFileSync(questionsPath, 'utf8'));
+  const resultsDir = join(opts.suiteDir, 'results');
 
   let items = suite.items;
   if (opts.only) {
@@ -351,7 +364,7 @@ async function main() {
   }
 
   const runId = `eval-${timestamp(new Date())}`;
-  const streamsDir = join(RESULTS_DIR, runId);
+  const streamsDir = join(resultsDir, runId);
   mkdirSync(streamsDir, { recursive: true });
 
   console.log(
@@ -386,7 +399,7 @@ async function main() {
     total_cost_usd: Number(totalCost.toFixed(4)),
   };
 
-  const outPath = join(RESULTS_DIR, `${runId}.json`);
+  const outPath = join(resultsDir, `${runId}.json`);
   writeFileSync(outPath, JSON.stringify({ summary, results }, null, 2), 'utf8');
 
   console.log('');
