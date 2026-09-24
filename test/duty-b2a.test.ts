@@ -222,3 +222,23 @@ describe('b2a 2차 의미 판정(Codex)에서 나온 도구 원인 미도달', (
     expect(JSON.stringify(r)).toContain('제5조제2항 단서');
   });
 });
+
+describe('b2a 3차 의미 판정(Codex) 도구 원인', () => {
+  it('c05·d08: 기한 D-day 는 영업일·달력일을 단위가 드러나는 이름으로 함께 준다', () => {
+    const r = ok(
+      checkDisclosureDuty({ duty: 'large_internal_transaction', boardDate: '20260915', listing: 'listed', today: '20260924' }),
+    );
+    // 기한 20260918(금) — 오늘 20260924(목) 기준 영업일 −4, 달력일 −6
+    expect(r.deadline!.deadline).toBe('20260918');
+    expect(r.deadline!.calendarDaysRemaining).toBe(-6);
+    expect(r.deadline!.businessDaysRemaining).toBe(r.deadline!.dDay);
+    expect(r.review!.evidence.join(' ')).toContain('달력일 6일');
+  });
+
+  it('약관 사전 의결내용 공시: 주요내용 근거는 제9조제2항 후단, 제6항은 공시절차 준용', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'omnibus_financial', isFinancialCompany: false, listing: 'listed' }));
+    const s = JSON.stringify(r);
+    expect(s).not.toContain('제9조제2항·제6항');
+    expect(s).toContain('제9조제2항 후단');
+  });
+});

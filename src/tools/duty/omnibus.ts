@@ -211,7 +211,8 @@ function affiliateTermsFilings(i: OmnibusInput, qe: YMD | undefined): OmnibusFil
         kind: 'resolution',
         label: '사전 의결내용 공시 (건별 또는 분기별 일괄 의결 후)',
         condition:
-          '의결 후 공시 — 분기별 일괄 의결 시 의결내용에 거래한도·거래대상·거래조건 등 주요내용 포함 (제9조제2항·제6항)',
+          '의결 후 공시 — 분기별 일괄 의결 시 의결내용에 거래한도·거래대상·거래조건 등 주요내용 포함 (제9조제2항 후단). ' +
+          '공시 절차·기한은 제9조제6항이 제6조제1항~제4항을 준용',
         ...(i.boardDate && i.listing
           ? { deadline: omnibusResolutionDeadline(i.boardDate, i.listing) }
           : { missing: resMissing }),

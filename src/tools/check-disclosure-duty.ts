@@ -43,7 +43,7 @@ import {
 } from '../rules/unlisted-material.js';
 import { estimatePenalty, type PenaltyRegime } from '../rules/penalties.js';
 import { selfCorrectionWindow, type SelfCorrectionResult } from '../rules/self-correction.js';
-import { toDate, todayKstYMD } from '../rules/business-days.js';
+import { countCalendarDays, toDate, todayKstYMD } from '../rules/business-days.js';
 import type { AmountBasis, DeadlineResult, Verdict } from '../rules/types.js';
 import { errorResponse, type ErrorResponse } from '../lib/errors.js';
 import { searchQna, type QnaCategory } from '../kb/qna.js';
@@ -361,7 +361,11 @@ interface DutyResult {
     inputs: Record<string, number | undefined>;
     amountBasisNote?: string;
   };
-  deadline?: DeadlineResult & { dDay?: number };
+  /**
+   * dDay 는 **영업일** 수다 (하위호환으로 유지). b2a 3차: 모델이 단위 없이 "D-105" 로 옮겨 달력일로 오독됐다 —
+   * 단위가 이름에 드러나는 두 필드를 함께 준다 (음수 = 기한 경과).
+   */
+  deadline?: DeadlineResult & { dDay?: number; businessDaysRemaining?: number; calendarDaysRemaining?: number };
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: unknown;
   selfCorrection?: SelfCorrectionResult;
@@ -1064,7 +1068,12 @@ export function checkDisclosureDuty(
   }
 
   const deadlineOut = deadline
-    ? { ...deadline, dDay: businessDaysRemaining(today, deadline.deadline) }
+    ? {
+        ...deadline,
+        dDay: businessDaysRemaining(today, deadline.deadline),
+        businessDaysRemaining: businessDaysRemaining(today, deadline.deadline),
+        calendarDaysRemaining: countCalendarDays(today, deadline.deadline),
+      }
     : undefined;
 
   if (deadline?.warnings.length) notes.push(...deadline.warnings);
@@ -1198,6 +1207,9 @@ export function checkDisclosureDuty(
             deadline: deadlineOut.deadline,
             rule: deadlineOut.rule,
             ...(deadlineOut.dDay !== undefined ? { dDay: deadlineOut.dDay } : {}),
+            ...(deadlineOut.calendarDaysRemaining !== undefined
+              ? { calendarDaysRemaining: deadlineOut.calendarDaysRemaining }
+              : {}),
             legalBasis: deadlineOut.legalBasis,
           },
         }

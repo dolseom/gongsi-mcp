@@ -100,7 +100,13 @@ export interface ReviewSource {
   notes: readonly string[];
   thresholdFormula?: string;
   amountBasisNote?: string;
-  deadline?: { deadline: string; rule: string; dDay?: number; legalBasis: Array<{ source: string }> };
+  deadline?: {
+    deadline: string;
+    rule: string;
+    dDay?: number;
+    calendarDaysRemaining?: number;
+    legalBasis: Array<{ source: string }>;
+  };
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: { amount: number; formula: string; isUpperBound: boolean };
   selfCorrection?: { status: string; windowEnd: string; businessDaysRemaining?: number };
@@ -181,7 +187,15 @@ export function buildReview(src: ReviewSource): ReviewMemo {
   if (src.deadline) {
     evidence.push(
       `기한 ${src.deadline.deadline} — ${src.deadline.rule}` +
-        (src.deadline.dDay !== undefined ? ` (남은 영업일 ${src.deadline.dDay}일)` : ''),
+        (src.deadline.dDay !== undefined
+          ? src.deadline.dDay >= 0
+            ? ` (남은 영업일 ${src.deadline.dDay}일` +
+              (src.deadline.calendarDaysRemaining !== undefined ? ` · 달력일 ${src.deadline.calendarDaysRemaining}일` : '') +
+              ')'
+            : ` (기한 경과 영업일 ${-src.deadline.dDay}일` +
+              (src.deadline.calendarDaysRemaining !== undefined ? ` · 달력일 ${-src.deadline.calendarDaysRemaining}일` : '') +
+              ')'
+          : ''),
     );
     const sources = src.deadline.legalBasis.map((b) => b.source).filter(Boolean);
     if (sources.length) evidence.push(`기한 근거: ${sources.join(' / ')}`);
