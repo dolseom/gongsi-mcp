@@ -151,7 +151,7 @@ function baseArt27(v: ViolationInput): BaseAmount {
 }
 
 /** 지연일수 감경 구간 — 고시 Ⅵ.3.다.(4) */
-const DELAY_TIERS: Array<{ maxDays: number; rate: number }> = [
+export const DELAY_TIERS: ReadonlyArray<{ maxDays: number; rate: number }> = [
   { maxDays: 3, rate: 0.75 },
   { maxDays: 7, rate: 0.5 },
   { maxDays: 15, rate: 0.3 },
@@ -164,7 +164,7 @@ function delayMitigationRate(delayDays: number): number {
 }
 
 /** delayDays 가 속한 감경 구간 ("N일 이하") — 30일 초과면 undefined */
-function currentDelayTier(delayDays: number): { maxDays: number; rate: number } | undefined {
+export function currentDelayTier(delayDays: number): { maxDays: number; rate: number } | undefined {
   return DELAY_TIERS.find((t) => delayDays <= t.maxDays);
 }
 

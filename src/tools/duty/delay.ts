@@ -13,7 +13,7 @@
  *  - 과태료 계산은 rules/penalties.ts 의 estimatePenalty 를 호출만 한다.
  */
 
-import { estimatePenalty, type PenaltyRegime } from '../../rules/penalties.js';
+import { currentDelayTier, DELAY_TIERS, estimatePenalty, type PenaltyRegime } from '../../rules/penalties.js';
 import type { PenaltyResult } from '../../rules/types.js';
 
 /** 과태료 금액 표기 — penalties.ts 산식과 같은 만원 단위 (1만원 미만은 엔진이 이미 절사) */
@@ -24,14 +24,14 @@ export function formatPenaltyWon(won: number): string {
 export type DelayDayBasis = 'calendar' | 'business' | 'unknown';
 export type DelayFilingState = 'filed' | 'not_yet_filed';
 
-/** 고시 Ⅵ.3.다(4)(나) "공시지연 일수" 감경 구간 — penalties.ts 의 DELAY_TIERS 와 같은 값(안내 문구용) */
-const TIERS: Array<{ maxDays: number; pct: number }> = [
-  { maxDays: 3, pct: 75 },
-  { maxDays: 7, pct: 50 },
-  { maxDays: 15, pct: 30 },
-  { maxDays: 30, pct: 20 },
-];
-const TIER_TEXT = '공시지연 3일 이하 75% · 7일 이하 50% · 15일 이하 30% · 30일 이하 20% 감경(달력일, 과태료 고시 Ⅵ.3.다)';
+/** 고시 Ⅵ.3.다(4)(나) "공시지연 일수" 감경 구간 — 단일 원천은 penalties.ts 의 DELAY_TIERS (안내용 % 표기로 파생) */
+const TIERS: ReadonlyArray<{ maxDays: number; pct: number }> = DELAY_TIERS.map((t) => ({
+  maxDays: t.maxDays,
+  pct: Math.round(t.rate * 100),
+}));
+const TIER_TEXT =
+  TIERS.map((t, i) => `${i === 0 ? '공시지연 ' : ''}${t.maxDays}일 이하 ${t.pct}%`).join(' · ') +
+  ' 감경(달력일, 과태료 고시 Ⅵ.3.다)';
 
 export interface DelayScenarioInput {
   delayDays: number;
@@ -68,7 +68,8 @@ export interface DelayScenarioOutput {
 }
 
 function tierFor(days: number): { maxDays: number; pct: number } | undefined {
-  return TIERS.find((t) => days <= t.maxDays);
+  const t = currentDelayTier(days);
+  return t ? { maxDays: t.maxDays, pct: Math.round(t.rate * 100) } : undefined;
 }
 
 function stripNext(p: PenaltyResult): Omit<PenaltyResult, 'nextThreshold'> {
