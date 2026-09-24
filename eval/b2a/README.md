@@ -11,12 +11,13 @@
 | `missing-info` | 결론을 가르는 변수가 빠짐 — 추측 대신 그 변수를 짚거나 조건부로 나눠야 한다 |
 | `rule-uncertain` | 규칙 자체를 모름 (기한 이월, 일괄 의결) |
 
-- `c*` 11문항: 실무자 카페 실발화(`RESEARCH/공시담당자_니즈_20260730/artifacts/question_corpus.jsonl`
+- `c*` 11문항·`e*` 6문항: 실무자 카페 실발화(`RESEARCH/공시담당자_니즈_20260730/artifacts/question_corpus.jsonl`
   의 `q4_*`)에서 날짜만 바꿔 옮겼다. `d*` 9문항·`f*` 8문항: 2026 매뉴얼 본문·문답·고시 원문에서 설계 (f* 는 매뉴얼 본문에만 있는 규칙 위주).
 - `golden` 은 법제처 행정규칙 원문·시행령 별표9·2026-04-27 매뉴얼로 검증했다. 원문으로 확정되지 않는
   부분은 `unverified` 에 적고 **채점에서 뺐다** — 그 부분은 단정하지 않는 것이 정답이다.
 - 채점은 `eval/e2e/grade.mjs` 그대로(결정적 키워드 + 도구 호출 기록). 키워드는 결론을 가르는 핵심만.
-  키워드 채점은 거칠다 — 실패 문항은 반드시 답변 원문을 읽고 판정할 것.
+  키워드 채점은 거칠다 — 부정문("근거를 찾지 못했다")도 통과시킨다. **본 지표는 답변 원문의 의미 판정**
+  (A 도달 / P 부분 / F 미도달)이고, 답변 1건은 회차 간 흔들림이 커서 `--repeat 2` 이상으로 잰다.
 
-실행: `npm run build` 후 `node scripts/eval-e2e.mjs --suite eval/b2a [--only id,..] [--concurrency 3]`
+실행: `npm run build` 후 `node scripts/eval-e2e.mjs --suite eval/b2a [--only id,..] [--concurrency 3] [--repeat 2]`
 결과: `eval/b2a/results/` (gitignore). ⚠️ 세션 한도 — 리셋 직후 실행 권장.
