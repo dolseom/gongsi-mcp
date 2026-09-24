@@ -199,3 +199,26 @@ describe('기산일이 없어도 기한 **규칙**은 알린다 (b2a c01 2차 �
     expect(m.label).toContain('7영업일');
   });
 });
+
+describe('b2a 2차 의미 판정(Codex)에서 나온 도구 원인 미도달', () => {
+  it('d03·d07: 한쪽 자본 미입력이면 요약의 기준금액에 "하한값" 을 붙인다 — 확정값처럼 옮겨지지 않게', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 30 * 억, totalEquity: 400 * 억 }));
+    expect(r.summary).toContain('자본금 미입력 — 하한값');
+    const full = ok(
+      checkDisclosureDuty({ duty: 'large_internal_transaction', amount: 30 * 억, totalEquity: 400 * 억, paidInCapital: 10 * 억 }),
+    );
+    expect(full.summary).not.toContain('하한값');
+  });
+
+  it('c10: 증자 사유에는 「특수관계인의 유상증자 참여」가 발행회사 작성 양식임을 알린다 (매뉴얼 서식 기재상의 주의)', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'unlisted_material', materialItem: 'capital_change' }));
+    const n = r.notes.find((x) => x.includes('특수관계인의 유상증자 참여'))!;
+    expect(n).toContain('발행회사가');
+    expect(n).toContain('따로 해야');
+  });
+
+  it('c05: 기업집단현황 기한 근거에 고시 제5조제2항 단서(다음 최초 영업일)를 싣는다', () => {
+    const r = ok(checkDisclosureDuty({ duty: 'group_status', year: 2026, quarter: 4 }));
+    expect(JSON.stringify(r)).toContain('제5조제2항 단서');
+  });
+});

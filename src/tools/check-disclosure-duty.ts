@@ -680,13 +680,16 @@ export function checkDisclosureDuty(
             purpose: 'duty',
             label:
               `${equityWord} (원) — ${fmtWon(flip)} 이하면 대상, 초과면 대상 아님. ` +
-              '주주총회에서 승인된 최근 사업연도말 개별(별도)재무제표상 금액 (연결 아님)',
+              '주주총회에서 승인된 최근 사업연도말 개별재무제표상 금액 (연결 아님). 자본금은 이사회 의결일 직전일 기준',
           });
         } else {
           verdict = required ? 'required' : 'not_required';
+          // b2a d03·d07: 한쪽 자본 미입력인데 요약이 기준금액을 확정값처럼 적어 모델이 "기준금액 20억원" 으로 옮겼다
+          const thresholdText =
+            fmtWon(t.threshold) + (t.missingSide ? ` (${t.missingSide === 'paidInCapital' ? '자본금' : '자본총계'} 미입력 — 하한값)` : '');
           summary = required
-            ? `공시 대상입니다. 거래금액 ${fmtWon(input.amount)} ≥ 기준금액 ${fmtWon(t.threshold)}. 이사회 사전 의결이 필요합니다.`
-            : `공시 대상이 아닙니다. 거래금액 ${fmtWon(input.amount)} < 기준금액 ${fmtWon(t.threshold)}.`;
+            ? `공시 대상입니다. 거래금액 ${fmtWon(input.amount)} ≥ 기준금액 ${thresholdText}. 이사회 사전 의결이 필요합니다.`
+            : `공시 대상이 아닙니다. 거래금액 ${fmtWon(input.amount)} < 기준금액 ${thresholdText}.`;
           if (flip !== null) {
             // 자본총계만 입력 — 자본금이 자본총계보다 큰 경우는 자본잠식뿐이라 결론이 뒤집힐 여지는 좁다. 전제로 밝힌다.
             notes.push(
@@ -779,6 +782,16 @@ export function checkDisclosureDuty(
           '것을 표시**하고, 두 양식이 상당히 유사하면 내부거래공시를 하면서 내부거래 양식에 없는 부분을 추가 기재할 수 있습니다 ' +
           '(공정위 비상장사 매뉴얼 2026-04 "공시유의사항").',
       );
+      if (input.materialItem === 'capital_change') {
+        // b2a c10: 두 공시의 작성 주체를 몰라 "출자회사 vs 발행회사" 로 오판했다 (1차 골든도 틀렸다)
+        notes.push(
+          '※ 증자와 대규모내부거래가 겹칠 때 작성 주체: 「특수관계인의 유상증자 참여」는 특수관계인이 **당해 회사의** ' +
+            '유상증자에 참여할 때 **발행회사가** 작성하는 양식이고(「특수관계인에 대한 출자」의 상대방 양식), 「유상증자 결정」도 ' +
+            '발행회사 공시입니다 — 같은 회사의 같은 사항이면 위 갈음 규정이 적용됩니다. 특수관계인 참여금액이 대규모내부거래 ' +
+            '기준금액 미만이라 법 제26조 공시가 없으면 갈음할 공시도 없으므로 유상증자 결정 공시를 따로 해야 합니다 ' +
+            '(공정위 대규모내부거래 매뉴얼 2026-04 서식 「특수관계인의 유상증자 참여」 기재상의 주의).',
+        );
+      }
 
       if (!input.materialItem) {
         verdict = 'insufficient_data';

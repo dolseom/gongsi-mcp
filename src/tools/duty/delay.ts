@@ -235,8 +235,8 @@ export function evaluateDelayScenario(i: DelayScenarioInput): { output: DelaySce
   );
   if (basis === 'unknown') {
     notes.push(
-      '⚠️ 지연일수의 단위(delayDayBasis)가 입력되지 않아 달력일로 가정했습니다. 영업일이었다면 달력일은 그보다 길어 일수가산이 ' +
-        '늘고 감경 구간이 낮아져 실제 금액이 더 클 수 있습니다.',
+      '⚠️ 지연일수의 단위(delayDayBasis)가 입력되지 않아 달력일로 가정했습니다. 영업일이었다면 사이에 주말·공휴일이 낀 만큼 ' +
+        '달력일이 길어지고(끼지 않았으면 같음), 그만큼 일수가산이 늘고 감경 구간이 낮아져 실제 금액이 더 클 수 있습니다.',
     );
   }
 
