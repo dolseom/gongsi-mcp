@@ -61,6 +61,7 @@ import {
   GOODS_SERVICES_SPECIAL_NOTE,
   LEASE_GOODS_SERVICES_NOTE,
 } from './duty/lit-conditions.js';
+import { evaluateDelayScenario, formatPenaltyWon, type DelayScenarioOutput } from './duty/delay.js';
 
 const YMD = ymdSchema;
 
@@ -276,6 +277,31 @@ export const checkDisclosureDutyInput = z.object({
     .describe('실제 공시일. 주면 기한 준수 여부와 지연일수를 함께 판정한다'),
   today: YMD.optional().describe('오늘 날짜 (기본: 시스템 날짜). D-day 계산 기준'),
 
+  delayDays: z
+    .number()
+    .int('지연일수는 정수로 넣으세요')
+    .min(1, '지연일수는 1 이상이어야 합니다')
+    .optional()
+    .describe(
+      '날짜 없이 "기한을 N일 넘겼다"만 알 때의 지연일수 (최초 공시를 기한 뒤에 한 사건 — 이미 한 공시의 누락·거짓 보완은 ' +
+        'assess_correction_risk). 주면 공시기한을 역산하지 않고 이 일수를 전제로 과태료를 조건부 산정합니다(delayScenario). ' +
+        '날짜(boardDate·actualDisclosureDate 등)로 계산한 지연과 다르면 불일치를 표시합니다',
+    ),
+  delayDayBasis: z
+    .enum(['calendar', 'business', 'unknown'])
+    .optional()
+    .describe(
+      'delayDays 의 단위. 과태료 일수가산·공시지연 감경 구간은 달력일 기준입니다. business(영업일)면 날짜 없이 달력일로 바꿀 수 ' +
+        '없어 금액을 만들지 않습니다. 생략·unknown 이면 달력일로 가정하고 그 가정을 알립니다',
+    ),
+  delayFilingState: z
+    .enum(['filed', 'not_yet_filed'])
+    .optional()
+    .describe(
+      'delayDays 가 이미 공시를 마친 날까지의 일수(filed)인지, 아직 공시 전이라 "오늘 내면 N일"(not_yet_filed)인지. ' +
+        'not_yet_filed 면 다음 감경 경계와 자진시정 면제 기간(기한 만료 다음 날부터 10영업일) 충족 여부를 함께 알립니다',
+    ),
+
   estimatePenaltyIfLate: z
     .boolean()
     .optional()
@@ -337,6 +363,8 @@ interface DutyResult {
   compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
   penalty?: unknown;
   selfCorrection?: SelfCorrectionResult;
+  /** 날짜 없이 지연일수(delayDays)만 받은 경우의 조건부 과태료 산정 */
+  delayScenario?: DelayScenarioOutput;
   /** 약관 금융거래(고시 제9조) 경로 판정·경로별 공시기한 — omnibus_financial 에서만 */
   omnibus?: {
     path: OmnibusEvaluation['path'];
@@ -939,6 +967,51 @@ export function checkDisclosureDuty(
     );
   }
 
+  // ── 날짜 없이 "N일 늦었다"만 알 때 — 조건부 과태료 (지연일수 입력) ──
+  let delayScenario: DelayScenarioOutput | undefined;
+  if (input.delayDays !== undefined && (input.estimatePenaltyIfLate ?? true)) {
+    if (verdict === 'not_required') {
+      notes.push(`지연 ${input.delayDays}일을 입력하셨지만 공시 대상이 아니라고 판정했으므로 지연도 과태료도 없습니다.`);
+    } else {
+      const capitalInputs = [input.totalEquity, input.paidInCapital].filter((x) => x !== undefined);
+      const dateBased =
+        compliance && deadline
+          ? {
+              calendarDays: compliance.delayDays,
+              businessDays: compliance.onTime ? 0 : -businessDaysRemaining(compliance.actualDisclosureDate, deadline.deadline),
+              source: `기한 ${deadline.deadline} → 공시 ${compliance.actualDisclosureDate}`,
+            }
+          : undefined;
+      const boardRequired: boolean | 'undetermined' =
+        input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp'
+          ? true
+          : input.duty === 'omnibus_financial'
+            ? (omnibusEval?.boardResolutionRequired ?? 'undetermined')
+            : false;
+      const d = evaluateDelayScenario({
+        delayDays: input.delayDays,
+        basis: input.delayDayBasis,
+        filingState: input.delayFilingState,
+        regime,
+        boardRequired,
+        boardResolution: input.boardResolution,
+        transactionAmount: input.amount,
+        capitalBase: capitalInputs.length > 0 ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0) : undefined,
+        capitalBaseIncomplete: capitalInputs.length === 1,
+        dateBased,
+        dutyUnconfirmed: verdict === 'insufficient_data',
+      });
+      delayScenario = d.output;
+      notes.push(...d.notes);
+      if (d.output.status === 'computed' && d.output.scenarios?.length) {
+        summary +=
+          ` 입력하신 지연 ${input.delayDays}일 기준 예상 과태료(조건부 — delayScenario): ` +
+          d.output.scenarios.map((sc) => `${sc.label} ${formatPenaltyWon(sc.penalty.amount)}`).join(' / ') +
+          '.';
+      }
+    }
+  }
+
   const deadlineOut = deadline
     ? { ...deadline, dDay: businessDaysRemaining(today, deadline.deadline) }
     : undefined;
@@ -1116,6 +1189,7 @@ export function checkDisclosureDuty(
     ...(penalty ? { penalty } : {}),
     ...(selfCorrection ? { selfCorrection } : {}),
     ...(relatedOfficialQna ? { relatedOfficialQna } : {}),
+    ...(delayScenario ? { delayScenario } : {}),
     ...(omnibusEval
       ? {
           omnibus: {
