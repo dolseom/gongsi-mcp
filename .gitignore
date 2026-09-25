@@ -67,3 +67,7 @@ eval/messy/messy-results/*.stream.jsonl
 
 # 로컬 작업 증거(배포 대조 tgz·프로브 로그·내부 평가) — 절대경로가 섞여 있어 공개하지 않는다
 .omo/
+
+# held-out 실발화 시험지 — 제3자 게시글 원문이라 공개 저장소에 올리지 않는다 (RESEARCH artifacts 와 같은 원칙)
+eval/holdout/*
+!eval/holdout/README.md

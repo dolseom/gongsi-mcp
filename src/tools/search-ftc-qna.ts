@@ -120,7 +120,9 @@ function searchManualSafe(
     const matches = searchManual(input.query, { docKeys, limit: manualLimit });
     return {
       passages: matches.map((m) => {
-        const ex = excerpt(m.passage.text, input.query);
+        // 구절을 통째로 준다(최대 약 1,400자) — 700자 발췌는 바로 뒤의 예외 문장("출연금·기부금 등 대가성 없는 지원금은
+        // 공시대상이 아님")을 잘라 반대 결론을 낳았다 (held-out h013, 2026-09-26). 예외·단서는 구절 끝에 오는 일이 많다.
+        const ex = excerpt(m.passage.text, input.query, 2000);
         return {
           id: m.passage.id,
           doc: m.passage.doc,

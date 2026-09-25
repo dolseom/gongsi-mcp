@@ -256,7 +256,9 @@ export function buildReview(src: ReviewSource): ReviewMemo {
       '과태료 금액은 확정 추정치가 아니라 **상한선**입니다 (거래금액별 적용비율 미적용 — penalty.isUpperBound=true).',
     );
   }
-  if (src.duty === 'large_internal_transaction' && src.verdict === 'required') {
+  // 금액을 몰라 insufficient_data 인 경우에도 상대방 요건은 결론을 가른다 — required 일 때만 알리면 금액을 묻는 동안
+  // 상대방(국외 계열·상품용역 지분 요건) 확인이 빠진다 (held-out h001·h011, 2026-09-26).
+  if (src.duty === 'large_internal_transaction' && src.verdict !== 'not_required') {
     unresolved.push(
       '금액 기준 충족은 대규모내부거래 요건의 일부입니다 — 상대방이 특수관계인(국외 계열회사 제외)인지, 상품·용역이면 ' +
         '상대방이 "자연인 동일인이 단독으로 또는 친족과 합하여 발행주식총수의 20% 이상을 소유한 계열회사 또는 그 계열회사의 ' +
@@ -270,6 +272,12 @@ export function buildReview(src: ReviewSource): ReviewMemo {
   // ── 다음 행동 ──
   const dutyMissing = missingFieldsFor(src.missingInputs, 'duty');
   const deadlineMissing = missingFieldsFor(src.missingInputs, 'deadline');
+  if (src.duty === 'large_internal_transaction' && src.verdict !== 'not_required') {
+    nextActions.push(
+      '거래상대방이 누구인지(국내 계열회사·국외 계열회사·동일인 등 특수관계인)와, 상품·용역 거래라면 상대방 회사에 대한 ' +
+        '동일인·친족 지분이 20% 이상인지(또는 그런 회사의 50% 초과 자회사인지)도 확인하세요 — 금액과 별개로 대상 여부를 가릅니다.',
+    );
+  }
   if (dutyMissing.length) {
     nextActions.push(`대상 판정을 마치려면 ${dutyMissing.join(', ')} 를 알려주세요.`);
     if (dutyMissing.includes('totalEquity') || dutyMissing.includes('paidInCapital')) {

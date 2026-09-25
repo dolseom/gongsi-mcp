@@ -255,3 +255,16 @@ describe('b2a f02 (Codex 4차 판정) — 비상장 타법인 주식: 발행회�
     expect(run({ ...base, amount: 1 * 억 }).verdict).toBe('not_required');
   });
 });
+
+describe('held-out 기준선(2026-09-26)에서 나온 일반 개선', () => {
+  it('매뉴얼 구절은 통째로 준다 — 구절 끝의 예외 문장까지 (h013 "출연금·기부금 … 공시대상이 아님")', () => {
+    const r = searchFtcQna({ query: '재단 출연금 기부금 공시대상', manual_limit: 5 });
+    expect(r.manualPassages.some((p) => p.truncated)).toBe(false);
+  });
+  it('대규모내부거래 금액 미확인(insufficient)이어도 상대방 요건을 다음 행동·미확인에 넣는다 (h001·h011)', () => {
+    const r = run({ duty: 'large_internal_transaction', situation: '모회사로부터 운영자금 차입' });
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.review.next_actions.join(' ')).toMatch(/국외 계열회사/);
+    expect(r.review.unresolved.join(' ')).toMatch(/상대방이 특수관계인/);
+  });
+});
