@@ -227,3 +227,31 @@ describe('12. 보완 사건은 최초 공시지연 감경 경계를 전망하지
     expect(p.nextThreshold).toBeUndefined();
   });
 });
+
+describe('b2a f02 (Codex 4차 판정) — 비상장 타법인 주식: 발행회사가 계열회사면 이 항목이 아니다', () => {
+  const base = {
+    duty: 'unlisted_material',
+    listing: 'unlisted',
+    isFinancialCompany: false,
+    totalAssets: 1000 * 억,
+    materialItem: 'other_corp_stock',
+    totalEquity: 100 * 억,
+    amount: 9 * 억,
+  };
+  it('계열 여부 미입력 + 금액 이상 → required 확정 대신 조건부', () => {
+    const r = run(base);
+    expect(r.verdict).toBe('insufficient_data');
+    expect(fields(r)).toContain('issuerIsAffiliate');
+  });
+  it('발행회사가 계열회사 → 이 항목 비대상 + 대규모내부거래 안내', () => {
+    const r = run({ ...base, issuerIsAffiliate: true });
+    expect(r.verdict).toBe('not_required');
+    expect(r.summary).toContain('large_internal_transaction');
+  });
+  it('계열회사 아님 → 금액 기준대로 required', () => {
+    expect(run({ ...base, issuerIsAffiliate: false }).verdict).toBe('required');
+  });
+  it('금액 미달이면 계열 여부와 무관하게 not_required', () => {
+    expect(run({ ...base, amount: 1 * 억 }).verdict).toBe('not_required');
+  });
+});

@@ -188,6 +188,14 @@ export const checkDisclosureDutyInput = z.object({
       'shareholding_change 전용 — 발행주식총수 대비 지분 변동 크기 (%p). 최대주주는 동일인측 합계 기준. 1 이상이면 공시 대상. ' +
         '합계가 1 미만이어도 구성원 간 이동은 memberShareShiftPct 로 따로 봅니다',
     ),
+  issuerIsAffiliate: z
+    .boolean()
+    .optional()
+    .describe(
+      'other_corp_stock 전용 — 주식·출자증권 발행회사가 결정 당시 같은 기업집단의 국내·국외 계열회사인지. 계열회사면 비상장사 ' +
+        '"타법인 주식 및 출자증권 취득·처분" 공시 대상이 아닙니다 (매뉴얼 "타법인(국내·국외 계열회사 제외)"). 계열사 주식 거래는 ' +
+        '대규모내부거래로 따로 판정하세요',
+    ),
   memberShareShiftPct: z
     .number()
     .optional()
@@ -1135,6 +1143,35 @@ export function checkDisclosureDuty(
             formula: `${spec.base === 'totalAssets' ? '자산총액' : '자기자본'} ${fmtWon(base)} × ${spec.rate * 100}% = ${fmtWon(limit)}`,
             inputs: { base },
           };
+          // ── 타법인 주식 — 발행회사가 계열회사면 이 항목이 아니다 ──
+          //   비상장사 매뉴얼(2026-04) "타법인(국내·국외 계열회사 제외) 발행 주식 및 출자증권의 취득(처분)에 관한 … 결정사항이
+          //   있을 때 공시", "결정 당시 주식 등 발행법인이 계열회사에 해당하지 않는다면 공시 대상에 해당함".
+          //   금액만 보고 "대상"을 확정하면 계열사 주식 거래에 없는 의무를 만든다 (b2a f02 — Codex 4차 판정).
+          if (input.materialItem === 'other_corp_stock') {
+            const exclusionCite =
+              '공정위 비상장사 매뉴얼(2026-04) "타법인(국내·국외 계열회사 제외) 발행 주식 및 출자증권", "결정 당시 주식 등 ' +
+              '발행법인이 계열회사에 해당하지 않는다면 공시 대상에 해당함"';
+            const litHint =
+              '계열회사 주식의 취득·처분은 대규모내부거래(법 제26조 — 특수관계인 발행 주식 취득·처분) 판정 대상일 수 있습니다 — ' +
+              'duty:"large_internal_transaction" 으로 따로 확인하세요.';
+            if (input.issuerIsAffiliate === true) {
+              verdict = 'not_required';
+              summary =
+                `이 항목(타법인 주식 및 출자증권 취득·처분)의 공시 대상이 아닙니다 — 발행회사가 계열회사입니다 (${exclusionCite}). ` +
+                litHint;
+            } else if (input.issuerIsAffiliate === undefined && required) {
+              verdict = 'insufficient_data';
+              summary =
+                `금액 기준으로는 대상입니다(${spec.label} ${fmtWon(input.amount)} ≥ 임계 ${fmtWon(limit)}) — 그러나 발행회사가 ` +
+                `국내·국외 계열회사면 이 항목에서 제외됩니다 (${exclusionCite}).`;
+              missingInputs.push({
+                field: 'issuerIsAffiliate',
+                purpose: 'duty',
+                label: '주식·출자증권 발행회사가 결정 당시 같은 기업집단의 국내·국외 계열회사인지 — 계열회사면 이 항목의 공시 대상 아님',
+              });
+              notes.push(litHint);
+            }
+          }
           if (input.materialItem === 'guarantee') {
             notes.push('계약 등의 이행보증·납세보증을 위한 채무보증은 제외됩니다 (고시 제5조의2제1항제2호라목).');
             notes.push(
