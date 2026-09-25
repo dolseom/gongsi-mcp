@@ -71,6 +71,8 @@ interface ManualPassageResult {
   text: string;
   /** 본문이 길어 질의 낱말 주변만 발췌했으면 true — 전문은 url 의 매뉴얼 해당 쪽 */
   truncated?: boolean;
+  /** 질의 낱말의 절반 미만만 맞은 약한 일치 — 관련성을 직접 확인한 뒤에만 근거로 쓴다 */
+  weak_match?: boolean;
   url: string;
   /** 문서 지위 표시 — 옛 문답과 구분 */
   status: string;
@@ -82,8 +84,8 @@ interface SearchFtcQnaResult {
   manualPassages: ManualPassageResult[];
   notes: string[];
   diagnostics: {
-    kbVersion: string;
-    kbEntries: number;
+    kbVersion: string | null;
+    kbEntries: number | null;
     matched: number;
     manualVersion: string | null;
     manualPassages: number | null;
@@ -128,6 +130,7 @@ function searchManualSafe(
           kind: m.passage.kind,
           text: ex.text,
           ...(ex.truncated ? { truncated: true } : {}),
+          ...(m.weak ? { weak_match: true } : {}),
           url: m.passage.url,
           status,
         };
@@ -143,15 +146,23 @@ function searchManualSafe(
 }
 
 export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
-  const kb = loadQnaKb();
   const limit = input.limit ?? 5;
-  const matches = searchQna(input.query, { category: input.category as QnaCategory, limit });
+  // 문답 KB 장애가 독립된 매뉴얼 KB 검색까지 막지 않게 한다 — 매뉴얼 실패를 격리하는 것과 대칭 (Codex 리뷰 13)
+  let kb: ReturnType<typeof loadQnaKb> | null = null;
+  let matches: ReturnType<typeof searchQna> = [];
+  try {
+    kb = loadQnaKb();
+    matches = searchQna(input.query, { category: input.category as QnaCategory, limit });
+  } catch {
+    kb = null;
+    matches = [];
+  }
   const manual = searchManualSafe(input);
 
   const staleness = kbStalenessNote();
   const diagnostics = {
-    kbVersion: kb.version,
-    kbEntries: kb.entries.length,
+    kbVersion: kb?.version ?? null,
+    kbEntries: kb?.entries.length ?? null,
     matched: matches.length,
     manualVersion: manual.version,
     manualPassages: manual.total,
@@ -159,6 +170,18 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
   };
 
   const manualNotes: string[] = [];
+  if (!kb) {
+    manualNotes.push(
+      '⚠️ 공정위 문답 지식베이스(data/ftc-qna.json)를 읽지 못해 results 가 비어 있습니다 — 해당 문답이 없다는 뜻이 아닙니다.',
+    );
+  }
+  const weakManual = manual.passages.filter((p) => p.weak_match).length;
+  if (weakManual) {
+    manualNotes.push(
+      'ℹ️ manualPassages 의 weak_match:true 구절은 질의 낱말의 절반 미만만 맞은 약한 일치입니다 — 관련성을 본문으로 직접 ' +
+        '확인하기 전에는 근거로 인용하지 마세요.',
+    );
+  }
   if (manual.failed) {
     manualNotes.push(
       '⚠️ 매뉴얼 본문 지식베이스(data/ftc-manual.json)를 읽지 못해 manualPassages 가 비어 있습니다 — ' +
@@ -184,10 +207,17 @@ export function searchFtcQna(input: SearchFtcQnaInput): SearchFtcQnaResult {
 
   // 0건은 에러가 아니다 — 검색어 조정 방법을 담아 정상 응답으로 돌려준다
   if (!matches.length) {
-    const head = manualOut.length
+    const strongManual = manualOut.length - weakManual;
+    const qnaHead = kb
+      ? `"${input.query}" 와 유사한 공정위 문답은 찾지 못했습니다.`
+      : '공정위 문답 지식베이스를 읽지 못해 문답은 검색하지 못했습니다.';
+    const head = strongManual
       ? // 문답은 0건이지만 매뉴얼 본문은 걸렸다 — "찾지 못했다"만 말하면 매뉴얼 근거를 버리게 된다
-        `"${input.query}" 와 유사한 공정위 문답은 찾지 못했습니다. 다만 공시 업무 매뉴얼 본문에서 관련 구절 ` +
-        `${manualOut.length}개를 찾았습니다 — manualPassages 를 근거로 확인하세요.`
+        `${qnaHead} 다만 공시 업무 매뉴얼 본문에서 관련 구절 ${strongManual}개를 찾았습니다 — manualPassages 를 근거로 확인하세요.`
+      : manualOut.length
+      ? // 약한 일치만 있다 — "관련 구절을 찾았다"고 말하면 무관한 구절이 공식 근거로 둔갑한다 (Codex 리뷰 8)
+        `${qnaHead} 매뉴얼 본문에도 질의와 뚜렷이 맞는 구절이 없습니다 — manualPassages 는 낱말 일부만 겹친 약한 일치(weak_match)라 ` +
+        '근거로 쓰기 전에 관련성을 확인해야 합니다. 핵심 명사 위주로 검색어를 바꿔 보세요.'
       : `"${input.query}" 와 유사한 공정위 Q&A를 찾지 못했습니다 (매뉴얼 본문 포함). ` +
         '핵심 명사 위주로 검색어를 바꿔 보세요 (예: "임대차 변경계약", "수익증권 환매").' +
         (input.category ? ' category 필터를 빼고 전체에서 다시 검색해 볼 수도 있습니다.' : '');

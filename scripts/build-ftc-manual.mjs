@@ -342,6 +342,9 @@ for (const d of DOCS) {
     if (formText) {
       // ── 서식: 제목 + 기재 주의만 남긴다 (거르는 기준 ③) ──
       const kept = [];
+      // 기재요령은 표지 줄에서 끝나지 않는다 — 표지 뒤 줄들(중임 시 최초 취임일 등)은 다음 서식 제목까지 이어지는 같은
+      // 본문이다. 표지 줄만 모으면 문장 중간에서 잘린다 (Codex 리뷰 7: man-gaf-p32-1 "…이사회내 위원회 설치･"로 끝남).
+      let inNote = false;
       for (const line of formText.split(/\r?\n/)) {
         const l = norm(line);
         if (!l) continue;
@@ -365,11 +368,17 @@ for (const d of DOCS) {
           }
           // 제목 줄 안에 기재요령이 이어 붙은 경우(비상장 <작성양식 1>)
           const ni = l.search(NOTE_MARK);
+          inNote = ni >= 0;
           if (ni >= 0) kept.push(l.slice(ni));
           continue;
         }
         const ni = l.search(NOTE_MARK);
-        if (ni >= 0) kept.push(l.slice(ni));
+        if (ni >= 0) {
+          kept.push(l.slice(ni));
+          inNote = true;
+        } else if (inNote) {
+          kept.push(l);
+        }
       }
       if (!kept.length) {
         drop('순수 서식 틀(쪽 또는 쪽 일부)');

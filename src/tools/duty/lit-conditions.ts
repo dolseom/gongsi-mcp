@@ -30,7 +30,14 @@ export interface LitConditionInput {
 
 /** 상황 서술에 자회사 설립 출자 신호가 있는가 — lit26-003 조건 안내용 (단정에는 쓰지 않는다) */
 export function hasIncorporationSignal(situation: string | undefined): boolean {
-  return situation !== undefined && /설립|신설/.test(situation);
+  // "설립|신설" 단어 하나로는 "공장 신설을 위한 자금 대여" 같은 다른 거래까지 잡아 판정을 뒤집는다 (Codex 리뷰 9) —
+  // 설립·신설의 대상이 회사(자회사·법인·합작사)이거나 설립 출자로 쓰인 경우만 신호로 본다.
+  if (situation === undefined) return false;
+  return (
+    /(자회사|법인|회사|합작사|JV)\s*(를|을)?\s*(새로\s*|신규로?\s*)?(설립|신설)/.test(situation) ||
+    /(설립|신설)\s*(하는|할|한|하려는|예정인|중인|된|될)?\s*(자회사|법인|회사|합작사|JV)/.test(situation) ||
+    /설립\s*(출자|자본금)|(설립|신설)\s*(을|를)?\s*위한\s*출자/.test(situation)
+  );
 }
 
 /** 자회사 설립 출자 (lit26-003) 범위 경계 — 설립 이후 추가 출자는 이 문답이 다루지 않는다 */
@@ -66,6 +73,20 @@ export function evaluateLitConditions(
     return { picShareForced: true, notes };
   }
 
+  // 공익법인은 소속 국내회사 주식 취득·처분이면 제4조제6항 제외가 적용되지 않는다(단서) — 그 여부를 모르면
+  // 제외를 확정하지 않는다 (확정하면 "대상 아님" 거짓 안심).
+  const picUnknown = isPic && i.picGroupShareTrade === undefined;
+  const picConditional = (reason: string): LitConditionResult => ({
+    conditional: {
+      reason:
+        `${reason}. 다만 공익법인의 소속 국내회사 주식 취득·처분이면 이 제외가 적용되지 않고 금액과 무관하게 대상입니다 ` +
+        '(고시 제4조제6항 단서·제4조제2항제1호)',
+      field: 'picGroupShareTrade',
+      label: '공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래인지 — 그렇다면 금액·제외 사유와 무관하게 대상',
+    },
+    notes,
+  });
+
   // ① 국외 계열회사
   if (i.counterpartyForeignAffiliate === true) {
     if (i.forSpecialRelatedParty === true) {
@@ -74,14 +95,13 @@ export function evaluateLitConditions(
           '입력하셨습니다 — 국외 계열회사 제외가 적용되지 않습니다 (공정위 문답 lit26-020 단서).',
       );
     } else if (i.forSpecialRelatedParty === false) {
-      return {
-        excluded: {
-          reason:
-            '국외 계열회사와의 직접 거래입니다 — 법 제26조제1항은 상대방 특수관계인에서 국외 계열회사를 제외합니다 ' +
-            '(고시 제2조제3항제2호 같은 문언, 공정위 문답 lit26-020 "이사회 의결 및 공시의무 없음")',
-        },
-        notes,
-      };
+      const reason =
+        '국외 계열회사와의 직접 거래입니다 — 법 제26조제1항은 상대방 특수관계인에서 국외 계열회사를 제외합니다 ' +
+        '(고시 제2조제3항제2호 같은 문언, 공정위 문답 lit26-020 "이사회 의결 및 공시의무 없음")';
+      // 공익법인의 소속 국내회사 주식 취득·처분은 거래상대방과 무관하게 대상이다(법 제29조제1항제1호·고시 제4조제2항제1호)
+      // — 그 여부를 모르는 채 국외 상대방 제외로 "대상 아님"을 확정하면 거짓 안심이다 (Codex 리뷰 2)
+      if (picUnknown) return picConditional(reason);
+      return { excluded: { reason }, notes };
     } else {
       return {
         conditional: {
@@ -97,20 +117,6 @@ export function evaluateLitConditions(
       };
     }
   }
-
-  // 공익법인은 소속 국내회사 주식 취득·처분이면 제4조제6항 제외가 적용되지 않는다(단서) — 그 여부를 모르면
-  // 제외를 확정하지 않는다 (확정하면 "대상 아님" 거짓 안심).
-  const picUnknown = isPic && i.picGroupShareTrade === undefined;
-  const picConditional = (reason: string): LitConditionResult => ({
-    conditional: {
-      reason:
-        `${reason}. 다만 공익법인의 소속 국내회사 주식 취득·처분이면 이 제외가 적용되지 않고 금액과 무관하게 대상입니다 ` +
-        '(고시 제4조제6항 단서·제4조제2항제1호)',
-      field: 'picGroupShareTrade',
-      label: '공익법인이 해당 기업집단 소속 국내회사 주식을 취득·처분하는 거래인지 — 그렇다면 금액·제외 사유와 무관하게 대상',
-    },
-    notes,
-  });
 
   // ② 장내시장 주식거래
   if (i.stockTradeVenue === 'exchange_regular') {

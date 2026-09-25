@@ -68,6 +68,8 @@ describe('약관 금융거래 경로 재설계 — 고시 제9조 (P0-1)', () =>
       listing: 'listed' as const,
       transactionDate: '20260701',
       actualDisclosureDate: '20260710',
+      // 어느 공시인지 지정해야 준수를 판정한다 — 기한 하나만 계산된다고 공시 종류를 추정하지 않는다 (Codex 리뷰 5)
+      omnibusFiling: 'transaction' as const,
       amount: 30 * 억,
     };
     const unknown = ok(checkDisclosureDuty(base));
@@ -97,6 +99,7 @@ describe('약관 금융거래 경로 재설계 — 고시 제9조 (P0-1)', () =>
         listing: 'listed',
         transactionDate: '20260701',
         actualDisclosureDate: '20260703',
+        omnibusFiling: 'transaction',
       }),
     );
     expect(r.omnibus?.mainDeadlineConditional).toBe(false);

@@ -12,6 +12,11 @@
  * ⚠️ "가장 비슷한 것"만 따라가는 이유: 2015판 "다른 운용사의 동일한 성격" 문답과 2026판 "같은 운용사의 동일한 성격"
  *    문답은 Dice 0.86 으로 문턱을 넘지만 서로 다른 질문이다. 2015판의 가장 가까운 최신판은 2026판 "다른 운용사"(≈0.97)
  *    이므로 올바른 쪽으로만 접힌다. 같은 해 문서끼리는 접지 않는다 (한 문서 안의 문답은 서로 다른 질문이다).
+ *
+ * ⚠️ 문자열이 비슷해도 **조건이 다른 사례**는 접지 않는다 (Codex 리뷰 6·11):
+ *  - 질문 속 지분율(30%·25%·51% 등)이 다르면 다른 사례다 — 2008판 "A 30%·전부 비상장"과 2026판 "A 10%·A 상장"은
+ *    Dice 로는 같은 질문이지만 결론을 가르는 조건이 다르다.
+ *  - 답변이 없는 항목(answer:null — 폐지 게시판에서 질문 제목만 복원)은 답변 있는 문답을 대체하지 않는다.
  */
 
 import { loadQnaKb, type QnaEntry, type QnaMatch } from '../../kb/qna.js';
@@ -46,6 +51,21 @@ function grams(e: QnaEntry): Set<string> {
   return g;
 }
 
+/**
+ * 질문 속 지분율 토큰 (30%·51% 등) — 다르면 다른 사례로 본다.
+ * 금액(50억·100억)은 비교하지 않는다 — 개정판이 당시 기준금액을 질문에 적은 것이라("50억원 이상을 출자하여 자회사를
+ * 설립"(2015) → "100억 원 이상"(2026)) 금액이 다르다고 다른 사례가 아니다.
+ */
+function numberTokens(q: string): string {
+  return [...q.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].map((m) => m[1]).sort().join('|');
+}
+
+/** 최신판 후보가 이 문답을 대체할 수 있는가 */
+function canSupersede(older: QnaEntry, newer: QnaEntry): boolean {
+  if (newer.answer == null || String(newer.answer).trim() === '') return false;
+  return numberTokens(older.question) === numberTokens(newer.question);
+}
+
 /** 이 문답을 대체한 최신판 (없으면 자기 자신) */
 export function latestVersionOf(entry: QnaEntry, kbEntries: readonly QnaEntry[] = loadQnaKb().entries): QnaEntry {
   let cur = entry;
@@ -56,6 +76,7 @@ export function latestVersionOf(entry: QnaEntry, kbEntries: readonly QnaEntry[] 
     for (const cand of kbEntries) {
       if (cand.category !== cur.category) continue;
       if ((cand.docYear ?? 0) <= year) continue;
+      if (!canSupersede(cur, cand)) continue;
       const s = dice(grams(cur), grams(cand));
       if (s > bestScore) {
         bestScore = s;

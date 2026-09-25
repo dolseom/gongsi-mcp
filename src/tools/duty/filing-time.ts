@@ -45,6 +45,11 @@ export interface FilingTimeResult {
   notes: string[];
   /** summary 의 "지켰습니다" 뒤에 붙일 조건 문구 (기한 당일 제출인데 시각을 모를 때) */
   summaryCaveat?: string;
+  /**
+   * 날짜로는 기한 내지만 제출 시각 처리에 따라 지연일 수 있다 — 준수를 확정하지 않는다 (Codex 리뷰 4).
+   * compliance.onTimeConditional 로 그대로 나간다.
+   */
+  conditional?: string;
 }
 
 export function applyFilingTimeRule(duty: Duty, deadline: YMD, actualDate: YMD, time?: string): FilingTimeResult {
@@ -65,6 +70,7 @@ export function applyFilingTimeRule(duty: Duty, deadline: YMD, actualDate: YMD, 
             'actualDisclosureTime 으로 주면 확정합니다.',
         ],
         summaryCaveat: `단, 기한 당일 제출이라 제출 시각이 18:00 이전이었다는 전제입니다 — 18:00 이후면 다음 업무일(${next}) 공시로 처리되어 지연입니다.`,
+        conditional: `기한 당일 제출 — 제출 시각 미입력 (18:00 이후면 ${next} 공시로 처리되어 지연)`,
       };
     }
     return {
@@ -76,6 +82,7 @@ export function applyFilingTimeRule(duty: Duty, deadline: YMD, actualDate: YMD, 
           `18:00 이후 제출이었고 같은 처리가 적용된다면 ${next} 공시로 보아 기한을 넘깁니다 — 접수 시각을 확인하세요.`,
       ],
       summaryCaveat: '단, 기한 당일 제출이라 제출 시각(18:00 전후)에 따라 달라질 수 있습니다(대규모내부거래 매뉴얼에는 기재 없음 — 원문 미확인).',
+      conditional: `기한 당일 제출 — 제출 시각 미입력 (18:00 이후 제출에 다음 업무일 처리가 적용되면 ${next} 공시로 지연, 원문 미확인)`,
     };
   }
 
@@ -88,6 +95,13 @@ export function applyFilingTimeRule(duty: Duty, deadline: YMD, actualDate: YMD, 
           '"당일접수 07:30～18:00"(기업집단현황 동일인용)으로 겹쳐 정각 제출의 처리는 원문상 불분명합니다(원문 미확인) — ' +
           '입력한 날짜 기준으로 판정했습니다. DART 접수증의 접수일자를 확인하세요.',
       );
+      return {
+        effectiveDate: actualDate,
+        shifted: false,
+        notes,
+        summaryCaveat: `단, 정각 18:00 제출의 처리는 원문상 불분명합니다 — 다음 업무일(${next}) 공시로 처리되면 지연입니다. DART 접수증의 접수일자를 확인하세요.`,
+        conditional: `기한 당일 정각 18:00 제출 — 처리 경계 원문상 불분명 (다음 업무일 처리면 ${next} 공시로 지연)`,
+      };
     }
     return { effectiveDate: actualDate, shifted: false, notes };
   }
@@ -107,6 +121,13 @@ export function applyFilingTimeRule(duty: Duty, deadline: YMD, actualDate: YMD, 
         'DART 공통 처리로 보이나, 대규모내부거래 매뉴얼에는 이 규칙이 기재되어 있지 않습니다(원문 미확인). 입력한 날짜 기준으로는 ' +
         `기한 내이지만, 같은 처리가 적용된다면 ${next} 공시로 보아 ${delay}일 지연입니다 — DART 접수증의 접수일자를 확인하세요.`,
     );
+    return {
+      effectiveDate: actualDate,
+      shifted: false,
+      notes,
+      summaryCaveat: `단, 기한 당일 ${time} 제출이라 18:00 이후 다음 업무일 처리가 적용되면 ${next} 공시로 ${delay}일 지연입니다(대규모내부거래 매뉴얼에는 기재 없음 — 원문 미확인).`,
+      conditional: `기한 당일 ${time} 제출 — 다음 업무일 처리 적용 여부 원문 미확인 (적용되면 ${next} 공시로 ${delay}일 지연)`,
+    };
   }
   return { effectiveDate: actualDate, shifted: false, notes };
 }

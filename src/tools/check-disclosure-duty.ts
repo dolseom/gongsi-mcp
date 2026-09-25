@@ -426,7 +426,14 @@ interface DutyResult {
    */
   deadline?: DeadlineResult & { dDay?: number; businessDaysRemaining?: number; calendarDaysRemaining?: number };
   /** processedDisclosureDate: 18:00 이후 제출이라 다음 업무일 공시로 처리한 날 (기업집단현황·비상장사만) */
-  compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string; processedDisclosureDate?: string };
+  compliance?: {
+    onTime: boolean;
+    delayDays: number;
+    actualDisclosureDate: string;
+    processedDisclosureDate?: string;
+    /** 날짜로는 기한 내지만 제출 시각 처리에 따라 지연일 수 있음 — 준수 미확정 사유 (filing-time.ts) */
+    onTimeConditional?: string;
+  };
   penalty?: unknown;
   selfCorrection?: SelfCorrectionResult;
   /** 날짜 없이 지연일수(delayDays)만 받은 경우의 조건부 과태료 산정 */
@@ -682,9 +689,13 @@ export function checkDisclosureDuty(
   // ── 주식 1일 합산 (lit26-043) ──
   // 장외·시간외 주식 거래는 "1일 매입 또는 매도 금액의 총합계를 1회 거래로 봄" — 같은 날 합계를 받았으면 그 값이
   // 판정 금액이다 (건별 금액과 둘 중 큰 값). 장내 정규 매매는 제4조제6항제2호 제외 경로라 여기서 다루지 않는다.
+  // 거래시장을 안 줬어도 같은 날 합계를 줬다면 주식 거래다 — 입력한 합계를 조용히 버리고 건별 금액으로 "대상 아님"을
+  // 확정하면 거짓 안심이다 (Codex 리뷰 1). 장내 정규 매매면 제외되지만 그건 exclusionConditionsNote 가 조건으로 안내한다.
   const stockSumApplies =
     (input.duty === 'large_internal_transaction' || input.duty === 'public_interest_corp') &&
-    (input.stockTradeVenue === 'off_exchange' || input.stockTradeVenue === 'exchange_after_hours');
+    (input.stockTradeVenue === 'off_exchange' ||
+      input.stockTradeVenue === 'exchange_after_hours' ||
+      (input.stockTradeVenue === undefined && input.sameDayStockTotal !== undefined));
   const dutyAmount =
     stockSumApplies && input.sameDayStockTotal !== undefined
       ? Math.max(input.amount ?? 0, input.sameDayStockTotal)
@@ -996,7 +1007,25 @@ export function checkDisclosureDuty(
         notes.push(CAPITAL_MARKET_OVERLAP_NOTE);
       } else if (input.materialItem === 'shareholding_change') {
         // ── 지분 변동 — 금액이 아니라 발행주식총수 대비 변동폭(%p)으로 판정 ──
-        if (input.shareChangePct === undefined) {
+        if (
+          input.shareChangePct === undefined &&
+          input.shareholderType === 'largest' &&
+          input.memberShareShiftPct !== undefined &&
+          Math.abs(input.memberShareShiftPct) >= 1
+        ) {
+          // 구성원 간 1%p 이상 이동은 합계 변동과 무관한 충분조건이다 — 합계를 몰라도 대상이 확정된다 (Codex 리뷰 10)
+          const member = Math.abs(input.memberShareShiftPct);
+          verdict = 'required';
+          summary =
+            `공시 대상입니다. 동일인측 최대주주 구성원 간 지분율 변동 ${member}%p ≥ 1%p 입니다 — "합계의 변동이 없더라도 ` +
+            '그 구성원 간 주식의 비율이 100분의 1이상 변동이 있을 때에는 공시" (공정위 비상장사 매뉴얼 2026-04 ' +
+            '"최대주주 등의 주식보유 변동"). 합계 변동폭(shareChangePct)은 이 결론에 필요하지 않습니다.';
+          threshold = {
+            amount: 1,
+            formula: `구성원 간 지분율 변동 |${input.memberShareShiftPct}|%p vs 임계 1%p`,
+            inputs: { memberShareShiftPct: input.memberShareShiftPct },
+          };
+        } else if (input.shareChangePct === undefined) {
           verdict = 'insufficient_data';
           missingInputs.push({
             field: 'shareChangePct',
@@ -1201,6 +1230,7 @@ export function checkDisclosureDuty(
       ...c,
       actualDisclosureDate: input.actualDisclosureDate,
       ...(ft.shifted ? { processedDisclosureDate: ft.effectiveDate } : {}),
+      ...(c.onTime && ft.conditional ? { onTimeConditional: ft.conditional } : {}),
     };
     const shownDate = ft.shifted
       ? `${input.actualDisclosureDate} ${input.actualDisclosureTime}(18:00 이후 → ${ft.effectiveDate} 공시로 처리)`
@@ -1212,7 +1242,9 @@ export function checkDisclosureDuty(
           ? `실제 공시 ${shownDate} — 기한(${deadline.deadline}) 내이지만, ` +
             `**이사회 의결 없이 공시한 것 자체가 별도의 위반**입니다 (법 제26조, 별표 9 "의결 X/공시" 칸). ` +
             `기한 준수가 이 위반을 치유하지 않습니다.`
-          : `실제 공시 ${shownDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다 ` +
+          : `실제 공시 ${shownDate} — 입력한 날짜 기준으로 공시기한(${deadline.deadline})은 지켰습니다` +
+            (ft.conditional ? '(제출 시각에 따라 달라질 수 있어 **최종 준수는 미확정**)' : '') +
+            ' ' +
             '(기한 준수만 판정한 것입니다 — 공시 내용의 누락·거짓, 사전 이사회 의결의 적법성은 판정하지 않았습니다).' +
             (ft.summaryCaveat ? ` ${ft.summaryCaveat}` : '')
         : `실제 공시 ${shownDate} — 기한(${deadline.deadline}) 대비 **${c.delayDays}일 지연**입니다.` +
@@ -1261,7 +1293,17 @@ export function checkDisclosureDuty(
                 : -businessDaysRemaining(compliance.processedDisclosureDate ?? compliance.actualDisclosureDate, deadline.deadline),
               source: `기한 ${deadline.deadline} → 공시 ${compliance.processedDisclosureDate ?? compliance.actualDisclosureDate}`,
             }
-          : undefined;
+          : // 아직 공시 전인데 기한·오늘이 다 있으면 "오늘 내면 며칠"도 날짜로 계산된다 — 신고 일수와 대조하지 않으면
+            // 날짜상 25일 지연을 신고값 3일로 산정하고 면제 기간 충족까지 말한다 (Codex 리뷰 3)
+            !compliance &&
+              deadline &&
+              (input.delayFilingState === 'not_yet_filed' || input.disclosureStatus === 'not_disclosed')
+            ? {
+                calendarDays: Math.max(0, -countCalendarDays(today, deadline.deadline)),
+                businessDays: Math.max(0, -businessDaysRemaining(today, deadline.deadline)),
+                source: `기한 ${deadline.deadline} → 오늘 ${today}(아직 공시 전)`,
+              }
+            : undefined;
       const boardRequired: boolean | 'undetermined' =
         input.duty === 'large_internal_transaction' && input.noBoardCompany === true
           ? false

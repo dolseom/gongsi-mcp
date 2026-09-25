@@ -396,10 +396,25 @@ export function evaluateOmnibus(i: OmnibusInput): OmnibusEvaluation {
           : { ...(tx?.deadline ? { d: tx.deadline } : {}), kind: 'transaction', conditional: i.shortTermDemandProduct === undefined };
 
       let pick: OmnibusFilingKind | undefined = i.omnibusFiling;
+      let pickUnconfirmed = false;
       if (!pick) {
         const hasRes = Boolean(res?.deadline);
         const hasTx = Boolean(txEffective.d);
-        if (hasRes && !hasTx) pick = 'resolution';
+        if (actual && (hasRes || hasTx)) {
+          // 실제 공시일을 받았는데 어느 공시인지 모른다 — 계산 가능한 기한이 하나뿐이라는 사실(= 다른 쪽 날짜 누락)은
+          // 공시 종류의 증거가 아니다. 기한 하나로 종류를 추정해 준수를 확정하면 거짓 안심이다 (Codex 리뷰 5).
+          missing.push({
+            field: 'omnibusFiling',
+            purpose: 'deadline',
+            label:
+              'actualDisclosureDate 가 어느 공시인지 — resolution(사전 의결내용 공시) / transaction(실제 거래내역 공시). ' +
+              '둘의 기한이 달라 추측하지 않습니다',
+          });
+          pick = hasRes && hasTx
+            ? toDate(res!.deadline!.deadline) <= toDate(txEffective.d!.deadline) ? 'resolution' : 'transaction'
+            : hasRes ? 'resolution' : 'transaction';
+          pickUnconfirmed = true;
+        } else if (hasRes && !hasTx) pick = 'resolution';
         else if (!hasRes && hasTx) pick = 'transaction';
         else if (hasRes && hasTx) {
           if (actual) {
@@ -415,7 +430,13 @@ export function evaluateOmnibus(i: OmnibusInput): OmnibusEvaluation {
             pick = toDate(res!.deadline!.deadline) <= toDate(txEffective.d!.deadline) ? 'resolution' : 'transaction';
           }
         }
-        if (pick) {
+        if (pick && pickUnconfirmed) {
+          notes.push(
+            `⚠️ actualDisclosureDate(${actual})가 사전 의결내용 공시인지 실제 거래내역 공시인지 입력되지 않아 **기한 준수를 ` +
+              `확정하지 않습니다** (고시 제9조제2항·제4항 — 두 공시는 별개이고 기한이 다릅니다). 대표 기한(deadline)은 ` +
+              `${pick === 'resolution' ? '사전 의결내용 공시' : '실제 거래내역 공시'} 기준으로 보였을 뿐입니다 — omnibusFiling 을 지정하세요.`,
+          );
+        } else if (pick) {
           notes.push(
             `대표 기한(deadline)은 ${pick === 'resolution' ? '사전 의결내용 공시' : '실제 거래내역 공시'} 기준입니다 — ` +
               '이 경로의 다른 공시 기한은 omnibus.scenarios 에 있습니다' +
@@ -457,6 +478,7 @@ export function evaluateOmnibus(i: OmnibusInput): OmnibusEvaluation {
           missing.push({ field: 'transactionDate', purpose: 'deadline', label: '실제 거래일 — 거래내역 공시기한(거래 후 3·7영업일)의 기산일' });
         }
       }
+      if (pickUnconfirmed) mainDeadlineConditional = true;
       if (!i.listing) {
         missing.push({ field: 'listing', purpose: 'deadline', label: '상장 여부 — 상장 3영업일 / 비상장 7영업일로 기한이 갈립니다' });
       }
@@ -468,7 +490,7 @@ export function evaluateOmnibus(i: OmnibusInput): OmnibusEvaluation {
             '만기가 없고, 중도환매수수료가 없고, 수시입출금이 가능한 단기금융상품인지(세 요건 모두) — 충족하면 실제 거래내역을 ' +
             '분기 종료 후 익월 10영업일까지 분기 일괄 공시할 수 있습니다(제9조제5항). 상품 약관으로 확인하세요',
         });
-        if (mainDeadlineConditional) {
+        if (mainDeadlineConditional && txEffective.conditional) {
           notes.push(
             '⚠️ 단기금융상품 여부(제9조제5항 세 요건)가 확인되지 않아, 실제 거래내역 공시기한은 원칙(거래 후 3·7영업일)으로만 ' +
               '보였습니다. 이 기한을 넘긴 공시라도 단기금융상품이면 분기 일괄 선택지(익월 10영업일) 안일 수 있어 ' +

@@ -107,7 +107,7 @@ export interface ReviewSource {
     calendarDaysRemaining?: number;
     legalBasis: Array<{ source: string }>;
   };
-  compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string };
+  compliance?: { onTime: boolean; delayDays: number; actualDisclosureDate: string; onTimeConditional?: string };
   penalty?: { amount: number; formula: string; isUpperBound: boolean };
   selfCorrection?: { status: string; windowEnd: string; businessDaysRemaining?: number };
   relatedQnaCount?: number;
@@ -204,7 +204,9 @@ export function buildReview(src: ReviewSource): ReviewMemo {
   if (src.compliance) {
     evidence.push(
       (src.compliance.onTime
-        ? `실제 공시 ${src.compliance.actualDisclosureDate} — 기한 내`
+        ? src.compliance.onTimeConditional
+          ? `실제 공시 ${src.compliance.actualDisclosureDate} — 날짜로는 기한 내, 최종 준수 미확정 (${src.compliance.onTimeConditional})`
+          : `실제 공시 ${src.compliance.actualDisclosureDate} — 기한 내`
         : `실제 공시 ${src.compliance.actualDisclosureDate} — ${src.compliance.delayDays}일 지연`) + ifDuty,
     );
   }
@@ -239,6 +241,9 @@ export function buildReview(src: ReviewSource): ReviewMemo {
       `대상 판정이 끝나지 않았습니다 — 지연 여부·과태료는 ${IF_DUTY_CONFIRMED}에만 의미가 있습니다. ` +
         '위 대상 판정 입력을 채워 확정하세요.',
     );
+  }
+  if (src.compliance?.onTimeConditional) {
+    unresolved.push(`기한 준수 미확정 — ${src.compliance.onTimeConditional}. DART 접수증의 접수일시를 확인하세요.`);
   }
   if (src.components.deadline.status === 'insufficient_data') {
     unresolved.push(

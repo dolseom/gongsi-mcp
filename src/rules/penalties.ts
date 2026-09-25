@@ -459,7 +459,10 @@ function estimateCore(v: ViolationInput, mitigationDaysOverride?: number): Penal
   // (종전엔 find(maxDays > d) 라 3·7·15일이면 현재 구간을 건너뛰어 8·16·31일로 안내했다.)
   // 확정 감경(공시지연 일수)이 있는 경로에서만 만든다 — 보완 사건의 미확인 감경으로는 만들지 않는다.
   let nextThreshold: PenaltyResult['nextThreshold'];
-  if (mitigationDaysOverride === undefined && mitigationDays > 0 && raw.base > 0 && !v.inArrears) {
+  // 누락·거짓 보완 사건은 최초 공시를 이미 마쳤으므로 공시지연 일수(감경 구간)가 더는 늘지 않는다 — 하루 더 늦어지는 건
+  // 보완 경과일뿐이라, 최초 공시지연까지 +1 한 "다음 경계"는 틀린 전망이다 (Codex 리뷰 12).
+  const supplementEvent = v.hasOmissionOrFalse === true && v.supplemented === true;
+  if (mitigationDaysOverride === undefined && mitigationDays > 0 && raw.base > 0 && !v.inArrears && !supplementEvent) {
     const tier = currentDelayTier(mitigationDays);
     if (tier) {
       const futureDelay = tier.maxDays + 1;

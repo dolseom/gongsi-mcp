@@ -106,6 +106,21 @@ export function loadManualKb(): ManualFile {
 export interface ManualMatch {
   passage: ManualPassage;
   score: number;
+  /**
+   * 질의 낱말의 절반 미만만 이 구절에 있다 — 희소 낱말 하나("추천" → 사외이사후보추천위원회)로 걸린 약한 일치.
+   * 공식 근거로 제시하지 말고 관련성부터 확인해야 한다 (Codex 리뷰 8).
+   */
+  weak?: boolean;
+}
+
+/** 질의 낱말이 구절에 있는가 — 조사가 붙은 낱말("공시의무가")은 bigram 절반 이상이 있으면 있는 것으로 본다 */
+function tokenCovered(token: string, hay: string): boolean {
+  if (hay.includes(token)) return true;
+  const g = bigrams(token);
+  if (g.length < 2) return false;
+  let hit = 0;
+  for (const x of g) if (hay.includes(x)) hit++;
+  return hit * 2 >= g.length;
 }
 
 /**
@@ -123,6 +138,12 @@ const LENGTH_REF = 450;
 const MIN_TOKEN_EVIDENCE = 1.5;
 /** 서식 기재 주의 감쇠 (파일 머리 주석 참조) */
 const FORM_NOTE_FACTOR = 0.75;
+/**
+ * 도입배경 감쇠 — "비상장회사는 … 특별한 공시의무가 없음" 같은 제도 도입 전 사정 서술이 의무 판정 질의의 최상위로
+ * 올라와 "의무 없음" 근거처럼 읽힌다 (Codex 리뷰 8 추가 위험). 규칙 본문보다 뒤로 보낸다.
+ */
+const BACKGROUND_FACTOR = 0.5;
+const BACKGROUND_HEADING = /도입배경/;
 const FORM_QUERY = /양식|서식|작성|기재|칸|란에/;
 
 /**
@@ -252,10 +273,20 @@ export function searchManual(
 
     let score = s.tokenScore + s.gramScore * 0.05;
     if (p.kind === 'form_note' && !wantsForm) score *= FORM_NOTE_FACTOR;
-    matches.push({ passage: p, score });
+    if (BACKGROUND_HEADING.test(p.heading)) score *= BACKGROUND_FACTOR;
+    const words = tokenize(trimmed);
+    const covered = words.filter((t) => tokenCovered(t, hay[i]!)).length;
+    const weak = words.length >= 2 && covered * 2 < words.length;
+    matches.push({ passage: p, score, ...(weak ? { weak: true } : {}) });
   }
 
-  matches.sort((x, y) => y.score - x.score || x.passage.id.localeCompare(y.passage.id));
+  // 약한 일치는 점수가 높아도 질의 낱말 대부분이 없는 구절이다 — 강한 일치 뒤로 보낸다
+  matches.sort(
+    (x, y) =>
+      Number(Boolean(x.weak)) - Number(Boolean(y.weak)) ||
+      y.score - x.score ||
+      x.passage.id.localeCompare(y.passage.id),
+  );
   return matches.slice(0, limit);
 }
 
