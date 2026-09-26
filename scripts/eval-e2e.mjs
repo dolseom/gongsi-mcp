@@ -37,7 +37,7 @@ const RAW_KEEP_CHARS = 1000;
 
 /** 인자 파싱 */
 function parseArgs(argv) {
-  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR, repeat: 1 };
+  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR, repeat: 1, noTools: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--only') {
@@ -58,6 +58,9 @@ function parseArgs(argv) {
       // 문항당 N회 — 답변 1건으로는 회차 간 흔들림이 개선 효과보다 컸다 (b2a 2차 A9 → 3차 A7, 대부분 모델 재서술)
       const value = arg === '--repeat' ? argv[++i] : arg.slice('--repeat='.length);
       opts.repeat = Number(value);
+    } else if (arg === '--no-tools') {
+      // 대조군: 우리 MCP 없이 같은 격리(웹·파일 차단)로 Claude 단독 답변 — 도구의 순효과를 재는 기준
+      opts.noTools = true;
     } else if (arg === '--concurrency') {
       const value = argv[i + 1];
       if (!value) throw new Error('--concurrency 옵션에 숫자가 필요합니다.');
@@ -103,12 +106,13 @@ function killTree(child) {
  *   절까지 붙였다. 도구 근거와 개발자 메모를 가를 수 없으면 이 평가는 무효다.
  *   → cwd 를 빈 임시 디렉터리로, MCP 설정은 절대경로로 생성한다.
  */
+let NO_TOOLS = false;
 function makeWorkDir() {
   const dir = mkdtempSync(join(tmpdir(), 'gongsi-eval-'));
   const config = join(dir, 'mcp.json');
   writeFileSync(
     config,
-    JSON.stringify({ mcpServers: { [EVAL_SERVER]: { command: process.execPath, args: [CLI_PATH] } } }),
+    JSON.stringify({ mcpServers: NO_TOOLS ? {} : { [EVAL_SERVER]: { command: process.execPath, args: [CLI_PATH] } } }),
     'utf8',
   );
   return { dir, config };
@@ -376,7 +380,8 @@ async function main() {
     );
   }
 
-  const runId = `eval-${timestamp(new Date())}`;
+  NO_TOOLS = opts.noTools;
+  const runId = `eval-${timestamp(new Date())}${opts.noTools ? '-notools' : ''}`;
   const streamsDir = join(resultsDir, runId);
   mkdirSync(streamsDir, { recursive: true });
 
