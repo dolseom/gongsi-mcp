@@ -141,7 +141,11 @@ server.registerTool(
       '(고시 제9조제1항). isFinancialCompany·routineFinancialBusiness 를 모르면 도구가 경로별 조건부 결과(omnibus.scenarios)를 줍니다 — ' +
       '"의결 불요"로 단정해 전달하지 마세요.\n' +
       '- 국외 계열회사 직접 거래·장내시장 주식거래·부수적 거래·공익법인의 소속회사 주식 거래는 해당 입력을 주면 판정에 반영됩니다.\n' +
-      '- 날짜 없이 "N일 늦었다"만 알면 delayDays(+delayDayBasis·delayFilingState)로 조건부 과태료(delayScenario)를 받습니다.',
+      '- 날짜 없이 "N일 늦었다"만 알면 delayDays(+delayDayBasis·delayFilingState)로 조건부 과태료(delayScenario)를 받습니다.\n' +
+      '- 결과의 `review`(conclusion·assumptions·evidence·unresolved·next_actions) 순서대로 전달하고, 원본 근거' +
+      '(threshold·deadline·penalty·notes·disclaimer)는 지우지 마세요. 다음 행동은 next_actions 범위 안에서만 씁니다.\n' +
+      '- missing_inputs 의 purpose 가 duty(대상 판정용)·deadline(기한 계산용)으로 갈립니다 — "대상이야?"에 이사회 의결일을 캐묻지 마세요.\n' +
+      '- 기한을 계산하지 못한 결과에는 지연일수·과태료가 없습니다 — "기한 내"도 "지연"도 아닙니다.',
     inputSchema: checkDisclosureDutyInput.shape,
   },
   wrap('check_disclosure_duty', checkDisclosureDuty),
@@ -387,67 +391,28 @@ server.registerTool(
     title: '미공시 내부거래 교차탐지 (J004↔J001)',
     description:
       '기업집단현황공시(J004) 대표회사 연1회 서식의 **실제 거래내역**을 대규모내부거래(J001) 공시와 ' +
-      '대조해 "거래는 했는데 공시가 없는" **미공시 후보**를 찾습니다.\n' +
-      '- ★ **응답은 요약입니다 — 상세는 `read_detection_result` 로 이어서 읽습니다.** 완전한 결과는 ' +
-      '실물에서 22만자~1MB라 그대로는 전달되지 않아, 첫 응답에 `detail_access.result_id` 와 ' +
-      '`available_sections` 를 싣습니다. `required_warnings`·`summary_incomplete`·`details_required` 는 ' +
-      '**그대로 전달**하고, 근거를 물으면 상세를 실제로 읽어 인용하세요 — ' +
+      '대조해 "거래는 했는데 공시가 없는" **미공시 후보**를 찾습니다. 후보는 확정이 아닙니다.\n' +
+      '- ★ **응답은 요약입니다.** 상세(22만자~1MB)는 `detail_access.result_id` 로 `read_detection_result` 에서 ' +
+      '이어 읽습니다. `required_warnings`·`summary_incomplete`·`details_required` 는 **그대로 전달**하고, ' +
       '**읽지 않은 상세를 "확인했다"고 말하지 마세요**\n' +
-      '- 요청을 취소하면 결과를 보관하지 않고 result_id 도 주지 않습니다. 다만 **이미 시작된 DART 조회는 ' +
-      '끝까지 진행될 수 있습니다**(엔진이 중간 취소를 지원하지 않습니다)\n' +
-      '- ★ **요약은 `action_items_preview` 부터 읽으세요.** 조치가 필요한 판정을 상태별 배열을 **가로질러** ' +
-      '우선순위대로 모아 둔 목록입니다. 아래 배열 이름은 매출(매도)회사 관점이라, 같은 거래가 ' +
-      '매출회사 기준으로는 미달인데 **매입회사 자본 기준으로는 후보**인 경우 ' +
-      '`goods_services_matrix_below_threshold` 같은 "기준 미달" 배열 안에 묻힙니다(실측: 케이티 421건 ' +
-      '안에 조건부 후보 8건·확인 대상 21건). `perspective:"거래상대방"` 항목이 그것입니다. ' +
-      '각 항목의 `source` 가 원래 배열 이름이고 근거·caveat 전문은 거기 있습니다. ' +
-      '⚠️ 이 목록이 비어 있어도 "이상 없음"이 아닙니다 — 판정하지 못한 범위는 not_judged·coverage에 ' +
-      '따로 있습니다\n' +
-      '- **자금 차입 = 건별 차입일 근접 대조**(가장 강한 신호). 차입일 −90~+30일에 같은 유형 공시가 있으면 ' +
-      'j001_filing_near_date, 검색창 안 어딘가에만 있으면 j001_filing_in_window_only(한도 의결 커버일 수도, ' +
-      '**부분 공시 누락**일 수도 있음), 없으면 미공시 후보. 기준금액은 같은 문서의 자본으로 계산한 ' +
-      `**근사치**이고, 거래금액 ${CAP_100 / 억}억원 이상만 자본과 무관하게 확실합니다\n` +
-      '- **상품·용역**은 연간 합계뿐이라 (판매회사, 거래상대방) 연간 합산 ≥ **4×기준금액**일 때만 ' +
-      '(어느 분기 하나는 반드시 기준 이상) 신호로 씁니다. 의무 자체가 상대방이 총수일가 20% 이상 ' +
-      '출자 계열사 등일 때만 성립하는데(법 제26조제1항제4호) 지분 확인이 불가능해 전부 ' +
-      '**candidate_if_counterparty_qualified**(조건부 후보)입니다\n' +
-      '- 개별 건이 기준 미달이어도 같은 상대방 연간 합산이 기준 이상이면 "기준 미달"로 단정하지 ' +
-      '않습니다 (고시 제4조제3항 동일 거래상대방·동일 거래대상)\n' +
-      '- **유가증권**은 매트릭스 표의 상대방별 연간 총액뿐이라 개별 거래로 분해되지 않습니다 — 총액이 ' +
-      '기준 이상인데 공시가 없으면 **candidate_aggregate_only**(후보가 아니라 확인 대상). 총액이 기준 ' +
-      '미만이면 개별 거래도 전부 미만이라 이 방향만 확실합니다\n' +
-      '- 차입은 **대여회사 쪽 의무**(lender_side)도 각자 자본으로 따로 판정하고, 상품·용역은 (6)에 없는 ' +
-      '쌍을 총괄표 (5)로 보완합니다(4×에 못 미치면 candidate_aggregate_only)\n' +
-      '- 조인 실패·검색 예산 초과·수집 불완전 건은 **not_judged** — "후보 아님"이 아니라 확인하지 못한 것\n' +
-      '- 미조인 계열사는 실행 중에 **법인등록번호를 자동으로 채워 조인**합니다(포털 jurirno ↔ DART ' +
-      '기업개황이 **정확히 1건 일치**할 때만 확정 — 이름 유사도로 고르지 않습니다). 결과는 캐시에 ' +
-      '남아 다음 실행부터는 조회 없이 조인되고, 조회 예산을 넘긴 회사는 다시 실행하면 이어서 ' +
-      '채웁니다 — 결과·미조인 사유는 diagnostics.population.warming\n' +
-      '- **"공시 존재"는 공시 원문의 거래상대방까지 이 거래 상대방과 일치할 때만** 냅니다 ' +
-      '(counterparty_confirmed_by_document, 근거는 matching_filings 의 doc_counterparties). 같은 유형 ' +
-      '공시가 창 안에 있어도 원문 상대방이 다르거나 원문을 못 열면 후보가 아니라 **not_judged** ' +
-      '(type_filing_present_counterparty_unconfirmed) — 표기 차이일 수 있어 "공시 없음"으로도 ' +
-      '내리지 않습니다. 원문은 **확인되는 즉시 멈추고** 열므로 matching_filings 는 근거 1건이고 ' +
-      'matching_filings_total 이 창 안의 총수, matching_filings_not_examined_total 은 ' +
-      '**열어 보지 않은** 수(상대방이 다르다는 뜻이 아닙니다)입니다. 원문 내려받기 예산을 넘긴 건은 ' +
-      '캐시가 남아 **같은 문서로 한 번 더 실행하면 이어서 대조**됩니다\n' +
-      `- MCP 클라이언트가 약 60초에 호출을 끊으므로 이 도구는 **${detectBudgetSeconds()}초 안에 스스로 멈추고 그때까지의 ` +
-      '판정을 부분 결과로** 냅니다. 잘렸으면 summary.time_budget_truncated · ' +
-      'coverage.not_examined_due_to_time_budget · scope_caveats 맨 앞 · diagnostics.budget 에 ' +
-      '드러납니다 — **못 본 범위는 "후보 없음"이 아니라 not_judged(time_budget_exceeded)** 입니다\n' +
-      '- ★ **한 번에 끝나지 않으면 이어서 부른다.** 결과의 `continuation.complete` 가 false 면 ' +
-      '`continuation.token` 이 함께 옵니다 — **같은 인자에 `continuation_token` 을 넣어 ' +
-      'complete:true 가 나올 때까지 다시 호출하세요.** 호출마다 안 본 회사부터 이어서 보고, ' +
-      '앞 호출이 받아 둔 J001 목록은 다시 받지 않습니다(회사 수 상한 ' +
-      `${MAX_COMPANIES_TO_SEARCH}개사는 **한 호출당** 상한이라 대형 집단도 몇 번 부르면 온전해집니다). ` +
-      '**마지막 호출의 결과가 온전한 답이고, 그 전 호출의 결과를 사용자에게 최종으로 제시하지 ' +
-      '마세요** — 진행 상황(`continuation.progress`)은 중간에 알려도 됩니다. 토큰 수명은 6시간이고, ' +
-      '만료·다른 인자면 continuation_invalid 로 거절합니다(그때는 토큰 없이 처음부터). ' +
-      '`continuation.stalled` 가 true 면 더 불러도 제자리이니 남은 회사를 개별 조회하세요\n\n' +
-      '⚠️ 한도성 이사회 의결, 계열 금융회사 약관특례(트랙 B), 보고서명 유형 분류 오차로 실제로는 공시된 ' +
-      '거래일 수 있습니다. near_date/in_window_only 는 상대방까지 대조한 것이고 **금액·거래기간까지 ' +
-      '대조한 것은 아닙니다** — **scope_caveats** 참조. 미공시 과태료 기본금액 ' +
-      '5,000만~7,000만원은 지연보다 무거워 오판의 대가가 큽니다.',
+      '- ★ **`action_items_preview` 부터 읽으세요** — 조치가 필요한 판정을 배열을 가로질러 모은 목록입니다. ' +
+      '매입회사 자본 기준 후보(`perspective:"거래상대방"`)는 "기준 미달" 배열 안에 묻혀 있습니다. ' +
+      '⚠️ 이 목록이 비어도 "이상 없음"이 아닙니다 — 판정 못 한 범위는 not_judged·coverage 에 있습니다\n' +
+      '- 자금 차입은 건별 차입일 −90~+30일 근접 대조(가장 강한 신호). 기준금액은 같은 문서 자본으로 계산한 ' +
+      `**근사치**이고 ${CAP_100 / 억}억원 이상만 확실합니다\n` +
+      '- 상품·용역은 상대방 지분 요건(법 제26조제1항제4호)을 확인할 수 없어 전부 **candidate_if_counterparty_qualified**(조건부), ' +
+      '유가증권 총액만 있는 건은 **candidate_aggregate_only**(확인 대상)입니다\n' +
+      '- **"공시 존재"는 공시 원문의 거래상대방까지 일치할 때만** 냅니다. 같은 유형 공시가 있어도 원문 상대방이 ' +
+      '다르거나 원문을 못 열면 **not_judged** — "공시 있음"도 "공시 없음"도 아닙니다. ' +
+      'matching_filings_not_examined_total 은 열어 보지 않은 수입니다\n' +
+      '- 조인 실패·예산 초과·수집 불완전은 **not_judged** — "후보 아님"이 아니라 확인하지 못한 것\n' +
+      `- 약 60초 끊김을 피해 **${detectBudgetSeconds()}초 안에 스스로 멈추고** 부분 결과를 냅니다. ` +
+      '★ `continuation.complete` 가 false 면 **같은 인자에 `continuation_token` 을 넣어 complete:true 까지 다시 호출**하고, ' +
+      `**마지막 호출의 결과만** 최종으로 제시하세요 (호출당 ${MAX_COMPANIES_TO_SEARCH}개사). ` +
+      '`continuation.stalled` 면 남은 회사를 개별 조회하세요\n\n' +
+      '⚠️ 한도성 의결·약관 금융거래 특례·보고서명 분류 오차로 실제로는 공시된 거래일 수 있고, 금액·거래기간까지 ' +
+      '대조한 것은 아닙니다 — **scope_caveats** 참조. 미공시 과태료 기본금액 5,000만~7,000만원은 지연보다 무거워 ' +
+      '오판의 대가가 큽니다.',
     inputSchema: detectUndisclosedTransactionsInput.shape,
   },
   // ★ MCP 등록은 **요약 어댑터**를 통한다 (엔진 함수는 그대로 — 직접 호출 테스트·내부 소비자

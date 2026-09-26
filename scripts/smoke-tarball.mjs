@@ -150,6 +150,17 @@ try {
   }
   ok('도구 등록', `${tools.length}개, read_detection_result result_id 패턴 ${idPattern}`);
 
+  // ── 호스트 절단 한도 ── Claude Code 는 서버 지침·도구 설명을 각각 2048자에서 "… [truncated]" 로 자른다
+  //   (2026-09-26 실측: 4208자 지침의 뒤쪽 절반 [답변 범위]·[결과 전달 규칙]이 모델에 한 번도 닿지 않았다)
+  const HOST_TEXT_LIMIT = 2048;
+  const instrLen = init.instructions?.length ?? 0;
+  if (instrLen > HOST_TEXT_LIMIT) fail(`서버 지침 ${instrLen}자 > ${HOST_TEXT_LIMIT} — 뒤쪽이 모델에 전달되지 않습니다`);
+  for (const t of tools) {
+    const n = t.description?.length ?? 0;
+    if (n > HOST_TEXT_LIMIT) fail(`${t.name} 설명 ${n}자 > ${HOST_TEXT_LIMIT} — 뒤쪽이 모델에 전달되지 않습니다`);
+  }
+  ok('호스트 절단 한도', `지침 ${instrLen}자, 도구 설명 최대 ${Math.max(...tools.map((t) => t.description?.length ?? 0))}자 ≤ ${HOST_TEXT_LIMIT}`);
+
   // ── 키 격리 ──
   const info = bodyOf(await callTool('server_info', {})) ?? {};
   if (info.version !== pkg.version) {
