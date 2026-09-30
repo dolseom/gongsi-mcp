@@ -71,3 +71,4 @@ eval/messy/messy-results/*.stream.jsonl
 # held-out 실발화 시험지 — 제3자 게시글 원문이라 공개 저장소에 올리지 않는다 (RESEARCH artifacts 와 같은 원칙)
 eval/holdout/*
 !eval/holdout/README.md
+!eval/holdout/runs.log.jsonl

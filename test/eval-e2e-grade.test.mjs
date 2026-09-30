@@ -223,3 +223,34 @@ describe('차단 목록은 두 러너가 하나를 공유한다', () => {
     expect(messy).toContain('disallowed-tools.mjs');
   });
 });
+
+describe('숫자 경계 채점 (외부 검토 2026-09-30 §3-4 A1)', () => {
+  const rec = parseStream(jsonl(INIT_OK, RESULT_OK));
+  const kwFails = (it, answer) => grade({ id: 'n', expect: [], signals: [], forbid: [], ...it }, answer, rec).failures
+    .filter((f) => f.startsWith('expect') || f.startsWith('forbid'));
+  it('앞뒤가 숫자·소수점·천 단위 쉼표로 이어지면 다른 숫자다', () => {
+    expect(kwFails({ expect: [['25억']] }, '기준금액 125억원')).toHaveLength(1);
+    expect(kwFails({ expect: [['3영업일']] }, '13영업일 이내')).toHaveLength(1);
+    expect(kwFails({ expect: [['162만']] }, '과태료 1,162만원')).toHaveLength(1);
+    expect(kwFails({ expect: [['7/6']] }, '기한 17/6')).toHaveLength(1);
+    expect(kwFails({ expect: [['5억']] }, '0.5억원')).toHaveLength(1);
+  });
+  it('단위·문장부호·강조 기호로 끝나는 정상 표기는 통과', () => {
+    expect(kwFails({ expect: [['25억']] }, '기준 **25억**원, 기한은')).toHaveLength(0);
+    expect(kwFails({ expect: [['7/6']] }, '7/6(월)까지')).toHaveLength(0);
+    expect(kwFails({ expect: [['1,162만']] }, '1162만원')).toHaveLength(0);
+  });
+  it('금지 문구도 경계를 지킨다 — "5일 이내" 금지가 "15일 이내"에 오탐하지 않는다', () => {
+    expect(kwFails({ forbid: ['5일 이내'] }, '15일 이내에 공시')).toHaveLength(0);
+    expect(kwFails({ forbid: ['5일 이내'] }, '**5일 이내**에 공시')).toHaveLength(1);
+  });
+});
+
+describe('평가 모델 기록 (외부 검토 2026-09-30 §3-4 A2)', () => {
+  it('러너가 --model 을 받아 claude 에 넘기고, 요약에 요청·관측 모델을 남긴다', () => {
+    const src = readFileSync(new URL('../scripts/eval-e2e.mjs', import.meta.url), 'utf8');
+    expect(src).toContain("...(MODEL ? ['--model', MODEL] : [])");
+    expect(src).toContain('model_requested: MODEL');
+    expect(src).toContain('models_observed');
+  });
+});

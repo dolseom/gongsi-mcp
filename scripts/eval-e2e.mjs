@@ -3,7 +3,7 @@
 // claude CLI 헤드리스 실행으로 회귀 검증한다.
 //
 // 사용법:
-//   node scripts/eval-e2e.mjs [--suite eval/b2a] [--only id1,id2] [--concurrency N] [--repeat N]
+//   node scripts/eval-e2e.mjs [--suite eval/b2a] [--only id1,id2] [--concurrency N] [--repeat N] [--model ID]
 //
 // --suite: 문항 묶음 폴더 (기본 eval/e2e). <폴더>/questions.json 을 읽고 결과는 <폴더>/results 에 쓴다.
 //   MCP 설정·채점 규칙은 묶음과 무관하게 eval/e2e 것을 쓴다.
@@ -13,8 +13,8 @@
 //
 // 채점 규칙은 eval/e2e/grade.mjs (부작용 없는 모듈, test/eval-e2e-grade.test.mjs 로 고정).
 
-import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,7 +37,7 @@ const RAW_KEEP_CHARS = 1000;
 
 /** 인자 파싱 */
 function parseArgs(argv) {
-  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR, repeat: 1, noTools: false };
+  const opts = { only: null, concurrency: 2, suiteDir: DEFAULT_SUITE_DIR, repeat: 1, noTools: false, model: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--only') {
@@ -58,6 +58,11 @@ function parseArgs(argv) {
       // 문항당 N회 — 답변 1건으로는 회차 간 흔들림이 개선 효과보다 컸다 (b2a 2차 A9 → 3차 A7, 대부분 모델 재서술)
       const value = arg === '--repeat' ? argv[++i] : arg.slice('--repeat='.length);
       opts.repeat = Number(value);
+    } else if (arg === '--model' || arg.startsWith('--model=')) {
+      // 실행 모델 고정 — 지정하지 않으면 CLI 기본 모델이라 회귀와 모델 교체를 구분할 수 없다 (외부 검토 §3-4 A2)
+      const value = arg === '--model' ? argv[++i] : arg.slice('--model='.length);
+      if (!value || !/^[A-Za-z0-9._\-\[\]]+$/.test(value)) throw new Error('--model 에는 모델 ID 가 필요합니다 (예: claude-opus-5-5).');
+      opts.model = value;
     } else if (arg === '--no-tools') {
       // 대조군: 우리 MCP 없이 같은 격리(웹·파일 차단)로 Claude 단독 답변 — 도구의 순효과를 재는 기준
       opts.noTools = true;
@@ -107,6 +112,8 @@ function killTree(child) {
  *   → cwd 를 빈 임시 디렉터리로, MCP 설정은 절대경로로 생성한다.
  */
 let NO_TOOLS = false;
+/** --model 로 고정한 모델 (null 이면 CLI 기본) */
+let MODEL = null;
 function makeWorkDir() {
   const dir = mkdtempSync(join(tmpdir(), 'gongsi-eval-'));
   const config = join(dir, 'mcp.json');
@@ -154,6 +161,8 @@ function runClaude(question, timeoutMs, work) {
       // stream-json + verbose 라야 도구 호출 이벤트가 나온다 (json 은 최종 결과만 준다)
       '--output-format', 'stream-json', '--verbose',
       '--max-turns', '16',
+      // 모델 ID 는 parseArgs 에서 [A-Za-z0-9._-[]] 만 통과시켰다 — 셸 결합에 안전
+      ...(MODEL ? ['--model', MODEL] : []),
     ];
     // 인자는 전부 ASCII 상수라 문자열 결합이 안전하다 (DEP0190 회피 — 질문은 stdin 으로만)
     const child = process.platform === 'win32'
@@ -381,6 +390,7 @@ async function main() {
   }
 
   NO_TOOLS = opts.noTools;
+  MODEL = opts.model;
   const runId = `eval-${timestamp(new Date())}${opts.noTools ? '-notools' : ''}`;
   const streamsDir = join(resultsDir, runId);
   mkdirSync(streamsDir, { recursive: true });
@@ -415,10 +425,27 @@ async function main() {
     runner_errors: count('runner_error'),
     signal_misses: signalMisses,
     total_cost_usd: Number(totalCost.toFixed(4)),
+    /** 요청한 모델(null = CLI 기본)과 init 이벤트로 실제 관측된 모델 — 회귀와 모델 교체를 가르는 근거 */
+    model_requested: MODEL,
+    models_observed: [...new Set(results.map((r) => r.context?.model).filter(Boolean))],
   };
 
   const outPath = join(resultsDir, `${runId}.json`);
   writeFileSync(outPath, JSON.stringify({ summary, results }, null, 2), 'utf8');
+
+  // ★ 기준선 로그 — results/ 는 gitignore 라 과거 수치를 저장소에서 대조할 수 없었다 (외부 검토 §3-4 A4).
+  //   한 줄 요약만 추적 파일에 남긴다: 수치·모델·커밋. 답변·경로·세션 정보는 넣지 않는다.
+  let commit = null;
+  try {
+    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+  } catch {
+    // git 이 없으면 커밋 없이 남긴다
+  }
+  appendFileSync(
+    join(opts.suiteDir, 'runs.log.jsonl'),
+    JSON.stringify({ ...summary, commit, only: opts.only, repeat: opts.repeat, no_tools: opts.noTools }) + '\n',
+    'utf8',
+  );
 
   console.log('');
   console.log(

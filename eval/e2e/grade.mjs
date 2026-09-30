@@ -26,10 +26,35 @@ export function normalize(text) {
   return String(text).replace(/[\s,*_`~]/g, '');
 }
 
-/** 원문 포함 또는 정규화 포함이면 매치 */
+const DIGIT = /[0-9]/;
+
+/**
+ * 숫자 경계를 지키는 포함 검사. 기대값이 숫자로 시작하면 앞 글자가 숫자·소수점이면 안 되고,
+ * 숫자로 끝나면 뒤 글자가 숫자이거나 "소수점+숫자"이면 안 된다.
+ * ★ 종전 부분일치는 "25억"⊂"125억", "3영업일"⊂"13영업일", "162만"⊂"1,162만", "7/6"⊂"17/6" 을 통과시켰다
+ *   (외부 검토 2026-09-30 §3-4 A1). 금지 문구도 같은 규칙이라 "5일 이내" 금지가 "15일 이내"에 오탐하지 않는다.
+ */
+export function containsBounded(hay, needle) {
+  if (!needle) return false;
+  const startsDigit = DIGIT.test(needle[0]);
+  const endsDigit = DIGIT.test(needle[needle.length - 1]);
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
+    const before = at > 0 ? hay[at - 1] : '';
+    const end = at + needle.length;
+    const after = hay[end] ?? '';
+    // 천 단위 쉼표도 숫자의 일부다 — "162만" 이 "1,162만" 의 쉼표 뒤에서 경계로 인정되면 안 된다
+    const numSep = (c, neighbor) => (c === '.' || c === ',') && DIGIT.test(neighbor ?? '');
+    if (startsDigit && (DIGIT.test(before) || before === '.' || numSep(before, hay[at - 2]))) continue;
+    if (endsDigit && (DIGIT.test(after) || numSep(after, hay[end + 1]))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** 원문 포함 또는 정규화 포함이면 매치 — 둘 다 숫자 경계를 지킨다 */
 export function contains(answer, needle) {
-  if (answer.includes(needle)) return true;
-  return normalize(answer).includes(normalize(needle));
+  if (containsBounded(answer, needle)) return true;
+  return containsBounded(normalize(answer), normalize(needle));
 }
 
 /** 그룹(OR 후보 배열) 중 하나라도 답변에 있으면 true */
