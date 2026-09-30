@@ -37,7 +37,7 @@ const MAX_MARKET_CHUNK_DAYS = 90;
 /** 목록 수집에 필요한 최소 인터페이스 — 테스트에서 가짜로 치환한다 */
 export interface SearchClient {
   measure(p: ListParams): Promise<number>;
-  collect(p: ListParams, maxPages?: number): Promise<CollectResult>;
+  collect(p: ListParams, maxPages?: number, signal?: AbortSignal): Promise<CollectResult>;
 }
 
 export interface DateChunk {
@@ -169,16 +169,22 @@ export function suggestSplits(
 
 // ── 본체 ────────────────────────────────────────────────────────
 
-async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+/**
+ * 제한시간 안에 끝나지 않으면 실패로 돌려주고 **진행 중인 수집도 취소**한다.
+ * ★ 종전 Promise.race 는 지고 나서도 collect 가 다음 페이지를 계속 요청했다 — 결과에 실리지 않을 호출이
+ *   송신 대기열(OpenDART 과호출 방지) 자리를 차지해 다른 청크까지 늦췄다 (Codex astra 교차검토 2026-09-30).
+ */
+async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+  const ac = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      p,
+      run(ac.signal),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`청크 수집이 ${Math.round(ms / 1000)}초를 넘겨 중단했습니다.`)),
-          ms,
-        );
+        timer = setTimeout(() => {
+          ac.abort();
+          reject(new Error(`청크 수집이 ${Math.round(ms / 1000)}초를 넘겨 중단했습니다.`));
+        }, ms);
       }),
     ]);
   } finally {
@@ -353,7 +359,7 @@ export async function collectAdaptive(
       }
       try {
         const r = await withTimeout(
-          client.collect({ ...base, bgnDe: c.from, endDe: c.to }, o.maxPages),
+          (signal) => client.collect({ ...base, bgnDe: c.from, endDe: c.to }, o.maxPages, signal),
           perChunkTimeoutMs,
         );
         collectCalls += r.calls;

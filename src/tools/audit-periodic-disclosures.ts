@@ -31,6 +31,14 @@ import { buildPeriodicCalendar, type CalendarEntry } from '../rules/periodic-cal
 import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
 import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
+import { Deadline, type DeadlineLike } from '../lib/deadline.js';
+import { TIME_BUDGET_MS } from './detect/budget.js';
+
+/**
+ * 회사 하나의 목록 조회를 새로 시작하려면 남아 있어야 하는 시간 — 측정 0.4초 + 수집 1.7초 + 여유.
+ * 소속회사가 많은 집단은 회사별 조회만으로 60초 벽을 넘을 수 있다 — 넘으면 결과가 통째로 사라진다.
+ */
+const MIN_LIST_START_MS = 3_000;
 
 const log = getLogger('audit-periodic');
 
@@ -235,6 +243,11 @@ interface DeadlineReport {
     viewer_url: string;
   }>;
   not_filed_candidates: NotFiledRow[];
+  /**
+   * 목록 조회를 못 한(실패·시간 예산 소진) 회사 — "제출함"도 "미제출"도 아닌 **미확인**.
+   * ★ 종전에는 이 회사들이 접수 0건으로 보여 not_filed_candidates 에 들어갔다 (2026-09-30 발견).
+   */
+  not_checked?: Array<{ corp_name: string; corp_code: string; reason: string }>;
   out_of_scope: Array<{ corp_name: string; corp_code: string; joined_group_at: string }>;
   representative_filings: Array<{ corp_name: string; corp_code: string; rcept_no: string }>;
   likely_out_of_scope?: boolean;
@@ -245,6 +258,8 @@ interface DeadlineReport {
 export async function auditPeriodicDisclosures(
   input: AuditPeriodicDisclosuresInput,
   depsOverride?: PeriodicAuditDeps,
+  /** 테스트용 — 시간 예산 주입 (기본: detect 와 같은 50초) */
+  opts: { deadline?: DeadlineLike } = {},
 ): Promise<unknown> {
   if (!input.group && !input.companies) {
     throw new ToolError('invalid_argument', 'group 또는 companies 중 하나는 필수입니다.');
@@ -287,7 +302,8 @@ export async function auditPeriodicDisclosures(
     );
   }
 
-  const deps = depsOverride ?? realDeps(new DartClient());
+  const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
+  const deps = depsOverride ?? realDeps(new DartClient(undefined, { deadline: budget }));
 
   // 수집 구간.
   // 시작: 전년도 4분기분(기한 2월 말)을 잡으려면 전년도 10월부터.
@@ -301,6 +317,14 @@ export async function auditPeriodicDisclosures(
 
   const filings: ClassifiedFiling[] = [];
   const listErrors: Array<{ corp_name: string; corp_code: string; error: string }> = [];
+  /** 회사 → 조회하지 못한 공시유형과 사유. 이 회사·유형은 미제출 판정에서 뺀다 */
+  const unchecked = new Map<string, Map<string, string>>();
+  const markUnchecked = (corpCode: string, ty: string, reason: string): void => {
+    const m = unchecked.get(corpCode) ?? new Map<string, string>();
+    m.set(ty, reason);
+    unchecked.set(corpCode, m);
+  };
+  let timeBudgetSkippedCompanies = 0;
   let listCalls = 0;
   let partial = false;
 
@@ -311,7 +335,13 @@ export async function auditPeriodicDisclosures(
       const i = cursor++;
       if (i >= targets.length) return;
       const [corpCode, corpName] = targets[i]!;
-      for (const ty of [...(needJ004 ? ['J004'] : []), ...(needJ009 ? ['J009'] : [])]) {
+      const types = [...(needJ004 ? ['J004'] : []), ...(needJ009 ? ['J009'] : [])];
+      if (budget.remainingMs() < MIN_LIST_START_MS) {
+        timeBudgetSkippedCompanies++;
+        for (const ty of types) markUnchecked(corpCode, ty, '시간 예산 소진으로 목록 조회를 시작하지 않음');
+        continue;
+      }
+      for (const ty of types) {
         try {
           const r = await deps.collectList(corpCode, ty, from, to);
           listCalls++;
@@ -343,11 +373,9 @@ export async function auditPeriodicDisclosures(
             });
           }
         } catch (err) {
-          listErrors.push({
-            corp_name: corpName,
-            corp_code: corpCode,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          const msg = err instanceof Error ? err.message : String(err);
+          listErrors.push({ corp_name: corpName, corp_code: corpCode, error: msg });
+          markUnchecked(corpCode, ty, `목록 조회 실패: ${msg}`);
         }
       }
     }
@@ -401,11 +429,18 @@ export async function auditPeriodicDisclosures(
     const onTime: DeadlineReport['on_time'] = [];
     const late: DeadlineReport['late_candidates'] = [];
     const notFiled: NotFiledRow[] = [];
+    const notChecked: NonNullable<DeadlineReport['not_checked']> = [];
     const outOfScope: DeadlineReport['out_of_scope'] = [];
     const repFilings: DeadlineReport['representative_filings'] = [];
 
     for (const [corpCode, corpName] of population.corpCodes) {
       const mine = byCompany.get(corpCode) ?? [];
+      const uncheckedReason = unchecked.get(corpCode)?.get(e.dart_type);
+      if (uncheckedReason && mine.length === 0) {
+        // 조회하지 못한 회사의 "접수 0건"은 미제출 신호가 아니다
+        notChecked.push({ corp_name: corpName, corp_code: corpCode, reason: uncheckedReason });
+        continue;
+      }
       for (const f of mine.filter((x) => x.representative)) {
         repFilings.push({ corp_name: corpName, corp_code: corpCode, rcept_no: f.rcept_no });
       }
@@ -495,6 +530,7 @@ export async function auditPeriodicDisclosures(
       on_time: onTime,
       late_candidates: late,
       not_filed_candidates: notFiled,
+      ...(notChecked.length ? { not_checked: notChecked } : {}),
       out_of_scope: outOfScope,
       representative_filings: repFilings,
       ...(due && rows.length === 0 && population.corpCodes.size > 1
@@ -612,6 +648,12 @@ export async function auditPeriodicDisclosures(
         '(coverage 참조) — resolve_entity(fetchJurirNo=true) 로 캐시를 채운 뒤 재점검하세요.',
     );
   }
+  if (timeBudgetSkippedCompanies > 0) {
+    notes.push(
+      `⚠️ 시간 예산(60초 벽 대비) 소진으로 ${timeBudgetSkippedCompanies}개사는 목록 조회를 시작하지 못했습니다 — ` +
+        '각 기한의 not_checked 에 있으며 "미제출"이 아니라 **확인하지 못한 것**입니다. companies 로 나눠 다시 실행하세요.',
+    );
+  }
   if (listErrors.length > 0) {
     notes.push(
       `⚠️ ${listErrors.length}개사는 목록 조회가 실패했습니다 (list_errors) — 이 회사들은 ` +
@@ -658,6 +700,7 @@ export async function auditPeriodicDisclosures(
       late_candidates: totalLate,
       not_filed_candidates: totalNotFiled,
       ambiguous_assignments: totalAmbiguous,
+      ...(timeBudgetSkippedCompanies ? { companies_not_started_time_budget: timeBudgetSkippedCompanies } : {}),
     },
     deadlines: reports,
     ...(unmatched.length ? { unmatched_filings: unmatched } : {}),

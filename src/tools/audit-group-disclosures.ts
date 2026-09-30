@@ -40,6 +40,8 @@ import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
 import type { PenaltyResult } from '../rules/types.js';
 import { todayKstYMD } from '../rules/business-days.js';
+import { Deadline, type DeadlineLike } from '../lib/deadline.js';
+import { TIME_BUDGET_MS } from './detect/budget.js';
 
 const log = getLogger('audit');
 
@@ -52,6 +54,13 @@ const SECONDS_PER_DOC = 1.5;
 const MAX_TOOL_SECONDS = 45;
 /** 목록 수집 몫을 제외하고 문서 다운로드에 쓸 수 있는 시간 */
 const DOC_PHASE_BUDGET_SECONDS = 35;
+/**
+ * 캐시에 없는 원문 1건을 새로 시작하려면 남아 있어야 하는 시간 — SECONDS_PER_DOC(1.5초) + 여유.
+ * ★ 사전 예측(MAX_TOOL_SECONDS)은 추정일 뿐이라 상류가 느리면 실제로는 60초 벽을 넘는다. 넘으면 클라이언트가
+ *   호출을 끊어 결과가 **통째로** 사라지므로, 실행 중에도 시간 예산을 보고 새 원문을 시작하지 않는다
+ *   (외부 검토 2026-09-30 §3-1 · Codex astra 교차검토: 감사 도구에 Deadline 미전파).
+ */
+const MIN_DOC_START_MS = 2_000;
 
 export const auditGroupDisclosuresInput = z.object({
   group: z
@@ -316,6 +325,8 @@ export function suggestDocSplits(
 export async function auditGroupDisclosures(
   input: AuditGroupDisclosuresInput,
   depsOverride?: AuditDeps,
+  /** 테스트용 — 시간 예산 주입 (기본: detect 와 같은 50초) */
+  opts: { deadline?: DeadlineLike } = {},
 ): Promise<unknown> {
   if (!input.group && !input.companies) {
     throw new ToolError('invalid_argument', 'group 또는 companies 중 하나는 필수입니다.');
@@ -330,8 +341,9 @@ export async function auditGroupDisclosures(
   const today = input.today ?? todayKstYMD();
   const startedAt = Date.now();
 
+  const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
   const population = await resolvePopulation(input);
-  const deps = depsOverride ?? realDeps(new DartClient());
+  const deps = depsOverride ?? realDeps(new DartClient(undefined, { deadline: budget }));
 
   // ── 목록 수집 ──
   // 단일 회사는 corp_code 지정(장기 구간 허용), 여럿이면 전체시장 J001 후 필터.
@@ -369,6 +381,8 @@ export async function auditGroupDisclosures(
   const trackB: SkippedRow[] = [];
   const boardDateMissing: SkippedRow[] = [];
   const unparsable: SkippedRow[] = [];
+  /** 시간 예산이 모자라 원문 판정을 시작하지 못했거나 예산 초과로 중단된 건 — "적법"이 아니라 미확인 */
+  const timeBudgetSkipped: SkippedRow[] = [];
   let boardDateInvalid = 0;
   let onTime = 0;
   /** 기한 계산 구간에 **미검증** 공휴일 연도가 걸친 기한 내 판정 — 거짓 on_time 가능 */
@@ -382,6 +396,19 @@ export async function auditGroupDisclosures(
   async function worker(): Promise<void> {
     while (next < list.length) {
       const r = list[next++]!;
+      const skipRow = (reason: string): SkippedRow => ({
+        corp_name: r.corp_name,
+        rcept_no: r.rcept_no,
+        report_nm: r.report_nm,
+        rcept_dt: r.rcept_dt,
+        reason,
+        viewer_url: viewerUrl(r.rcept_no),
+      });
+      // 캐시된 원문은 거의 즉시 끝나므로 예산이 적어도 판정한다 — 새로 받아야 하는 것만 막는다
+      if (!deps.isCached(r.rcept_no) && budget.remainingMs() < MIN_DOC_START_MS) {
+        timeBudgetSkipped.push(skipRow('시간 예산 소진으로 원문 판정을 시작하지 않음 — 같은 조건으로 다시 실행하면 이어서 판정합니다'));
+        continue;
+      }
       let meta: DocMeta;
       try {
         const wasCached = deps.isCached(r.rcept_no);
@@ -390,6 +417,10 @@ export async function auditGroupDisclosures(
         if (wasCached) docCacheHits++;
         else docDownloads++;
       } catch (err) {
+        if (err instanceof ToolError && err.code === 'deadline_exceeded') {
+          timeBudgetSkipped.push(skipRow('시간 예산 초과로 원문을 받지 못함 — 같은 조건으로 다시 실행하면 이어서 판정합니다'));
+          continue;
+        }
         docErrors++;
         unparsable.push({
           corp_name: r.corp_name,
@@ -586,9 +617,10 @@ export async function auditGroupDisclosures(
   {
     // Codex 7차 중간 3: 원문 로드 실패·의결일 미추출·트랙 B 는 결과 배열과 summary 에만 남아
     // late_candidates=0 과 함께 읽히면 "지연 없음"으로 둔갑한다. 판정 미완료 총량을 최상위로 올린다.
-    const notJudged = trackB.length + boardDateMissing.length + unparsable.length;
+    const notJudged = trackB.length + boardDateMissing.length + unparsable.length + timeBudgetSkipped.length;
     if (notJudged > 0) {
       const parts: string[] = [];
+      if (timeBudgetSkipped.length) parts.push(`시간 예산 소진 ${timeBudgetSkipped.length}건(not_started_time_budget)`);
       if (trackB.length) parts.push(`약관특례 트랙 B ${trackB.length}건(의결일 없는 분기 일괄공시 — 기한 판정 대상 아님)`);
       if (boardDateMissing.length) parts.push(`의결일 미추출 ${boardDateMissing.length}건`);
       if (unparsable.length) parts.push(`원문 로드·파싱 실패 ${unparsable.length}건`);
@@ -651,12 +683,14 @@ export async function auditGroupDisclosures(
       board_date_missing: boardDateMissing.length,
       ...(boardDateInvalid > 0 ? { board_date_invalid: boardDateInvalid } : {}),
       unparsable: unparsable.length,
+      ...(timeBudgetSkipped.length ? { not_started_time_budget: timeBudgetSkipped.length } : {}),
       corrections_excluded: correctionsSkipped,
     },
     late_candidates: lateCandidates,
     omnibus_track_b: trackB,
     board_date_missing: boardDateMissing,
     ...(unparsable.length ? { unparsable } : {}),
+    ...(timeBudgetSkipped.length ? { not_started_time_budget: timeBudgetSkipped } : {}),
     coverage: {
       companies_with_corp_code: population.corpCodes.size,
       companies_unjoined: population.unjoined,
@@ -685,7 +719,8 @@ export async function auditGroupDisclosures(
         omnibus_track_b: trackB.length,
         board_date_missing: boardDateMissing.length,
         unparsable: unparsable.length,
-        total: trackB.length + boardDateMissing.length + unparsable.length,
+        time_budget: timeBudgetSkipped.length,
+        total: trackB.length + boardDateMissing.length + unparsable.length + timeBudgetSkipped.length,
       },
     },
     notes,

@@ -166,14 +166,33 @@ function retryAfterTooLongError(path: string, waitMs: number): ToolError {
 }
 
 /**
+ * 호출부가 취소한 요청(청크 시간 초과 등). 결과에 실리지 못하므로 재시도하지 않고, 차단기에도 세지 않는다.
+ * ★ 취소 신호가 없던 때는 청크 제한시간(Promise.race)이 져도 진행 중 수집이 페이지를 계속 요청했다 —
+ *   버려질 요청이 송신 대기열 자리까지 차지했다 (Codex astra 교차검토 2026-09-30).
+ */
+function cancelledError(path: string): ToolError {
+  return new ToolError(
+    'deadline_exceeded',
+    '호출부가 이 DART 요청을 취소했습니다(청크 시간 초과 등) — 결과에 실리지 않으므로 중단했습니다.',
+    { path, cancelled: true },
+  );
+}
+
+/**
  * 송신 대기열에 서서 요청을 시작해도 되는 순간까지 기다린다. 줄 맨 앞에 온 뒤에야 대기 시간을 계산하고,
  * 자고 난 뒤에는 차단기·Retry-After·남은 예산을 **다시** 확인한다. 시작이 확정되면 그 실제 시각을 lastStart 로 남긴다.
  * 예산이 모자라 포기하는 요청은 lastStart 를 건드리지 않는다 — 못 쓴 슬롯이 뒤 요청의 간격을 밀지 않게.
  */
-function takeSendSlot(path: string, attempt: number, deadline: DeadlineLike | undefined): Promise<void> {
+function takeSendSlot(
+  path: string,
+  attempt: number,
+  deadline: DeadlineLike | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
   const interval = getConfig().dartMinIntervalMs;
   const run = gate.queue.then(async () => {
     for (;;) {
+      if (signal?.aborted) throw cancelledError(path);
       const now = Date.now();
       const open = breakerOpenError(path);
       if (open) throw open;
@@ -190,7 +209,9 @@ function takeSendSlot(path: string, attempt: number, deadline: DeadlineLike | un
         );
       }
       if (wait <= 0) break;
-      await sleep(wait);
+      await sleep(wait, signal).catch(() => {
+        throw cancelledError(path);
+      });
     }
     gate.lastStart = Date.now();
   });
@@ -268,6 +289,7 @@ export class DartClient {
   private async request(
     path: string,
     params: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<{ status: number; contentType: string; bytes: Uint8Array }> {
     const cfg = getConfig();
     const url = this.buildUrl(path, params);
@@ -277,6 +299,7 @@ export class DartClient {
       // 마지막 시도가 실패하면 기다리지 않고 바로 던진다 — 다음 시도가 없는데 백오프로
       // 최대 4초를 더 쓰던 결함 (60초 벽 안에서 그 4초는 다른 회사 하나를 조회할 시간이다)
       const isLastAttempt = attempt === MAX_ATTEMPTS - 1;
+      if (signal?.aborted) throw cancelledError(path);
       const remaining = this.deadline?.remainingMs();
       if (remaining !== undefined && remaining < MIN_REQUEST_MS) {
         throw new ToolError(
@@ -286,7 +309,7 @@ export class DartClient {
           { path, remaining_ms: remaining },
         );
       }
-      await takeSendSlot(path, attempt, this.deadline);
+      await takeSendSlot(path, attempt, this.deadline, signal);
       const remainingAfterSlot = this.deadline?.remainingMs();
       const timeoutMs =
         remainingAfterSlot === undefined ? cfg.readTimeoutMs : Math.min(cfg.readTimeoutMs, remainingAfterSlot);
@@ -297,7 +320,7 @@ export class DartClient {
         // 지금은 전체 타임아웃만 적용한다. (TODO: dispatcher 도입 시 분리)
         const res = await fetch(url, {
           headers: { 'User-Agent': USER_AGENT },
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]) : AbortSignal.timeout(timeoutMs),
         });
 
         // 상태코드가 무엇이든 응답을 받았으면 접속 자체는 살아 있다
@@ -313,7 +336,7 @@ export class DartClient {
             if (retryAfterMs > MAX_RETRY_AFTER_MS) throw retryAfterTooLongError(path, retryAfterMs);
           }
           if (isLastAttempt) break;
-          if (!(await this.backoff(attempt))) {
+          if (!(await this.backoff(attempt, path, signal))) {
             throw new ToolError(
               'deadline_exceeded',
               `DART 가 재시도 가능한 상태코드(${res.status})를 줬으나 남은 시간 예산으로는 ` +
@@ -335,6 +358,8 @@ export class DartClient {
       } catch (err) {
         // 우리가 던진 것(예산·429 Retry-After)은 재시도 대상이 아니다 — 그대로 올린다
         if (err instanceof ToolError) throw err;
+        // 호출부 취소는 실패가 아니다 — 재시도·차단기 집계 없이 끝낸다
+        if (signal?.aborted) throw cancelledError(path);
         lastErrName = err instanceof Error ? err.name : 'UnknownError';
         log.warn('요청 실패', { path, error: lastErrName, attempt: attempt + 1 });
         // 시간초과(우리 예산·읽기 타임아웃)는 느린 망에서도 난다 — 세면 정상 예산 만료가 프로세스 전체를 막는다
@@ -342,7 +367,7 @@ export class DartClient {
           this.recordNetFailure(path, lastErrName);
         }
         if (isLastAttempt) break;
-        if (!(await this.backoff(attempt))) {
+        if (!(await this.backoff(attempt, path, signal))) {
           throw new ToolError(
             'deadline_exceeded',
             `DART 요청이 실패했고(${lastErrName}) 남은 시간 예산으로는 재시도할 수 없어 중단했습니다.`,
@@ -379,11 +404,13 @@ export class DartClient {
    * 기다린다 — 남은 예산을 sleep 으로 다 태우고 나서 시작도 못 하는 것이 가장 나쁘다.
    * @returns 재시도해도 되면 true, 예산이 모자라 포기해야 하면 false
    */
-  private async backoff(attempt: number): Promise<boolean> {
+  private async backoff(attempt: number, path: string, signal?: AbortSignal): Promise<boolean> {
     const waitMs = Math.min(2 ** attempt, 8) * 1000;
     const remaining = this.deadline?.remainingMs();
     if (remaining !== undefined && remaining < waitMs + MIN_REQUEST_MS) return false;
-    await sleep(waitMs);
+    await sleep(waitMs, signal).catch(() => {
+      throw cancelledError(path);
+    });
     return true;
   }
 
@@ -418,7 +445,7 @@ export class DartClient {
   }
 
   /** 공시 목록 한 페이지 */
-  async listPage(p: ListParams): Promise<ListPage> {
+  async listPage(p: ListParams, signal?: AbortSignal): Promise<ListPage> {
     this.checkRateLimit(false);
     const cfg = getConfig();
     const lastOnly = p.lastReportOnly ?? cfg.lastReportOnly;
@@ -436,7 +463,7 @@ export class DartClient {
       page_count: p.pageCount ?? 100,
       sort: 'date',
       sort_mth: 'desc',
-    });
+    }, signal);
 
     const data = this.parseJson(bytes);
     const status = String(data['status'] ?? '');
@@ -481,7 +508,8 @@ export class DartClient {
    * `total_page` 를 보고 자동 종료하므로 상한을 올려도 불필요한 호출은 생기지 않는다.
    * 상한에 걸리면 `truncated: true` 와 실제 `totalPage` 를 함께 돌려준다.
    */
-  async collect(p: ListParams, maxPages?: number): Promise<CollectResult> {
+  /** @param signal 호출부 취소 신호 — 끊기면 다음 페이지를 요청하지 않고 진행 중 요청도 끊는다 */
+  async collect(p: ListParams, maxPages?: number, signal?: AbortSignal): Promise<CollectResult> {
     const limit = Math.max(1, maxPages ?? getConfig().maxPages);
     const rows: Disclosure[] = [];
     let pageNo = 1;
@@ -490,7 +518,8 @@ export class DartClient {
     let calls = 0;
 
     do {
-      const page = await this.listPage({ ...p, pageNo });
+      if (signal?.aborted) throw cancelledError('list.json');
+      const page = await this.listPage({ ...p, pageNo }, signal);
       calls++;
       rows.push(...page.list);
       totalPage = page.totalPage;
@@ -583,6 +612,21 @@ export class DartClient {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/** 취소 신호가 오면 즉시 reject 하는 sleep (신호가 없으면 일반 sleep) */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('aborted'));
+      return;
+    }
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(t);
+      reject(new Error('aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
