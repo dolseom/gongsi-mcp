@@ -1,0 +1,117 @@
+/**
+ * 공정거래법상 공시의무 판정 룰 엔진 — 공통 타입
+ *
+ * 모든 판정 결과는 근거(legalBasis)와 계산식(formula)을 반드시 동봉한다.
+ * 불확실하면 추정하지 않고 insufficient_data 를 반환한다.
+ */
+
+/** YYYYMMDD 형식 날짜 문자열 */
+export type YMD = string;
+
+/** 상장 여부 — 공시기한이 갈린다 */
+export type ListingStatus = 'listed' | 'unlisted';
+
+/**
+ * 거래금액 산정 방식 — 고시 §4③
+ * 단순 거래금액이 아닌 경우가 있어 별도로 받는다.
+ */
+export type AmountBasis =
+  /** 실제 거래금액 */
+  | 'actual'
+  /** 담보제공: 담보한도액 (담보금액이 아님) */
+  | 'collateral_limit'
+  /** 부동산임대차: 연간임대료 + 보증금 환산액 */
+  | 'lease_annualized'
+  /** 보험계약: 보험료총액 */
+  | 'insurance_premium_total'
+  /** 상품·용역: 분기 거래금액 합계액 */
+  | 'quarterly_sum';
+
+/** 판정 결과 */
+export type Verdict = 'required' | 'not_required' | 'insufficient_data';
+
+/** 법령 근거 */
+export interface LegalRef {
+  /** 예: "독점규제 및 공정거래에 관한 법률 제26조제1항" */
+  source: string;
+  /** 해당 조문의 요지 */
+  summary: string;
+}
+
+/** 기준금액 계산 결과 */
+export interface ThresholdResult {
+  /** 적용된 기준금액 (원) */
+  threshold: number;
+  /** 사람이 읽는 계산식 */
+  formula: string;
+  /** 계산에 쓰인 입력값 */
+  inputs: {
+    totalEquity?: number;
+    paidInCapital?: number;
+  };
+  legalBasis: LegalRef[];
+  /**
+   * 자본총계·자본금 중 **미입력된 쪽** (둘 다 있으면 없음).
+   * 있으면 `threshold` 는 입력된 쪽만으로 계산한 **하한값**이다 — 미입력 쪽이 크면 기준금액이 올라간다.
+   */
+  missingSide?: 'totalEquity' | 'paidInCapital';
+}
+
+/** 기한 계산 결과 */
+export interface DeadlineResult {
+  /** 공시 기한 (YYYYMMDD) */
+  deadline: YMD;
+  /** 적용 규칙 설명 */
+  rule: string;
+  /** 영업일 며칠인지 */
+  businessDays: number;
+  /** 만료일이 비영업일이라 다음 영업일로 밀렸는지 */
+  adjustedToNextBusinessDay: boolean;
+  /** 공휴일 데이터가 미검증이면 경고 */
+  warnings: string[];
+  legalBasis: LegalRef[];
+}
+
+/** 과태료 산정 결과 */
+export interface PenaltyResult {
+  /** 최종 예상 과태료 (원) */
+  amount: number;
+  /** 기본금액 (원) */
+  baseAmount: number;
+  /** 일수 가산액 (원) */
+  dailySurcharge: number;
+  /**
+   * 기본금액 총액 (원) = 소기업 1% 상한(Ⅵ.1 단서)까지 반영한 (기본금액 + 일수가산).
+   * 비율·조정의 실제 피승수·상한 기준이다 — baseAmount + dailySurcharge 와 다를 수 있다
+   * (1% 상한이 가산 포함 총액에 다시 걸리므로). 필드만 합산하면 어긋나던 문제의 해소용.
+   */
+  basicTotal: number;
+  /**
+   * 기준금액 (원) = (기본금액 + 일수가산) × 거래금액별 적용비율.
+   * 가중·감경은 이 금액에 곱한다 (고시 Ⅵ.3.가).
+   * 비율이 적용되지 않는 경우(거래금액 100억원 이상 / 미지정 / §27·§28)에는 기본금액 총액과 같다.
+   */
+  standardAmount: number;
+  /**
+   * ★ true = `amount` 는 확정 추정치가 아니라 **상한선**이다.
+   * §26·§29 인데 거래금액을 몰라 적용비율(고시 Ⅵ.2)을 적용하지 못한 경우로,
+   * 실제 과태료는 이 값의 최저 절반까지 내려간다. 중첩된 caveats 를 놓쳐도
+   * 이 필드만 보면 알 수 있게 구조화해 노출한다.
+   */
+  isUpperBound: boolean;
+  /** 선택된 거래금액 구간 — 거래금액을 받아 구간을 확정했을 때만 존재 (100억 이상이면 rate 1.0) */
+  transactionRatio?: { rate: number; label: string; transactionAmount: number };
+  /** 적용된 가중 (비율) */
+  aggravations: Array<{ reason: string; rate: number }>;
+  /** 적용된 감경 (비율) */
+  mitigations: Array<{ reason: string; rate: number }>;
+  /** 상한 적용 여부 */
+  capApplied: boolean;
+  formula: string;
+  /** 다음 감경 구간 경계 — "3일 뒤면 얼마" 를 보여주기 위함 */
+  nextThreshold?: { delayDays: number; amountIfDelayed: number; note: string };
+  legalBasis: LegalRef[];
+  /** 산정값의 한계·전제 (거래금액 미지정 시 상한선이라는 안내 등) */
+  caveats: string[];
+  disclaimer: string;
+}

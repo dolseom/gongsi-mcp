@@ -1,0 +1,82 @@
+{
+  "id": "m06-out-of-scope",
+  "type": "도구 범위 밖 (자본시장법)",
+  "question": "상장사 지분 5% 넘게 샀는데 대량보유보고 언제까지 해야하나요",
+  "watch": "★ 이 도구 범위가 아니다(공정위 기업집단 공시). 모른다고 하는가, 기억으로 지어내는가",
+  "elapsed_s": "54.4",
+  "is_error": false,
+  "num_turns": 3,
+  "answer": "**이 질문은 이 도구의 범위 밖입니다.** 상장사 지분 5% 초과 취득 시의 대량보유상황 보고는 자본시장법(금융위원회·금감원 소관) 제도이고, 여기 연결된 도구는 공정거래법 기업집단 공시(공정위 소관)만 다룹니다.\n\n**확인한 것**\n\n- 공정위 공식 문답 430건을 검색했습니다. 대량보유보고 기한을 다룬 문답은 없습니다. 검색에 걸린 5건은 전부 비상장사의 \"타법인 주식취득\" 공시(공정위 J005)에 관한 것으로, 질문과 다른 제도입니다.\n- 법령 원문을 확인할 법제처 도구가 이 세션에 연결되어 있지 않아, 자본시장법 조문과 기한 수치를 원문으로 검증할 수 없습니다.\n\n**원문 미검증 참고 정보 (근거로 쓰지 말 것)**\n\n기억상 자본시장법 제147조(주식등의 대량보유 등의 보고)가 해당 조문이고, 통상 \"5일 이내\" 보고로 알려져 있습니다. 다만 그 5일이 영업일 기산인지, 보유 목적(경영참가·일반투자·단순투자)에 따라 기한이 달라지는지, 최근 개정으로 바뀐 부분이 있는지는 여기서 확인하지 못했습니다. 실무 판단에는 금감원 기업공시 실무안내 또는 법제처 국가법령정보센터의 현행 조문을 직접 확인하십시오.\n\n**이 도구로 함께 볼 수 있는 것**\n\n취득 주체가 공시대상기업집단 소속 회사라면 같은 거래에 공정위 쪽 의무가 별도로 붙을 수 있습니다.\n\n- 취득한 상장사 주식이 계열회사 주식이면 대규모내부거래(J001) 이사회 의결·공시 대상인지 여부. 기준금액은 취득 회사의 자본 기준으로 계산합니다.\n- 취득 회사가 비상장사면 자기자본 5% 이상 타법인 주식취득 공시(J005) 대상인지 여부. 위 공정위 문답 unl-030·unl-013이 이 경우를 다룹니다. 단 2015년 문서라 현행 기준 재확인이 필요하다는 caveat가 붙어 있습니다.\n\n취득 회사명·상장 여부·상대방이 계열회사인지·취득금액을 알려주면 공정위 쪽 의무와 기한을 check_disclosure_duty로 계산할 수 있습니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__search_ftc_qna\",\"max_results\":1}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"대량보유 5% 보고 상장사 주식 취득\",\"limit\":5}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__search_ftc_qna\"}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"대량보유 5% 보고 상장사 주식 취득\",\n  \"results\": [\n    {\n      \"id\": \"unl-052\",\n      \"category\": \"unlisted_material\",\n      \"question\": \"상장사의 주식을 장내에서 매입하기 위해 미수거래를 하게 되었고 결제일에 미수금을 입금한 경우 타법인 주식 취득"
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 49356,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__search_ftc_qna"
+  ]
+}

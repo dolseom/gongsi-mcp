@@ -1,0 +1,435 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { checkDisclosureDuty } from '../src/tools/check-disclosure-duty.js';
+import { Store, todayKst } from '../src/lib/store.js';
+import { useMemoryStore } from './helpers/store.js';
+import { redact } from '../src/lib/logger.js';
+import { __resetConfig } from '../src/lib/config.js';
+import { 억 } from '../src/rules/thresholds.js';
+
+describe('check_disclosure_duty', () => {
+  it('소노스테이션 실사례 — 비상장 7영업일, 7/28 공시는 적법', () => {
+    // 검증된 실제 사례: rcept_no 20260728000484
+    // 이사회 의결 2026-07-22(수) → 비상장 7영업일 기한 = 2026-07-31
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      boardDate: '20260722',
+      actualDisclosureDate: '20260728',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+      today: '20260729',
+    });
+    expect('error' in r).toBe(false);
+    if ('error' in r) return;
+
+    expect(r.deadline?.deadline).toBe('20260731');
+    expect(r.compliance?.onTime).toBe(true);
+    expect(r.compliance?.delayDays).toBe(0);
+    expect(r.penalty).toBeUndefined();
+  });
+
+  it('같은 건이 상장사였다면 3영업일이라 1일 지연이다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'listed',
+      boardDate: '20260722',
+      actualDisclosureDate: '20260728',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+      today: '20260729',
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+
+    expect(r.deadline?.deadline).toBe('20260727');
+    expect(r.compliance?.onTime).toBe(false);
+    expect(r.compliance?.delayDays).toBe(1);
+    // 지연이면 과태료를 함께 산정한다
+    expect(r.penalty).toBeDefined();
+  });
+
+  it('quarterEnd 가 분기 종료일이 아니면 invalid_argument — 30일 지연이 적법으로 뒤집히던 경로 (P0-1)', () => {
+    // 실측 재현: quarterEnd 20260731 + 공시 20260813 이 "기한 20260814 · 적법 · warnings 0" 으로 나왔다.
+    // 정상값 20260630 이면 기한 20260714 → 30일 지연이다.
+    const r = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260731',
+      actualDisclosureDate: '20260813',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+
+    const r2 = checkDisclosureDuty({
+      duty: 'goods_services_reduced',
+      quarterEnd: '20260731',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+
+    // 정상 분기말은 기존 동작 유지 — 단, 분기 일괄 공시 기한(제9조제3항)은 계열 금융회사의 일상적 약관거래
+    // 경로에만 있으므로(2026-09-24 경로 재설계) 그 경로임을 입력한다
+    const ok = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260630',
+      actualDisclosureDate: '20260813',
+      isFinancialCompany: true,
+      routineFinancialBusiness: true,
+    });
+    if ('error' in ok) throw new Error('예상치 못한 에러 응답');
+    expect(ok.deadline?.deadline).toBe('20260714');
+    expect(ok.compliance?.onTime).toBe(false);
+  });
+
+  it('공시일이 의결일보다 앞서면 invalid_argument — 연도 오타가 적법으로 통과하던 경로 (P0-2)', () => {
+    // 실측 재현: boardDate 20260722 + actualDisclosureDate 20250728(연도 오타)이
+    // "기한 내이므로 적법" + notes/warnings 빈 배열로 나왔다
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      boardDate: '20260722',
+      actualDisclosureDate: '20250728',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+    if ('error' in r) expect(r.message).toContain('앞섭니다');
+
+    // 사유 발생일(비상장 중요사항)·분기 종료일(약관특례)도 같은 하한 검증을 받는다
+    const r2 = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260722',
+      actualDisclosureDate: '20250728',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+  });
+
+  it('공시일 하한은 duty별 기준일만 본다 — 무관한 boardDate 가 정상 입력을 거부하지 않는다 (Codex 6차)', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260701',
+      actualDisclosureDate: '20260702',
+      boardDate: '20261231', // unlisted_material 과 무관한 필드 — 검증에 끼면 안 된다
+      today: '20260710',
+    });
+    expect('error' in r).toBe(false);
+  });
+
+  it('의결일 당일 공시는 적법하게 통과한다 (하한은 미만 비교)', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      boardDate: '20260722',
+      actualDisclosureDate: '20260722',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+      today: '20260723',
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.compliance?.onTime).toBe(true);
+  });
+
+  it('group_status 도 연도 오타를 잡는다 — 과거 연도 공시일이 적법으로 통과하던 경로 (Codex 6차 치명)', () => {
+    // 재현: year 2026 2분기 기한 20260831, actualDisclosureDate 20250831(오타) → 종전엔 onTime:true
+    const r = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      quarter: 2,
+      actualDisclosureDate: '20250831',
+      today: '20260901',
+    });
+    expect('error' in r && r.error).toBe('invalid_argument');
+
+    // 연1회(5/31 기한)도 연도가 다르면 잡는다
+    const r2 = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      actualDisclosureDate: '20250520',
+      today: '20260601',
+    });
+    expect('error' in r2 && r2.error).toBe('invalid_argument');
+
+    // 정상: 2026 연1회를 5월에 공시
+    const ok = checkDisclosureDuty({
+      duty: 'group_status',
+      year: 2026,
+      actualDisclosureDate: '20260529',
+      today: '20260601',
+    });
+    if ('error' in ok) throw new Error('예상치 못한 에러 응답');
+    expect(ok.compliance?.onTime).toBe(true);
+  });
+
+  it('기준금액 = min(100억, max(5억, 자본×5%)) — 60억', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'listed',
+      boardDate: '20260722',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+      amountBasis: 'actual',
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+
+    expect(r.threshold?.amount).toBe(60 * 억);
+    expect(r.verdict).toBe('required'); // 80억 >= 60억
+  });
+
+  it('자본 정보가 없으면 추정하지 않고 insufficient_data 를 돌려준다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'listed',
+      boardDate: '20260722',
+      amount: 80 * 억,
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+
+    expect(r.verdict).toBe('insufficient_data');
+    // 폐지된 옛 기준을 쓰지 않도록 안내한다
+    expect(r.notes.join(' ')).toContain('50억');
+  });
+
+  it('amountBasis 미지정이면 판정이 뒤집힐 수 있다고 경고한다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'large_internal_transaction',
+      listing: 'listed',
+      boardDate: '20260722',
+      totalEquity: 1200 * 억,
+      amount: 80 * 억,
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.notes.join(' ')).toContain('amountBasis');
+  });
+
+  // ★ **의도적 계약 변경** (2026-09-13): 종전에는 duty 단독 입력이 invalid_argument 였다.
+  //   그러면 "자본 1,200억에 80억 거래인데 공시 대상이야?" 처럼 **아직 날짜가 없는 첫 질문**에
+  //   응답 전체가 사라진다. 없는 입력은 오류가 아니라 그 계산의 미확정 사유로 바꿨다.
+  //   ⚠️ 제공했지만 **잘못된** 값(실존하지 않는 날짜·분기말 아님·공시일 역전)은 그대로 오류다
+  //   — 이 파일의 다른 invalid_argument 테스트는 한 글자도 바꾸지 않았다.
+  it('duty 단독 입력은 오류가 아니라 양쪽 미확정 + 필요한 입력 목록이다 (의도적 재규정)', () => {
+    const r = checkDisclosureDuty({ duty: 'large_internal_transaction' });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.components.duty.status).toBe('insufficient_data');
+    expect(r.components.deadline.status).toBe('insufficient_data');
+
+    const fields = r.missing_inputs.map((m) => m.field);
+    expect(fields).toContain('boardDate');
+    expect(fields).toContain('listing');
+    expect(fields).toContain('amount');
+    // 자본은 **대안 관계**다 — 둘 다 필수라고 요구하지 않는다
+    expect(fields).toContain('totalEquity');
+    expect(fields).not.toContain('paidInCapital');
+    const capital = r.missing_inputs.find((m) => m.field === 'totalEquity');
+    expect(capital?.alternatives).toEqual(['paidInCapital']);
+
+    // 기한이 없으면 지연·과태료·자진시정을 만들지 않는다
+    expect(r.deadline).toBeUndefined();
+    expect(r.compliance).toBeUndefined();
+    expect(r.penalty).toBeUndefined();
+    expect(r.selfCorrection).toBeUndefined();
+  });
+
+  it('약관 금융거래의 의결 생략은 계열 금융회사의 일상적 약관거래에만 알린다 — 고시 제9조제1항', () => {
+    // 원문: "금융업 또는 보험업을 영위하는 내부거래공시대상회사(계열 금융회사)가 해당 회사가 영위하는 금융업 또는
+    //        보험업과 관련한 일상적인 거래분야에서 … 약관에 따라 … 이사회 의결을 거치지 아니할 수 있다"
+    const fin = checkDisclosureDuty({
+      duty: 'omnibus_financial',
+      quarterEnd: '20260630',
+      isFinancialCompany: true,
+      routineFinancialBusiness: true,
+    });
+    if ('error' in fin) throw new Error('예상치 못한 에러 응답');
+    expect(fin.summary).toContain('이사회 의결을 거치지 않을 수 있고');
+    // 경로를 모르면 "의결 불요" 를 단정하지 않는다 (2026-09-24 이전에는 금융·비금융 구분 없이 단정했다)
+    const r = checkDisclosureDuty({ duty: 'omnibus_financial', quarterEnd: '20260630' });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.verdict).toBe('insufficient_data');
+    expect(r.summary).toContain('단정하지 않습니다');
+  });
+
+  it('기업집단현황 연1회 기한 5/31이 일요일이면 익영업일로 밀린다', () => {
+    // 2026-05-31은 일요일. 만료일이 비영업일이면 다음 영업일이 기한이 된다.
+    const r = checkDisclosureDuty({ duty: 'group_status', year: 2026 });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.deadline?.deadline).toBe('20260601');
+    expect(r.deadline?.adjustedToNextBusinessDay).toBe(true);
+  });
+
+  it('기업집단현황 연1회 기한 5/31이 평일이면 그대로다', () => {
+    // 2027-05-31은 월요일
+    const r = checkDisclosureDuty({ duty: 'group_status', year: 2027 });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.deadline?.deadline).toBe('20270531');
+    expect(r.deadline?.adjustedToNextBusinessDay).toBe(false);
+  });
+
+  it('비상장사 중요사항 증여는 자기자본의 1%가 임계다', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260722',
+      materialItem: 'gift',
+      totalEquity: 1000 * 억,
+      paidInCapital: 100 * 억,
+      amount: 11 * 억,
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    expect(r.threshold?.amount).toBe(10 * 억);
+    expect(r.verdict).toBe('required');
+  });
+
+  it('자기자본이 자본금에 미달하면 자본금을 자기자본으로 본다 — 고시 §5의2③', () => {
+    const r = checkDisclosureDuty({
+      duty: 'unlisted_material',
+      occurredDate: '20260722',
+      materialItem: 'gift',
+      totalEquity: 50 * 억,
+      paidInCapital: 200 * 억,
+      amount: 1 * 억,
+    });
+    if ('error' in r) throw new Error('예상치 못한 에러 응답');
+    // 자본금 200억의 1% = 2억이 임계 (자기자본 50억의 1%인 0.5억이 아니다)
+    expect(r.threshold?.amount).toBe(2 * 억);
+    expect(r.verdict).toBe('not_required');
+  });
+});
+
+describe('저장소 (node:sqlite 어댑터)', () => {
+  const store = useMemoryStore();
+
+  it('일일 호출 카운터는 KST 일자 버킷으로 누적된다', () => {
+    expect(store().todayCallCount('dart')).toBe(0);
+    store().incrementCall('dart', 1);
+    store().incrementCall('dart', 2);
+    expect(store().todayCallCount('dart')).toBe(3);
+    // API 별로 분리된다
+    expect(store().todayCallCount('egroup')).toBe(0);
+    expect(todayKst()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('법인 인덱스는 상호 완전일치로 동명 법인을 모두 돌려준다', () => {
+    store().upsertCorps([
+      { corpCode: '00126229', corpName: '삼성물산', stockCode: null, jurirNo: '1101110015762', modifyDate: '20260101' },
+      { corpCode: '00149655', corpName: '삼성물산', stockCode: null, jurirNo: '1101110002975', modifyDate: '20260101' },
+    ]);
+    expect(store().findCorpsByName('삼성물산')).toHaveLength(2);
+    // 법인등록번호로 유일하게 특정된다 — 기업집단포털 조인 키
+    expect(store().findCorpsByJurirNo('1101110002975')).toHaveLength(1);
+  });
+
+  it('jurir_no 는 새 값이 없으면 기존 값을 지킨다', () => {
+    store().upsertCorps([
+      { corpCode: '00126380', corpName: '삼성전자', stockCode: '005930', jurirNo: '1301110006246', modifyDate: '20260101' },
+    ]);
+    // CORPCODE.xml 재적재 — jurir_no 가 없는 소스
+    store().upsertCorps([
+      { corpCode: '00126380', corpName: '삼성전자', stockCode: '005930', jurirNo: null, modifyDate: '20260201' },
+    ]);
+    expect(store().getCorpByCode('00126380')?.jurirNo).toBe('1301110006246');
+    expect(store().getCorpByCode('00126380')?.modifyDate).toBe('20260201');
+  });
+
+  it('파싱 실패한 원문도 빈 값으로 캐시해 재다운로드를 막는다', () => {
+    store().storeBody('20260101000001', '');
+    expect(store().hasBody('20260101000001')).toBe(true);
+    expect(store().getBody('20260101000001')?.content).toBe('');
+  });
+});
+
+describe('로그 — API 키 노출 방지 (회귀 고정)', () => {
+  beforeEach(() => {
+    __resetConfig();
+    // 실키 금지 — 형식만 같은 합성 더미 (40자 hex). 실키를 픽스처로 쓰면 커밋에 키가 박제된다.
+    process.env['DART_API_KEY'] = '0123456789abcdef0123456789abcdef01234567';
+  });
+  afterEach(() => {
+    delete process.env['DART_API_KEY'];
+    __resetConfig();
+  });
+
+  it('설정된 인증키는 로그에서 가려진다', () => {
+    const out = redact('요청 실패 crtfc_key=0123456789abcdef0123456789abcdef01234567 path=/list.json');
+    expect(out).not.toContain('0123456789abcdef0123456789abcdef01234567');
+    expect(out).toContain('REDACTED');
+  });
+
+  it('설정에 없는 키 형태도 가려진다', () => {
+    const out = redact('serviceKey=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789');
+    expect(out).not.toContain('abcdef0123456789abcdef0123456789');
+  });
+});
+
+describe('원문 영구 캐시의 rcept_no 불변 전제 (피드백 §2-3 — 암묵 전제의 명시 고정)', () => {
+  // 영구 캐시(TTL 없음)가 안전한 유일한 근거: 원본 접수분은 불변이고 정정은 새 rcept_no 로 온다.
+  // 이 전제가 안 통하는 데이터(목록·검색 결과·집계)는 docs(원문 캐시) 테이블에 넣으면 안 된다.
+  it('본문 캐시 키는 rcept_no 단독이며 시간이 지나도 만료되지 않는다', () => {
+    const s = new Store(':memory:');
+    s.storeBody('20260101000001', '원문 내용', '공');
+    const got = s.getBody('20260101000001');
+    expect(got?.content).toBe('원문 내용');
+    // TTL 컬럼·만료 경로가 없다 — 아주 오래된 fetchedAt 이어도 그대로 반환된다는 계약.
+    // (만료를 도입하려면 이 테스트와 storeBody 주석의 전제를 함께 재검토할 것)
+    expect(got?.fetchedAt).toBeTruthy();
+    // 같은 rcept_no 재저장은 교체다 (force_refresh 경로) — 다른 rcept_no 에 영향 없다
+    s.storeBody('20260101000002', '다른 공시', '공');
+    s.storeBody('20260101000001', '갱신된 내용', '공');
+    expect(s.getBody('20260101000001')?.content).toBe('갱신된 내용');
+    expect(s.getBody('20260101000002')?.content).toBe('다른 공시');
+    s.close();
+  });
+});
+
+describe('버전 단일 출처 (피드백 §2-2 ⑦ — 하드코딩 불일치 방지)', () => {
+  it('VERSION 이 package.json 과 일치한다 (루트 탐색 실패 시 0.0.0 폴백이 잡힘)', async () => {
+    const { VERSION, USER_AGENT } = await import('../src/lib/config.js');
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'));
+    expect(VERSION).toBe(pkg.version);
+    expect(USER_AGENT).toBe(`gongsi-mcp/${pkg.version}`);
+  });
+});
+
+describe('도구 입력 날짜 round-trip 검증 (Codex 3차 백로그)', () => {
+  it('실존하지 않는 날짜는 스키마에서 거부한다', async () => {
+    const { checkDisclosureDutyInput } = await import('../src/tools/check-disclosure-duty.js');
+    const base = {
+      duty: 'large_internal_transaction',
+      listing: 'unlisted',
+      totalEquity: 1200,
+      amount: 80,
+      amountBasis: 'actual',
+    };
+    // 20260231은 정규식은 통과하지만 실존하지 않는다 — Date 롤오버로 기한이 틀어지기 전에 차단
+    expect(checkDisclosureDutyInput.safeParse({ ...base, boardDate: '20260231' }).success).toBe(false);
+    expect(checkDisclosureDutyInput.safeParse({ ...base, boardDate: '20260722' }).success).toBe(true);
+  });
+
+  it('search/audit 의 기간 입력도 같은 검증을 탄다', async () => {
+    const { searchDisclosuresInput } = await import('../src/tools/search-disclosures.js');
+    const { auditGroupDisclosuresInput } = await import('../src/tools/audit-group-disclosures.js');
+    expect(searchDisclosuresInput.safeParse({ date_from: '20260431', date_to: '20260501' }).success).toBe(false);
+    expect(
+      auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20261301' }).success,
+    ).toBe(false);
+    expect(
+      auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20260131' }).success,
+    ).toBe(true);
+  });
+
+  it('audit 두 도구의 year_month 형식 오류도 get_group_structure 와 같은 문구로 알린다', async () => {
+    const { auditGroupDisclosuresInput } = await import('../src/tools/audit-group-disclosures.js');
+    const { auditPeriodicDisclosuresInput } = await import('../src/tools/audit-periodic-disclosures.js');
+    const { getGroupStructureInput } = await import('../src/tools/get-group-structure.js');
+    const msg = (r: { success: boolean; error?: { issues: Array<{ message: string }> } }) =>
+      r.error?.issues.map((i) => i.message).join(' | ');
+    const expected = msg(getGroupStructureInput.safeParse({ group: '삼성', year_month: '2026-05' }));
+    expect(expected).toContain('YYYYMM');
+    expect(
+      msg(auditGroupDisclosuresInput.safeParse({ group: '삼성', from: '20260101', to: '20260131', year_month: '2026-05' })),
+    ).toBe(expected);
+    expect(msg(auditPeriodicDisclosuresInput.safeParse({ group: '삼성', year: 2026, year_month: '2026-05' }))).toContain(
+      expected,
+    );
+  });
+});

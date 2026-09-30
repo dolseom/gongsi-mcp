@@ -1,0 +1,549 @@
+/**
+ * 과태료 산정
+ *
+ * 근거: 공정거래법 시행령 [별표 9] 과태료의 부과기준(제94조제3호)
+ *       + 공정위 과태료 부과기준 고시 2종
+ *
+ * ⚠️ 공정위 재량과 개별 사정이 반영되지 않은 고시 기준 단순 산정값이다.
+ *    실제 부과액과 다를 수 있으며 확정액이 아니다.
+ */
+
+import type { LegalRef, PenaltyResult } from './types.js';
+import { findRatioTier } from './penalty-ratios.js';
+import { 억 } from './thresholds.js';
+
+const 만 = 10_000;
+
+/** 법 §26·§29(대규모내부거래·공익법인) / 법 §27·§28(중요사항·기업집단현황) */
+export type PenaltyRegime = 'art26_29' | 'art27_28';
+
+export interface ViolationInput {
+  regime: PenaltyRegime;
+  /** 이사회 의결을 거쳤는지 (art26_29 전용) */
+  boardResolution?: boolean;
+  /** 공시를 했는지 */
+  disclosed: boolean;
+  /** 기한을 지켰는지 (disclosed=true일 때 유효) */
+  onTime?: boolean;
+  /** 주요내용 누락·거짓 공시가 있었는지 */
+  hasOmissionOrFalse?: boolean;
+  /** 과태료 처분 사전통지서 발송일 전날까지 보완했는지 */
+  supplemented?: boolean;
+  /**
+   * 지연일수 (달력일). 기한 초과 또는 보완 지연 일수 — **종전 호환 필드**.
+   * 아래 두 필드를 주지 않으면 이 값을 가산일수와 공시지연 일수 양쪽에 쓴다.
+   * ⚠️ 단 보완 사건(기한 내 공시 + 누락·거짓 + 보완)에서는 이 값을 "공시지연 일수" 감경
+   *    (고시 Ⅵ.3.다(4)(나))에 쓰지 않는다 — 원 공시는 기한을 지켰고, 보완 경과일을 공시지연
+   *    일수로 보는 해석은 원문 미확인이다 (`unconfirmedScenarios` 로만 제시).
+   */
+  delayDays?: number;
+  /**
+   * 공시지연 일수 (달력일) — 공시기한을 넘겨 공시한 일수. 고시 Ⅵ.3.다(4)(나)
+   * "공시지연 일수가 3일 이하인 경우 75% …" 감경 판정에 쓴다. 기한 내 공시(onTime=true)면 0 으로 본다.
+   */
+  filingDelayDays?: number;
+  /**
+   * 보완 경과일수 (달력일) — 별표 9 "공시기한을 넘긴 날의 다음 날부터 보완을 마친 날까지 1일마다 …
+   * 가산" 의 가산일수. supplemented=true 일 때 일수가산에 쓴다.
+   */
+  supplementationElapsedDays?: number;
+  /**
+   * 위반행위별 거래금액 (원). art26_29 전용 — 100억원 미만이면 고시 Ⅵ.2 적용비율로
+   * 기준금액이 낮아진다(최저 50%). 미지정 시 비율을 적용하지 않아 산정값은 상한선이 된다.
+   */
+  transactionAmount?: number;
+
+  // ── 가중 사유 ──
+  /** 공시의무 회피 목적의 고의적 분할거래 */
+  intentionalSplit?: boolean;
+  /** 최근 5개년(점검연도 포함) 공시의무 위반 건수 */
+  violationsLast5Years?: number;
+
+  // ── 감경 사유 ──
+  /** 최초 위반 또는 최근 5개년 무위반 (art27_28 전용) */
+  firstViolation?: boolean;
+  /** 신규 지정·편입일 후 30일 이내 위반 */
+  newlyDesignatedWithin30Days?: boolean;
+  /** 거래내용 동일성 유지 + 계약기간 자동연장 */
+  autoRenewalSameTerms?: boolean;
+  /** 공시주체의 적극적 행위 없는 지분율 변동 (art27_28 전용) */
+  passiveShareChange?: boolean;
+  /** 계열 금융투자회사의 사실상 중개, 매도·매수인 비계열 확인 (art26_29 전용) */
+  brokeredNonAffiliate?: boolean;
+  /** 민간투자법 §14 민간투자사업자 (art26_29 전용) */
+  pppOperator?: boolean;
+  /** 과태료 체납 중 — 감경·면제 배제 */
+  inArrears?: boolean;
+
+  /** 상한 산정용: max(자본금, 자본총계) */
+  capitalBase?: number;
+  /**
+   * capitalBase 가 자본총계·자본금 중 **한쪽 값만으로** 만들어진 경우 (P2-다 12).
+   * 소기업 상한(Ⅵ.1 단서)은 둘 중 큰 금액 기준인데, 한쪽만 알면 과소평가될 수 있고
+   * 그러면 상한이 잘못 발동해 과태료가 caveat 없이 깎인다 — true 면 caveat 를 동봉한다.
+   */
+  capitalBaseIncomplete?: boolean;
+}
+
+const REF: Record<PenaltyRegime, LegalRef[]> = {
+  art26_29: [
+    {
+      source: '독점규제 및 공정거래에 관한 법률 시행령 [별표 9] 제2호 가목',
+      summary: '법 제26조·제29조 위반행위에 대한 과태료 기본금액표',
+    },
+    {
+      source: '대규모내부거래 등에 대한 이사회 의결 및 공시의무 위반사건에 관한 과태료 부과기준',
+      summary: '기준금액 산정, 임의적 가중·감경, 면제기준 및 상한',
+    },
+  ],
+  art27_28: [
+    {
+      source: '독점규제 및 공정거래에 관한 법률 시행령 [별표 9] 제2호 나목',
+      summary: '법 제27조·제28조 위반행위에 대한 과태료 기본금액표',
+    },
+    {
+      source: '공시대상기업집단 소속회사 등의 중요사항 공시의무 위반사건에 관한 과태료 부과기준',
+      summary: '기본금액 산정, 임의적 가중·감경, 면제기준 및 상한',
+    },
+  ],
+};
+
+interface BaseAmount {
+  base: number;
+  daily: number;
+  dailyCap: number;
+  label: string;
+}
+
+/** 별표9 제2호 가목 — 법 §26·§29 */
+function baseArt26(v: ViolationInput): BaseAmount {
+  const board = v.boardResolution ?? true;
+  if (board) {
+    if (!v.disclosed) return { base: 5000 * 만, daily: 0, dailyCap: 0, label: '이사회 의결 O / 미공시' };
+    if (v.onTime) {
+      if (!v.hasOmissionOrFalse) return { base: 0, daily: 0, dailyCap: 0, label: '위반 없음' };
+      return v.supplemented
+        ? { base: 500 * 만, daily: 10 * 만, dailyCap: 2000 * 만, label: '기한 내 공시 / 누락·거짓 후 보완' }
+        : { base: 2000 * 만, daily: 0, dailyCap: 0, label: '기한 내 공시 / 누락·거짓' };
+    }
+    return v.hasOmissionOrFalse && !v.supplemented
+      ? { base: 5000 * 만, daily: 0, dailyCap: 0, label: '기한 초과 / 누락·거짓' }
+      : { base: 500 * 만, daily: 10 * 만, dailyCap: 5000 * 만, label: '기한 초과 / 누락·거짓 없음' };
+  }
+  if (!v.disclosed) return { base: 7000 * 만, daily: 0, dailyCap: 0, label: '이사회 의결 X / 미공시' };
+  return v.hasOmissionOrFalse
+    ? { base: 7000 * 만, daily: 0, dailyCap: 0, label: '이사회 의결 X / 공시 / 누락·거짓' }
+    : { base: 5000 * 만, daily: 0, dailyCap: 0, label: '이사회 의결 X / 공시 / 누락·거짓 없음' };
+}
+
+/** 별표9 제2호 나목 — 법 §27·§28 */
+function baseArt27(v: ViolationInput): BaseAmount {
+  if (!v.disclosed) return { base: 1000 * 만, daily: 0, dailyCap: 0, label: '미공시' };
+  if (v.onTime) {
+    if (!v.hasOmissionOrFalse) return { base: 0, daily: 0, dailyCap: 0, label: '위반 없음' };
+    return v.supplemented
+      ? { base: 100 * 만, daily: 5 * 만, dailyCap: 500 * 만, label: '기한 내 공시 / 누락·거짓 후 보완' }
+      : { base: 500 * 만, daily: 0, dailyCap: 0, label: '기한 내 공시 / 누락·거짓' };
+  }
+  return v.hasOmissionOrFalse && !v.supplemented
+    ? { base: 1000 * 만, daily: 0, dailyCap: 0, label: '기한 초과 / 누락·거짓' }
+    : { base: 100 * 만, daily: 5 * 만, dailyCap: 1000 * 만, label: '기한 초과 / 누락·거짓 없음' };
+}
+
+/** 지연일수 감경 구간 — 고시 Ⅵ.3.다.(4) */
+export const DELAY_TIERS: ReadonlyArray<{ maxDays: number; rate: number }> = [
+  { maxDays: 3, rate: 0.75 },
+  { maxDays: 7, rate: 0.5 },
+  { maxDays: 15, rate: 0.3 },
+  { maxDays: 30, rate: 0.2 },
+];
+
+function delayMitigationRate(delayDays: number): number {
+  if (delayDays <= 0) return 0; // 지연이 없으면 지연 감경도 없다
+  return currentDelayTier(delayDays)?.rate ?? 0;
+}
+
+/** delayDays 가 속한 감경 구간 ("N일 이하") — 30일 초과면 undefined */
+export function currentDelayTier(delayDays: number): { maxDays: number; rate: number } | undefined {
+  return DELAY_TIERS.find((t) => delayDays <= t.maxDays);
+}
+
+/** 산정 결과에 붙는 가정·미확인 시나리오 — 본 산정값(amount)과 분리해 보여 준다 */
+export interface PenaltyScenario {
+  /** 시나리오 식별자 */
+  id: 'board_resolution_not_obtained' | 'supplementation_counted_as_filing_delay';
+  label: string;
+  /** 이 시나리오일 때의 산정값 (원) */
+  amount: number;
+  formula: string;
+  /**
+   * alternative_fact = 가정한 사실이 다르면 원문상 이 칸이 적용된다 (예: 의결을 거치지 않았다면)
+   * unconfirmed_interpretation = 원문이 적용 여부를 정하지 않은 해석 — 확정 숫자로 쓰지 말 것
+   */
+  status: 'alternative_fact' | 'unconfirmed_interpretation';
+  note: string;
+}
+
+/** estimatePenalty 반환값 — PenaltyResult 에 선택 필드만 더했다 (하위호환) */
+export interface PenaltyEstimate extends PenaltyResult {
+  /**
+   * 호출자가 주지 않아 **가정으로 채운 입력**. 현재는 §26·§29 의 이사회 의결 여부뿐이다.
+   * caveats 문장을 놓쳐도 이 필드로 가정 여부를 기계적으로 알 수 있게 한다.
+   */
+  assumptions?: Array<{ field: 'boardResolution'; assumedValue: true; reason: string }>;
+  /** 가산일수·공시지연 일수를 분리해 무엇을 썼는지 (보완 사건 여부 포함) */
+  dayCounts?: {
+    /** 별표 9 일수가산에 쓴 일수 */
+    surchargeDays: number;
+    /** Ⅵ.3.다(4)(나) 공시지연 감경에 쓴 일수 — undefined 면 확정 감경에 쓰지 않았다 */
+    filingDelayDays?: number;
+    /** 보완 사건(누락·거짓 공시를 사전통지서 발송일 전날까지 보완)으로 산정했는가 */
+    supplementationCase: boolean;
+  };
+  /** 본 산정값과 분리한 대안·미확인 해석 시나리오 */
+  scenarios?: PenaltyScenario[];
+}
+
+/**
+ * 기본금액 상한 — 자본 규모가 작은 회사 보호 (고시 Ⅵ.1 단서)
+ * "위반 기본금액은 자본금 또는 자본총계 중 큰 금액의 100분의 1을 초과할 수 없으며,
+ *  이를 초과하는 경우 그 100분의 1을 기본금액으로 한다"
+ *
+ * ⚠️ 기본금액에는 일수가산이 포함되므로(별표 9 한 칸에 함께 규정) 이 상한도 가산을 포함한
+ *    총액에 걸어야 한다. 가산 전 금액에만 걸면 상한을 넘은 기본금액이 만들어진다.
+ */
+function applySmallCapCap(base: number, regime: PenaltyRegime, capitalBase?: number): number {
+  if (capitalBase === undefined) return base;
+  const limit = regime === 'art26_29' ? 50 * 억 : 10 * 억;
+  if (capitalBase > limit) return base;
+  return Math.min(base, capitalBase * 0.01);
+}
+
+/** 보완 사건 = 누락·거짓 공시를 사전통지서 발송일 전날까지 보완 (§26 은 의결을 거친 사건만 보완 칸이 있다) */
+function isSupplementationCase(v: ViolationInput): boolean {
+  if (!v.disclosed || !v.hasOmissionOrFalse || !v.supplemented) return false;
+  return v.regime === 'art27_28' || (v.boardResolution ?? true);
+}
+
+/**
+ * 가산일수·공시지연 일수 분리 (Codex 검토 §2 권고).
+ * - 가산일수: 별표 9 "공시기한을 넘긴 날의 다음 날부터 보완을 마친 날까지" — 보완 사건이면 보완 경과일수.
+ * - 공시지연 일수: 고시 Ⅵ.3.다(4)(나). 기한 내 공시면 0. 보완 사건인데 명시 입력이 없으면 미상(undefined).
+ */
+function resolveDayCounts(v: ViolationInput): { surchargeDays: number; filingDelayDays?: number; supp: boolean } {
+  const supp = isSupplementationCase(v);
+  const surchargeDays = supp
+    ? (v.supplementationElapsedDays ?? v.delayDays ?? v.filingDelayDays ?? 0)
+    : (v.filingDelayDays ?? v.delayDays ?? 0);
+  let filingDelayDays: number | undefined;
+  if (v.onTime === true) filingDelayDays = 0;
+  else if (v.filingDelayDays !== undefined) filingDelayDays = v.filingDelayDays;
+  else if (!supp) filingDelayDays = v.delayDays ?? 0;
+  return { surchargeDays, ...(filingDelayDays !== undefined ? { filingDelayDays } : {}), supp };
+}
+
+export function estimatePenalty(v: ViolationInput): PenaltyEstimate {
+  const core = estimateCore(v);
+  const scenarios: PenaltyScenario[] = [];
+
+  // ① 의결 여부 미입력 → 의결 O 가정. 반대 사실이면 원문상 다른 칸이므로 금액을 나란히 보여 준다.
+  if (v.regime === 'art26_29' && v.boardResolution === undefined && core.basicTotal > 0) {
+    const alt = estimateCore({ ...v, boardResolution: false });
+    scenarios.push({
+      id: 'board_resolution_not_obtained',
+      label: '이사회 의결을 거치지 않았다면 (별표 9 제2호 가목 "이사회 의결을 거치지 않은 경우" 칸)',
+      amount: alt.amount,
+      formula: alt.formula,
+      status: 'alternative_fact',
+      note: '의결 여부가 입력되지 않아 본 산정은 "의결을 거친 경우" 칸을 가정했습니다. 의결이 없었다면 이 값이 적용 칸입니다.',
+    });
+  }
+
+  // ② 보완 사건에 "공시지연 일수" 감경을 적용하는 해석 — 원문 미확인이라 본 산정에서 빼고 시나리오로만 둔다.
+  const days = resolveDayCounts(v);
+  if (days.supp && days.surchargeDays > 0 && core.basicTotal > 0 && !v.inArrears) {
+    const rateIfCounted = delayMitigationRate(days.surchargeDays);
+    const confirmedRate = delayMitigationRate(days.filingDelayDays ?? 0);
+    if (rateIfCounted > confirmedRate) {
+      const alt = estimateCore(v, days.surchargeDays);
+      scenarios.push({
+        id: 'supplementation_counted_as_filing_delay',
+        label: `보완 경과 ${days.surchargeDays}일을 "공시지연 일수"로 보아 ${Math.round(rateIfCounted * 100)}% 감경한다면`,
+        amount: alt.amount,
+        formula: alt.formula,
+        status: 'unconfirmed_interpretation',
+        note:
+          '고시 Ⅵ.3.다(4)(나)는 "공시지연 일수가 3일 이하인 경우 75% …"라고만 정하고, 기한 내 공시한 뒤 누락·거짓을 ' +
+          '보완한 사건의 보완 경과일을 공시지연 일수로 보는지는 정하지 않았습니다(원문 미확인). 확정 산정값으로 쓰지 마세요.',
+      });
+    }
+  }
+
+  const assumptions: PenaltyEstimate['assumptions'] =
+    v.regime === 'art26_29' && v.boardResolution === undefined && core.basicTotal > 0
+      ? [
+          {
+            field: 'boardResolution',
+            assumedValue: true,
+            reason: '이사회 의결 여부가 입력되지 않아 "의결을 거친 경우" 칸으로 산정했습니다.',
+          },
+        ]
+      : undefined;
+
+  return {
+    ...core,
+    ...(assumptions ? { assumptions } : {}),
+    // 두 일수가 갈리는 경우(보완 사건·공시지연 미상)에만 싣는다 — 일반 지연 건에선 delayDays 하나로 충분하다
+    ...(days.supp || days.filingDelayDays === undefined || days.filingDelayDays !== days.surchargeDays
+      ? {
+          dayCounts: {
+            surchargeDays: days.surchargeDays,
+            ...(days.filingDelayDays !== undefined ? { filingDelayDays: days.filingDelayDays } : {}),
+            supplementationCase: days.supp,
+          },
+        }
+      : {}),
+    ...(scenarios.length > 0 ? { scenarios } : {}),
+  };
+}
+
+/**
+ * 본 산정. `mitigationDaysOverride` 는 미확인 해석 시나리오 계산 전용 — 공시지연 감경에 쓸 일수를 강제한다.
+ */
+function estimateCore(v: ViolationInput, mitigationDaysOverride?: number): PenaltyResult {
+  const days = resolveDayCounts(v);
+  const delayDays = days.surchargeDays;
+  const mitigationDays = mitigationDaysOverride ?? days.filingDelayDays ?? 0;
+  const raw = v.regime === 'art26_29' ? baseArt26(v) : baseArt27(v);
+
+  const baseAmount = applySmallCapCap(raw.base, v.regime, v.capitalBase);
+  const surchargeRaw = raw.daily * delayDays;
+  const dailySurcharge = raw.dailyCap > 0 ? Math.min(surchargeRaw, Math.max(0, raw.dailyCap - baseAmount)) : 0;
+  /**
+   * 기본금액 = 별표 9 해당 칸의 금액. 일수가산("1일마다 10만원씩 가산하되 …")은
+   * 그 칸에 함께 규정된 금액이므로 기본금액에 포함해 비율의 피승수·조정 상한의 기준으로 쓴다.
+   * 소기업 1% 상한(Ⅵ.1 단서)도 같은 이유로 가산 포함 총액에 다시 건다.
+   */
+  const basicTotal = applySmallCapCap(baseAmount + dailySurcharge, v.regime, v.capitalBase);
+
+  // ── 기준금액 = 기본금액 × 거래금액별 적용비율 (고시 Ⅵ.2) ──
+  // §27·§28 고시는 Ⅲ.2·Ⅵ.2 가 모두 "삭제"이므로 비율 적용 대상이 아니다.
+  const caveats: string[] = [];
+
+  // 조용한 낙관 기본값 2종은 가정임을 밝힌다 (P2-다 10·12) — 위반이 아예 없으면(금액 0) 소음이라 생략
+  if (basicTotal > 0) {
+    if (v.regime === 'art26_29' && v.boardResolution === undefined) {
+      caveats.push(
+        '⚠️ 이사회 의결 여부(boardResolution)가 입력되지 않아 **의결을 거친 것으로 가정**했습니다. ' +
+          '의결 없이 진행된 사건이라면 별표 9의 "의결 X" 칸이 적용되어 기본금액이 크게 올라갑니다' +
+          '(의결 X/미공시 7,000만원, 의결 X/공시 5,000만원~) — 의결이 없었다면 boardResolution:false 로 재산정하세요.',
+      );
+    }
+    if (v.capitalBaseIncomplete && v.capitalBase !== undefined) {
+      const smallCapLimit = v.regime === 'art26_29' ? 50 * 억 : 10 * 억;
+      if (v.capitalBase <= smallCapLimit) {
+        caveats.push(
+          '⚠️ 자본총계·자본금 중 **한쪽만 입력**되었습니다. 소기업 기본금액 상한(고시 Ⅵ.1 단서, 자본 1%)은 ' +
+            '둘 중 큰 금액 기준인데 입력된 한쪽 값으로만 판단했습니다 — 미입력 쪽이 더 크면 상한 적용 여부·금액이 ' +
+            '달라져 실제 과태료가 이 값보다 클 수 있습니다. 두 값을 모두 주고 재산정하세요.',
+        );
+      }
+    }
+  }
+  let transactionRatio: PenaltyResult['transactionRatio'];
+  let standardAmount = basicTotal;
+  if (v.regime === 'art26_29' && basicTotal > 0) {
+    const validAmount =
+      v.transactionAmount !== undefined && Number.isFinite(v.transactionAmount) && v.transactionAmount >= 0;
+    if (v.transactionAmount !== undefined && !validAmount) {
+      // 음수·NaN 을 조용히 최저구간(50%)으로 처리하면 입력 오류가 정상 산정값으로 둔갑한다.
+      caveats.push(
+        `⚠️ 거래금액 입력값(${v.transactionAmount})이 올바르지 않아 거래금액별 적용비율(고시 Ⅵ.2)을 ` +
+          '적용하지 않았습니다. 0 이상의 금액(원)을 주십시오. 아래 금액은 비율 미적용 상한선입니다.',
+      );
+    }
+    if (validAmount) {
+      const tier = findRatioTier(v.transactionAmount!);
+      transactionRatio = { rate: tier.rate, label: tier.label, transactionAmount: v.transactionAmount! };
+      standardAmount = basicTotal * tier.rate;
+    } else if (v.transactionAmount === undefined) {
+      caveats.push(
+        '⚠️ 거래금액(transactionAmount)을 주지 않아 거래금액별 적용비율(고시 Ⅵ.2)을 적용하지 못했습니다. ' +
+          '이 산정값은 거래금액 100억원 이상 기준이며 사실상 상한선입니다. 거래금액이 100억원 미만이면 ' +
+          '기준금액이 80억원 이상 90%, 60억원 이상 80%, 40억원 이상 70%, 20억원 이상 60%, 20억원 미만 50% 로 ' +
+          '낮아지므로 실제 과태료는 이 값의 최저 절반까지 내려갑니다.',
+      );
+    }
+  }
+
+  // ── 가중 ──
+  const aggravations: Array<{ reason: string; rate: number }> = [];
+  if (v.intentionalSplit) aggravations.push({ reason: '공시의무 회피 목적 고의적 분할거래', rate: 0.5 });
+  const n = v.violationsLast5Years ?? 0;
+  if (v.violationsLast5Years === undefined && basicTotal > 0) {
+    // 입력이 없으면 0회로 계산한다 — 조용히 빠지면 반복 위반자의 금액이 과소로 읽힌다 (외부 검토 2026-09-30 §3-5)
+    caveats.push(
+      '최근 5개년 공시의무 위반 횟수를 입력받지 않아 0회로 계산했습니다 — 4~6회면 +10%, 7회 이상이면 +20% 가중됩니다.',
+    );
+  }
+  if (n >= 7) aggravations.push({ reason: '최근 5개년 공시의무 위반 7회 이상', rate: 0.2 });
+  else if (n >= 4) aggravations.push({ reason: '최근 5개년 공시의무 위반 4~6회', rate: 0.1 });
+
+  // ── 감경 (체납자는 배제) ──
+  const mitigations: Array<{ reason: string; rate: number }> = [];
+  if (!v.inArrears) {
+    // 위반 정도가 경미한 사유는 "해당 비율 중 큰 하나"만 적용
+    const minorCandidates: Array<{ reason: string; rate: number }> = [];
+    if (v.newlyDesignatedWithin30Days) {
+      minorCandidates.push({ reason: '신규 지정·편입일 후 30일 이내 위반', rate: 0.5 });
+    }
+    // 고시 Ⅵ.3.다(4)(나) "공시지연 일수" — 가산일수(보완 경과일)와 분리한 공시지연 일수로만 판정한다.
+    if (mitigationDays > 0) {
+      const r = delayMitigationRate(mitigationDays);
+      if (r > 0) minorCandidates.push({ reason: `공시지연 ${mitigationDays}일`, rate: r });
+    }
+    if (minorCandidates.length > 0) {
+      minorCandidates.sort((a, b) => b.rate - a.rate);
+      mitigations.push(minorCandidates[0]!);
+    }
+
+    if (v.autoRenewalSameTerms) {
+      mitigations.push({ reason: '거래내용 동일성 유지 + 계약기간 자동연장', rate: 0.3 });
+    }
+    if (v.regime === 'art27_28') {
+      if (v.firstViolation) mitigations.push({ reason: '최초 위반 또는 최근 5개년 무위반', rate: 0.2 });
+      if (v.passiveShareChange) {
+        mitigations.push({ reason: '공시주체의 적극적 행위 없는 지분율 변동', rate: 0.2 });
+      }
+    } else {
+      if (v.brokeredNonAffiliate) {
+        mitigations.push({ reason: '계열 금융투자회사의 사실상 중개, 매도·매수인 비계열', rate: 0.4 });
+      }
+      if (v.pppOperator) mitigations.push({ reason: '민간투자법 제14조 민간투자사업자', rate: 0.5 });
+    }
+  }
+
+  // 고시 Ⅵ.3.가 — 가중·감경액은 기준금액에 비율을 곱하되, 문언상 상한은 기본금액 기준(1/2, 3/4)이다.
+  //
+  // ★ 문언 그대로면 0원이 나온다 (2026-08-11 원문 재확인, Opus 교차검토가 발견):
+  //   Ⅵ.2 비율(2024-08-07 신설)로 기준금액 < 기본금액이 된 상태에서 감경비율 합이 100%를 넘으면
+  //   (예: 지연 3일 75% + 자동연장 30% = 105%) 감경금액이 기준금액 자체를 초과해 부과 과태료가
+  //   0원·음수가 된다. 거래금액을 정확히 줄수록 0원이 나오는 역전이라 최악의 거짓 안심이다.
+  //   면제(Ⅴ)가 아닌 감경(Ⅵ.3)만으로 0원이 되는 해석은 체계상 무리로 보아, 감경 상한을
+  //   "감경 후에도 기준금액의 4분의 1이 남는다"는 취지로 기준금액의 4분의 3에도 함께 건다
+  //   (비율 미적용이면 기준금액 = 기본금액이라 종전 동작과 완전히 같다).
+  //   가중 쪽은 문언대로 둔다 — 과대 방향이라 거짓 안심이 아니고, 낮추면 과소 산정 위험이 있다.
+  const aggRate = aggravations.reduce((s, a) => s + a.rate, 0);
+  const mitRate = mitigations.reduce((s, m) => s + m.rate, 0);
+  const aggAmount = Math.min(standardAmount * aggRate, basicTotal * 0.5);
+  const mitAmount = Math.min(standardAmount * mitRate, basicTotal * 0.75, standardAmount * 0.75);
+  const mitCapBound = mitRate > 0.75; // 감경 상한(3/4)이 실제로 물렸는가
+  if (mitCapBound && standardAmount < basicTotal) {
+    caveats.push(
+      `⚠️ 감경비율 합계가 ${Math.round(mitRate * 100)}%로 75%를 초과합니다. 고시 Ⅵ.3.가 단서의 감경 상한` +
+        '(기본금액의 4분의 3)을 문언 그대로 적용하면 거래금액 적용비율(Ⅵ.2)과 결합해 감경금액이 기준금액을 ' +
+        '초과, 부과 과태료가 0원이 됩니다. 이 산정은 "감경 후에도 기준금액의 4분의 1이 남는다"는 취지 해석을 ' +
+        '채택해 감경을 기준금액의 4분의 3으로 상한했습니다. 실제 부과액은 공정위 재량이며, 0원(사실상 면제)이 ' +
+        '되려면 고시 Ⅴ의 면제 요건 충족 여부를 별도로 확인해야 합니다.',
+    );
+  }
+
+  let amount = standardAmount + aggAmount - mitAmount;
+
+  // 총액 상한: min(자본 × 10%, 10억원)
+  let capApplied = false;
+  const hardCap = v.capitalBase !== undefined ? Math.min(v.capitalBase * 0.1, 10 * 억) : 10 * 억;
+  if (amount > hardCap) {
+    amount = hardCap;
+    capApplied = true;
+  }
+
+  // 1만원 단위 미만 절사
+  amount = Math.max(0, Math.floor(amount / 만) * 만);
+
+  // 다음 감경 구간 경계 — **현재 구간**의 끝 다음 날. 예: 3일(75% 구간) → 4일부터 50%.
+  // (종전엔 find(maxDays > d) 라 3·7·15일이면 현재 구간을 건너뛰어 8·16·31일로 안내했다.)
+  // 확정 감경(공시지연 일수)이 있는 경로에서만 만든다 — 보완 사건의 미확인 감경으로는 만들지 않는다.
+  let nextThreshold: PenaltyResult['nextThreshold'];
+  // 누락·거짓 보완 사건은 최초 공시를 이미 마쳤으므로 공시지연 일수(감경 구간)가 더는 늘지 않는다 — 하루 더 늦어지는 건
+  // 보완 경과일뿐이라, 최초 공시지연까지 +1 한 "다음 경계"는 틀린 전망이다 (Codex 리뷰 12).
+  const supplementEvent = v.hasOmissionOrFalse === true && v.supplemented === true;
+  if (mitigationDaysOverride === undefined && mitigationDays > 0 && raw.base > 0 && !v.inArrears && !supplementEvent) {
+    const tier = currentDelayTier(mitigationDays);
+    if (tier) {
+      const futureDelay = tier.maxDays + 1;
+      const shift = futureDelay - mitigationDays;
+      const future = estimateCore({
+        ...v,
+        ...(v.delayDays !== undefined ? { delayDays: v.delayDays + shift } : {}),
+        ...(v.filingDelayDays !== undefined ? { filingDelayDays: v.filingDelayDays + shift } : {}),
+        ...(v.supplementationElapsedDays !== undefined
+          ? { supplementationElapsedDays: v.supplementationElapsedDays + shift }
+          : {}),
+      });
+      const nextRate = delayMitigationRate(futureDelay);
+      nextThreshold = {
+        delayDays: futureDelay,
+        amountIfDelayed: future.amount,
+        note:
+          `공시지연 ${tier.maxDays}일까지는 ${Math.round(tier.rate * 100)}% 감경 구간이지만, ${futureDelay}일이 되면 ` +
+          (nextRate > 0 ? `${Math.round(nextRate * 100)}%로 떨어집니다.` : '공시지연 감경이 없어집니다.'),
+      };
+    }
+  }
+
+  const 만원 = (won: number) => `${(won / 만).toLocaleString('ko-KR')}만원`;
+  const applyingRatio = transactionRatio !== undefined && transactionRatio.rate < 1;
+
+  // 비율을 곱할 때는 (기본금액 + 일수가산) 전체가 피승수임을 괄호로 드러낸다.
+  let basicExpr = `기본금액 ${만원(baseAmount)} (${raw.label})`;
+  if (dailySurcharge > 0) {
+    basicExpr += ` + 일수가산 ${만원(dailySurcharge)} (${delayDays}일 × ${raw.daily / 만}만원)`;
+  }
+  if (basicTotal < baseAmount + dailySurcharge) {
+    // 소기업 1% 상한(Ⅵ.1 단서)이 물렸다 — 안 밝히면 뒤 숫자와 어긋나 보인다
+    basicExpr += ` → 자본 1% 상한으로 기본금액 ${만원(basicTotal)}`;
+  }
+  if (applyingRatio && (dailySurcharge > 0 || basicTotal < baseAmount + dailySurcharge)) {
+    basicExpr = `(${basicExpr})`;
+  }
+
+  const formulaParts = [basicExpr];
+  if (applyingRatio) {
+    formulaParts.push(
+      `× 거래금액 적용비율 ${Math.round(transactionRatio!.rate * 100)}% (${transactionRatio!.label})` +
+        ` = 기준금액 ${만원(standardAmount)}`,
+    );
+  }
+  if (aggAmount > 0) formulaParts.push(`+ 가중 ${(aggAmount / 만).toLocaleString('ko-KR')}만원`);
+  if (mitAmount > 0) {
+    formulaParts.push(
+      `− 감경 ${(mitAmount / 만).toLocaleString('ko-KR')}만원` +
+        (mitCapBound ? ' (감경 상한: 기준금액의 4분의 3)' : ''),
+    );
+  }
+  if (capApplied) formulaParts.push(`→ 상한 적용`);
+  formulaParts.push(`= ${(amount / 만).toLocaleString('ko-KR')}만원`);
+
+  return {
+    amount,
+    baseAmount,
+    dailySurcharge,
+    basicTotal,
+    standardAmount,
+    // 비율을 적용하지 못한 §26·§29 건은 확정 추정치가 아니라 상한선이다.
+    isUpperBound: v.regime === 'art26_29' && amount > 0 && transactionRatio === undefined,
+    transactionRatio,
+    aggravations,
+    mitigations,
+    capApplied,
+    formula: formulaParts.join(' '),
+    nextThreshold,
+    legalBasis: REF[v.regime],
+    caveats,
+    disclaimer:
+      '공정위 고시 기준에 따른 단순 산정값입니다. 실제 부과액은 공정위 재량과 개별 사정에 따라 달라질 수 있으며 확정액이 아닙니다. ' +
+      '기한 만료일 다음 날부터 10영업일 이내에 자진 시정·재공시하고 고시 Ⅴ의 사유(신규 지정·편입 30일 이내 위반, ' +
+      '사소한 부주의 등)에 해당하면 면제될 수 있습니다(공정위 재량, 체납자 제외).',
+  };
+}

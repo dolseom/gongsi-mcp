@@ -1,0 +1,91 @@
+{
+  "id": "m08-anxious",
+  "type": "막연한 불안",
+  "question": "공정위에서 자료 요청 왔는데 뭐부터 봐야하죠 진짜 멘붕이네요",
+  "watch": "실행 가능한 순서를 주는가, 공감만 하고 끝나는가, 근거 없는 안심을 주는가",
+  "elapsed_s": "76.0",
+  "is_error": false,
+  "num_turns": 4,
+  "answer": "## 먼저 — 이 도구가 답할 수 있는 범위부터\n\n공정위 공식 문답 430건을 검색했는데 **\"자료 요청을 받았을 때의 대응 절차\"를 다룬 문답은 없습니다.** 검색된 건 하도급 FAQ의 공시 삭제·정정 절차뿐입니다. 그러니 아래 1·2번은 공정위 근거가 아니라 일반적인 정리이고, 3번부터가 도구로 실제 확인해 드릴 수 있는 부분입니다.\n\n## 1. 공문에서 세 가지만 먼저 찍어 보세요\n\n봐야 할 게 이걸로 갈립니다.\n\n- **근거 조문** — 어느 법·조항으로 요청했는지\n- **회신 기한** — 며칠까지, 연장 가능 여부가 적혀 있는지\n- **대상 범위** — 어느 회사(집단 전체인지 특정 계열사인지), 어느 기간\n\n## 2. 자료 요청은 성격이 셋으로 갈립니다\n\n| 성격 | 성격상 봐야 할 것 | 이 도구 관련성 |\n|---|---|---|\n| **기업집단 지정자료** (계열회사·친족·주식소유 현황) | egroup.ftc.go.kr 신고 트랙 | 낮음 — 공시와 별개 제도입니다 |\n| **공시 이행점검** (J001/J004 관련) | 우리가 실제로 낸 공시 vs 실제 거래 | **높음 — 바로 돌릴 수 있습니다** |\n| **조사 관련** (현장조사·서면실태조사) | 법률자문 영역 | 낮음 |\n\n특히 두 번째라면, 공정위가 물어보기 전에 우리 쪽에서 뭐가 걸릴지 먼저 아는 게 순서입니다.\n\n## 3. 지금 바로 돌릴 수 있는 자가점검 3종\n\n**회사명이나 기업집단명만 알려주시면** 지금 돌립니다. 보는 게 각각 다릅니다:\n\n- `audit_group_disclosures` — J001 접수분의 **의결일 대비 기한 지연**. 접수된 것만 봅니다\n- `audit_periodic_disclosures` — J004·J009 정기공시를 **냈는지·기한 지켰는지**. 미제출도 잡힙니다\n- `detect_undisclosed_transactions` — J004 거래내역 ↔ J001 대조로 **미공시 후보**. 미공시를 보는 유일한 경로입니다\n\n세 도구 다 \"0건\"이 \"문제 없음\"이 아닙니다 — 도구가 못 본 범위를 스스로 밝히니 그것까지 그대로 전해 드리겠습니다.\n\n## 4. 시간이 걸린 건 지금 확인하세요\n\n**자진시정 면제의 필요조건은 \"기한 만료 익일부터 10영업일 내 재공시\"입니다** (고시 Ⅴ). 미이행 건이 이미 있다면 이 창이 열려 있는지가 과태료를 좌우합니다. 위 감사 도구가 지연 후보마다 골든타임 상태를 같이 계산해 줍니다.\n\n참고로 자주 틀리는 전제 둘: 기준금액은 `min(100억, max(5억, max(자본총계, 자본금)×5%))`이고 — 널리 퍼진 \"50억\"은 폐지된 옛 기준입니다. 공시기한은 상장 3영업일 / 비상장 7영업일이고 \"1일 이내\"는 오정보입니다.\n\n---\n\n**되묻습니다:**\n1. 공문의 성격이 위 셋 중 어느 쪽인가요? (근거 조문을 그대로 붙여 주셔도 됩니다)\n2. 회사명 또는 기업집단명은?\n3. 요청받은 대상 기간은?\n\n2번만 주셔도 자가점검은 바로 시작할 수 있습니다.",
+  "raw_head": null,
+  "tools_available": [
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskOutput",
+    "TaskStop",
+    "ToolSearch",
+    "Workflow",
+    "mcp__gongsi__assess_correction_risk",
+    "mcp__gongsi__audit_group_disclosures",
+    "mcp__gongsi__audit_periodic_disclosures",
+    "mcp__gongsi__calc_business_days",
+    "mcp__gongsi__check_disclosure_duty",
+    "mcp__gongsi__check_j004_consistency",
+    "mcp__gongsi__detect_undisclosed_transactions",
+    "mcp__gongsi__disclosure_calendar",
+    "mcp__gongsi__find_precedents",
+    "mcp__gongsi__get_financials",
+    "mcp__gongsi__get_group_structure",
+    "mcp__gongsi__read_disclosure",
+    "mcp__gongsi__resolve_entity",
+    "mcp__gongsi__search_disclosures",
+    "mcp__gongsi__search_ftc_qna",
+    "mcp__gongsi__server_info"
+  ],
+  "mcp_servers": [
+    {
+      "name": "gongsi",
+      "status": "connected"
+    }
+  ],
+  "tool_calls": [
+    {
+      "name": "ToolSearch",
+      "input": "{\"query\":\"select:mcp__gongsi__search_ftc_qna,mcp__gongsi__disclosure_calendar,mcp__gongsi__audit_periodic_disclosures,mcp__gongsi__audit_group_disclosures,mcp__gongsi__detect_undisclosed_transactions\",\"max_results\":5}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"공정위 자료 요청 제출 절차\",\"limit\":5}"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "input": "{\"query\":\"공시 점검 미공시 적발 자진시정\",\"limit\":5}"
+    }
+  ],
+  "tool_results": [
+    {
+      "name": "ToolSearch",
+      "is_error": false,
+      "head": "{\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__search_ftc_qna\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__disclosure_calendar\"} {\"type\":\"tool_reference\",\"tool_name\":\"mcp__gongsi__audit_pe"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"공정위 자료 요청 제출 절차\",\n  \"results\": [\n    {\n      \"id\": \"sub-051\",\n      \"category\": \"subcontract\",\n      \"question\": \"하도급대금 분쟁조정기구 내 구매 담당자나 부서장은 없지만, 분쟁조정기구의 소속위원이 구매 담당자에 대한 자료제출 및 적정 의견(검"
+    },
+    {
+      "name": "mcp__gongsi__search_ftc_qna",
+      "is_error": false,
+      "head": "{\n  \"query\": \"공시 점검 미공시 적발 자진시정\",\n  \"results\": [\n    {\n      \"id\": \"sub-012\",\n      \"category\": \"subcontract\",\n      \"question\": \"하도급거래가 없어 원사업자에 해당하지 않는 회사도 공시해야 하는지?\",\n      \"answer\": \"□하도급법에 따르면 “공"
+    }
+  ],
+  "permission_denials": [],
+  "duration_ms": 71803,
+  "tool_names": [
+    "ToolSearch",
+    "mcp__gongsi__search_ftc_qna"
+  ]
+}

@@ -1,0 +1,382 @@
+/**
+ * audit_group_disclosures 테스트 — AuditDeps 주입으로 실제 API 없이 판정 로직 검증
+ *
+ * 기준 사례 (실측 검증된 소노스테이션 변형):
+ *   비상장(E) 의결 2026-07-22 → 기한 2026-07-31 / 상장이었다면 3영업일 = 2026-07-27
+ */
+
+import { describe, it, expect } from 'vitest';
+import { useMemoryStore } from './helpers/store.js';
+import { disclosureBuilder } from './helpers/disclosure.js';
+import {
+  auditGroupDisclosures,
+  suggestDocSplits,
+  type AuditDeps,
+} from '../src/tools/audit-group-disclosures.js';
+import type { Disclosure } from '../src/clients/dart.js';
+import type { DocMeta } from '../src/tools/read-disclosure.js';
+import type { BatchResult } from '../src/search/batch.js';
+
+const store = useMemoryStore();
+
+const row = disclosureBuilder({
+  corp_name: '테스트회사',
+  report_nm: '대규모내부거래관련(자금차입)',
+  rcept_dt: '20260728',
+});
+
+function docMeta(over: Partial<DocMeta>): DocMeta {
+  return {
+    acode: '80718',
+    aregcik: null,
+    formulaVersion: '6.0',
+    encoding: 'utf-8',
+    attachments: [],
+    bodyParsable: true,
+    boardDate: '20260722',
+    pickedEntry: 'doc.xml',
+    ...over,
+  };
+}
+
+function batchOf(rows: Disclosure[]): BatchResult {
+  return {
+    rows,
+    diagnostics: {
+      measure_calls: 1,
+      collect_calls: 1,
+      measure_budget_exhausted: false,
+      date_chunks: [],
+      chunks_failed: 0,
+      partial_results: false,
+      truncated: false,
+      dedup_dropped: 0,
+      total_count_reported: rows.length,
+    },
+  };
+}
+
+function makeDeps(rows: Disclosure[], metas: Record<string, DocMeta>, cachedSet = new Set<string>()): AuditDeps {
+  return {
+    collectList: async () => batchOf(rows),
+    loadDoc: async (rceptNo) => {
+      const meta = metas[rceptNo];
+      if (!meta) throw new Error(`meta 없음: ${rceptNo}`);
+      return { meta };
+    },
+    isCached: (rceptNo) => cachedSet.has(rceptNo),
+  };
+}
+
+const BASE_INPUT = {
+  companies: ['00000001'],
+  from: '20260701',
+  to: '20260810',
+  today: '20260805',
+};
+
+describe('판정 로직', () => {
+  it('비상장 7영업일 내 접수 → on_time (소노스테이션 사례)', async () => {
+    const deps = makeDeps(
+      [row({ rcept_dt: '20260728' })],
+      { '20260728000001': docMeta({}) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(1);
+    expect(r.summary.late_candidates).toBe(0);
+  });
+
+  it('같은 접수일이라도 상장(Y)이면 3영업일 기한이라 지연 후보', async () => {
+    const deps = makeDeps(
+      [row({ corp_cls: 'Y', rcept_dt: '20260728' })],
+      { '20260728000001': docMeta({}) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(1);
+    const late = r.late_candidates[0];
+    expect(late.listing).toBe('listed');
+    expect(late.deadline).toBe('20260727');
+    expect(late.delay_days).toBe(1);
+    expect(late.penalty_estimate.amount).toBeGreaterThan(0);
+    expect(late.self_correction.status).toBe('open'); // 기한 7/27 → 골든타임 ~8/10, 오늘 8/5
+  });
+
+  it('정정 제출분은 판정에서 제외된다', async () => {
+    const deps = makeDeps(
+      [
+        row({ rcept_dt: '20260728' }),
+        row({
+          rcept_no: '20260805000009',
+          report_nm: '[기재정정]대규모내부거래관련(자금차입)',
+          rcept_dt: '20260805',
+        }),
+      ],
+      { '20260728000001': docMeta({}) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.corrections_excluded).toBe(1);
+    expect(r.summary.disclosures_scanned).toBe(1);
+    expect(r.summary.on_time).toBe(1);
+  });
+
+  it('트랙 B(약관특례 ACODE)는 별도 분류 — 의결일 없어도 정상', async () => {
+    const deps = makeDeps(
+      [row({})],
+      { '20260728000001': docMeta({ acode: '80701', boardDate: null }) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.omnibus_track_b).toBe(1);
+    expect(r.summary.late_candidates).toBe(0);
+    expect(r.omnibus_track_b[0].reason).toContain('약관');
+  });
+
+  it('의결일 미추출은 board_date_missing 으로 분리 (지연으로 단정하지 않음)', async () => {
+    const deps = makeDeps(
+      [row({})],
+      { '20260728000001': docMeta({ boardDate: null }) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.board_date_missing).toBe(1);
+    expect(r.summary.late_candidates).toBe(0);
+  });
+
+  it('파싱 불가 원문은 unparsable 로 집계하고 감사는 계속된다', async () => {
+    const deps = makeDeps(
+      [row({}), row({ rcept_no: '20260728000002', rcept_dt: '20260728' })],
+      {
+        '20260728000001': docMeta({ bodyParsable: false, boardDate: null }),
+        '20260728000002': docMeta({}),
+      },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.unparsable).toBe(1);
+    expect(r.summary.on_time).toBe(1);
+  });
+
+  it('지연 후보는 "후보" 주의 노트를 반드시 동봉한다', async () => {
+    const deps = makeDeps(
+      [row({ corp_cls: 'Y' })],
+      { '20260728000001': docMeta({}) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.notes.some((n: string) => n.includes('후보'))).toBe(true);
+  });
+});
+
+describe('감사 범위의 사각 고지 — 미공시·타 공시유형', () => {
+  // 이 감사는 DART 접수분만 본다. "지연 후보 0건"이 "공시의무 이행 완료"로 읽히면
+  // 미공시(기본금액 5,000만~7,000만)를 그대로 놓친다. 결과와 무관하게 항상 고지해야 한다.
+  const expectScopeDisclosure = (r: Record<string, any>) => {
+    // 범위 진술은 결과와 무관하게 참이므로 **최상단**에 있어야 한다 (Codex 7차 사소 2)
+    expect(r.notes[0]).toContain('미공시');
+    expect(r.notes[0]).toContain('직접 탐지하지 못합니다');
+    expect(r.coverage.collected_types).toEqual(['J001']);
+    expect(r.coverage.deadline_judged).toContain('트랙 A');
+    expect(r.coverage.undetectable.non_disclosure).toBe(true);
+    expect(r.coverage.undetectable.collected_but_not_judged).toEqual([
+      'J001 트랙 B (약관 금융거래 특례)',
+    ]);
+    expect(r.coverage.undetectable.other_duty_types).toEqual(['J004', 'J005', 'J008', 'J009']);
+  };
+
+  it('지연 후보가 0건일 때도 미공시 사각을 고지한다 (가장 위험한 경로)', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(0);
+    expectScopeDisclosure(r);
+  });
+
+  it('지연 후보가 있을 때도 같은 고지를 유지한다', async () => {
+    const deps = makeDeps([row({ corp_cls: 'Y' })], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(1);
+    expectScopeDisclosure(r);
+  });
+
+  it('수집 0건일 때도 같은 고지를 유지한다', async () => {
+    const deps = makeDeps([], {});
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expectScopeDisclosure(r);
+  });
+
+  it('판정 미완료 건이 있으면 지연 0건과 함께 "확인 못 한 것" 이라고 최상위에서 알린다', async () => {
+    // 원문 파싱 실패 1건 — late_candidates 는 0 이지만 그건 "적법 확인"이 아니다
+    const deps = makeDeps(
+      [row({})],
+      { '20260728000001': docMeta({ bodyParsable: false, boardDate: null }) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(0);
+    expect(r.coverage.not_judged.total).toBe(1);
+    expect(r.coverage.not_judged.unparsable).toBe(1);
+    expect(
+      r.notes.some(
+        (n: string) => n.includes('기한 판정이 완료되지 않았습니다') && n.includes('확인하지 못한 것'),
+      ),
+    ).toBe(true);
+  });
+
+  it('판정이 전부 끝났으면 미완료 경고를 붙이지 않는다 (경고 남발 방지)', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.coverage.not_judged.total).toBe(0);
+    expect(r.notes.some((n: string) => n.includes('기한 판정이 완료되지 않았습니다'))).toBe(false);
+  });
+});
+
+describe('corp_code 존재 검증 (P2-마 20)', () => {
+  const seed = () => {
+    store().upsertCorps([
+      { corpCode: '00000001', corpName: '테스트회사', stockCode: null, jurirNo: null, modifyDate: null },
+    ]);
+    // 신선한 인덱스로 표시 — 낡았으면 미존재 코드에서 실제 갱신(네트워크)을 시도한다 (Opus 7차 중간 2)
+    store().set('corps_loaded_at', new Date().toISOString());
+  };
+
+  it('인덱스가 있으면 미존재 8자리 코드를 corp_not_found 로 거부한다 (이름 경로와 대칭)', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    await expect(
+      auditGroupDisclosures({ ...BASE_INPUT, companies: ['99999999'] }, deps),
+    ).rejects.toMatchObject({ code: 'corp_not_found' });
+  });
+
+  it('인덱스가 있고 코드가 실존하면 통과하고 이름이 붙는다', async () => {
+    seed();
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(1);
+    expect(r.notes.some((n: string) => n.includes('존재 검증을 건너뛰'))).toBe(false);
+  });
+
+  it('회사명 경로는 resolveCorp 를 쓴다 — 법인격 표기 차이를 정규화 일치로 흡수한다', async () => {
+    seed();
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures({ ...BASE_INPUT, companies: ['테스트회사(주)'] }, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(1);
+  });
+
+  it('회사명 경로 — 인덱스에 없는 이름은 corp_not_found', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    await expect(
+      auditGroupDisclosures({ ...BASE_INPUT, companies: ['없는회사'] }, deps),
+    ).rejects.toMatchObject({ code: 'corp_not_found' });
+  });
+
+  it('인덱스가 비어 있으면 막지 않되 검증 생략을 notes 로 알린다', async () => {
+    const deps = makeDeps([row({})], { '20260728000001': docMeta({}) });
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.notes.some((n: string) => n.includes('존재 검증을 건너뛰'))).toBe(true);
+  });
+
+  it('판정 대상 0건이면 "적법 확인이 아니다" 안내를 동봉한다', async () => {
+    seed();
+    const deps = makeDeps([], {});
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.disclosures_scanned).toBe(0);
+    expect(r.notes.some((n: string) => n.includes('0건') && n.includes('적법을 확인했다는 뜻이 아닙니다'))).toBe(
+      true,
+    );
+  });
+});
+
+describe('입력 검증', () => {
+  it('group 도 companies 도 없으면 invalid_argument', async () => {
+    await expect(
+      auditGroupDisclosures({ from: '20260701', to: '20260810' } as never),
+    ).rejects.toThrow(/필수/);
+  });
+
+  it('from > to 면 invalid_argument', async () => {
+    await expect(
+      auditGroupDisclosures({ ...BASE_INPUT, from: '20260811' }),
+    ).rejects.toThrow(/늦습니다/);
+  });
+});
+
+describe('60초 벽 예측', () => {
+  it('미캐시 원문이 많으면 range_too_large + 분할 안내', async () => {
+    const rows = Array.from({ length: 60 }, (_, i) =>
+      row({
+        rcept_no: `2026070100${String(i).padStart(4, '0')}`,
+        rcept_dt: `202607${String(1 + Math.floor(i / 2)).padStart(2, '0')}`,
+      }),
+    );
+    const deps = makeDeps(rows, {});
+    await expect(auditGroupDisclosures(BASE_INPUT, deps)).rejects.toMatchObject({
+      code: 'range_too_large',
+    });
+  });
+
+  it('전부 캐시돼 있으면 대량 건수도 통과한다', async () => {
+    const rows = Array.from({ length: 60 }, (_, i) =>
+      row({ rcept_no: `2026070100${String(i).padStart(4, '0')}`, rcept_dt: '20260728' }),
+    );
+    const metas: Record<string, DocMeta> = {};
+    const cached = new Set<string>();
+    for (const r of rows) {
+      metas[r.rcept_no] = docMeta({});
+      cached.add(r.rcept_no);
+    }
+    const deps = makeDeps(rows, metas, cached);
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.summary.on_time).toBe(60);
+    expect(r.diagnostics.doc_cache_hits).toBe(60);
+  });
+});
+
+describe('suggestDocSplits', () => {
+  it('접수일 분포를 따라 청크당 문서 수를 지킨다', () => {
+    const dates = [
+      ...Array.from({ length: 10 }, () => '20260705'),
+      ...Array.from({ length: 10 }, () => '20260715'),
+      ...Array.from({ length: 10 }, () => '20260725'),
+    ];
+    const splits = suggestDocSplits(dates, '20260701', '20260731', 10);
+    expect(splits.length).toBeGreaterThanOrEqual(3);
+    expect(splits[0]!.from).toBe('20260701');
+    expect(splits[splits.length - 1]!.to).toBe('20260731');
+    // 구간이 이어져야 한다
+    for (let i = 1; i < splits.length; i++) {
+      expect(splits[i]!.from >= splits[i - 1]!.to).toBe(true);
+    }
+  });
+
+  it('단일 날짜 폭주도 최소 1구간으로 감싼다', () => {
+    const splits = suggestDocSplits(
+      Array.from({ length: 100 }, () => '20260715'),
+      '20260701',
+      '20260731',
+      10,
+    );
+    expect(splits[splits.length - 1]!.to).toBe('20260731');
+  });
+});
+
+describe('공휴일 데이터 없는 연도 경고 전파 (외부 검토 2026-09-30 §3-2)', () => {
+  it('기한 계산 구간에 데이터 없는 연도가 걸친 지연 후보는 deadline_warnings 와 상단 고지를 단다', async () => {
+    // 2025-12-23 비상장 의결 — 2025년 공휴일 데이터가 없어 12/25 를 영업일로 세고 기한이 2026-01-02 로 당겨진다(정답 01-05)
+    const deps = makeDeps(
+      [row({ rcept_dt: '20260105' })],
+      { '20260728000001': docMeta({ boardDate: '20251223' }) },
+    );
+    const r = (await auditGroupDisclosures(
+      { ...BASE_INPUT, from: '20260101', to: '20260110', today: '20260110' },
+      deps,
+    )) as Record<string, any>;
+    expect(r.summary.late_candidates).toBe(1);
+    expect(r.late_candidates[0].deadline_warnings.join(' ')).toContain('2025년 공휴일 데이터가 없어');
+    expect(r.notes.join('\n')).toContain('지연이 아닌데 지연으로 잡혔을 수 있습니다');
+  });
+
+  it('데이터 있는 연도만 걸치면 경고 필드가 없다', async () => {
+    const deps = makeDeps(
+      [row({ corp_cls: 'Y', rcept_dt: '20260728' })],
+      { '20260728000001': docMeta({}) },
+    );
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.late_candidates[0].deadline_warnings).toBeUndefined();
+    expect(r.notes.join('\n')).not.toContain('지연으로 잡혔을 수 있습니다');
+  });
+});

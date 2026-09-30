@@ -1,0 +1,416 @@
+[
+  {
+    "claim_id": "clm_001",
+    "text": "2025년 공정위 공시이행 점검 결과: 50개 집단 130개 계열회사에서 146건 위반, 과태료 6억 5,825만원 — 2020년(156건) 이후 5년 만의 최다. 유형별: 기업집단현황 123건(3.23억), 대규모내부거래 18건(3.13억), 비상장사 중요사항 5건(0.21억). 위반 건수는 5년 연속 우상향(131→95→102→135→146).",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s1_src_01",
+      "s4_src_02",
+      "s3_src_03",
+      "cs_src_02",
+      "cs_src_04"
+    ],
+    "counter_search": "독립 재검색으로 이데일리·서울파이낸스·네이트뉴스·MD투데이 등 추가 매체에서 동일 수치(146건/6억5,825만원/장금상선 최다) 확인. 상충 보도 없음.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_002",
+    "text": "대규모내부거래 공시 위반은 2년 연속 약 95%가 '지연' 관여 유형(2025년 17/18건=94.4%, 2024년 35/37건=94.6%). 순수 미공시는 2년 합계 1건. 2025년 거래유형 1위는 상품·용역거래(10건, 55.6%)이며 '미의결·지연' 9건은 전부 상품·용역거래.",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s1_src_01",
+      "s1_src_05",
+      "s1_src_07"
+    ],
+    "counter_search": "반증 검색에서 상충 수치 미발견. 일간NTN 보도의 유형별 수치가 공정위 보도자료 원문 PDF 표와 일치. 2024년 수치는 KDI 재수록 자료로 교차 확인.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_003",
+    "text": "2024년 공정위 공시 위반 135건 중 96건(71.1%)이 지연공시(한경협 집계, 2025-03-18 건의). 단 이 수치는 2024년 위반분 한정이며, 2025년 점검분 기준으로는 전체 지연 관여 비율이 약 52% 수준으로 낮아진다(현황공시 지연 56 + 내부거래 지연 관여 17 + 비상장 지연 3).",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s5_src_16",
+      "s5_src_17",
+      "cs_src_01",
+      "cs_src_03"
+    ],
+    "counter_search": "서울경제·헤럴드경제 독립 보도로 71.1% 재확인. red-team 결과 이 수치가 '매년 71%'로 일반화되면 과장 — 2025년 데이터 적용 시 비율이 달라지므로 연도 한정 주장으로 축소하여 기재.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_004",
+    "text": "공정위의 공식 위반 원인 진단은 '업체별 신규 공시 담당자들의 공시 업무 미숙'(2024·2025년 보도자료 공통). 언론(비즈한국)은 '내부 승인 절차와 공시 기한 간 충돌'을 추가 원인으로 보도. 공정위 대응책은 교육·설명회·메일링 등 안내 계열 + 상습 위반자 과태료 가중 상향 검토.",
+    "risk": "high",
+    "claim_type": "causal",
+    "source_ids": [
+      "s1_src_01",
+      "s4_src_04",
+      "s5_src_13",
+      "s5_src_12",
+      "s3_src_03"
+    ],
+    "counter_search": "고의 은폐 등 다른 원인 귀속을 주장하는 보도 미발견. 비즈한국의 '승인 절차 충돌'은 보완적 원인이지 상충이 아님. 금감원(자본시장 공시)도 '공시인력 부재 및 잦은 변경'으로 동일 방향 진단.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_005",
+    "text": "한국경제인협회 건의서(2024-04) 원문: 기업 실무자들은 ①방대하고 직관적이지 않은 매뉴얼 ②위반 정도와 무관한 과태료 ③위반 책임의 실무자 개인 귀속(개인평가·금전 부담)을 호소하며, '너무 많은 공시항목으로 인해 틀리지 않고 공시하는 것이 사실상 불가능'이라고 결론. 기업집단현황공시는 30개 항목·세부 49개이며 상품·용역거래 항목은 수십 페이지에 달함.",
+    "risk": "high",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "s1_src_04",
+      "s5_src_16",
+      "s5_src_17"
+    ],
+    "counter_search": "천지일보·서울경제의 건의 보도 내용이 원문 PDF 인용과 일치. 건의 주체(한경협)는 이해당사자이나 '공시 부담이 크다'는 사실 서술 자체를 반박하는 소스 미발견 — 공정위 위반 통계(clm_001·002)가 정황상 부합.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_006",
+    "text": "경미한 공시의무 위반 과태료 면제 제도가 2024-08-07 시행: ①신규 지정·편입 30일 내 위반 + 10영업일 내 자진시정 ②사소한 부주의·오류 + 10영업일 내 자진시정 ③천재지변·불가항력. 같은 개정에서 대규모내부거래 상장사 공시기한 1일→3영업일, 비상장사 임원현황 공시 삭제, 10일 이내 항목에 영업일 개념 도입.",
+    "risk": "high",
+    "claim_type": "legal",
+    "source_ids": [
+      "s1_src_11",
+      "s1_src_12",
+      "s3_src_07",
+      "s3_src_08",
+      "s1_src_01"
+    ],
+    "counter_search": "율촌·대륜 로펌 뉴스레터, 뉴스핌·서울경제 보도, 공정위 2025 점검 보도자료가 상호 일치. 반박 소스 없음.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_007",
+    "text": "기업집단현황공시 위반은 '임원·이사회 등 운영현황' 한 항목에 집중 — 2025년 80건/123건(65.1%), 2024년 56건/94건(59.6%)으로 2년 연속 압도적 1위. 이 공시의 위반은 지연(45.5%)뿐 아니라 누락·거짓 합산 54.5%로, 대규모내부거래('제때 냈는가')와 달리 '빠짐없이 정확히 채웠는가'의 실패가 크다. 한 집단 내 여러 계열사가 같은 항목에서 동시 적발되는 패턴 반복.",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s1_src_01",
+      "s1_src_07",
+      "s4_src_04"
+    ],
+    "counter_search": "상충 보도 미발견. 2022년 점검에서도 '임원·이사회 운영현황'이 자주 틀리는 영역으로 지목되어 시계열 일관성 확인.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_008",
+    "text": "공시기한·과태료의 법적 구조: 대규모내부거래 상장 3영업일/비상장 7영업일(2024-08 개정 반영), 기업집단현황 연공시 매년 5/31, 지연공시 과태료 기본 500만원 + 초과 1일당 10만원 가산. 웹에 퍼진 '공시기한 1일 이내'는 구법 정보.",
+    "risk": "high",
+    "claim_type": "legal",
+    "source_ids": [
+      "s3_src_19",
+      "s3_src_08",
+      "s1_src_11",
+      "cs_src_05",
+      "s5_src_55"
+    ],
+    "counter_search": "U-LEX 법령 DB에서 과태료 부과기준(지연 500만+1일 10만) 재확인. 법제처 행정규칙 원문(law.go.kr)과 일치 — 본 프로젝트가 별도로 수행한 법제처 MCP 원문 확인과도 합치.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_009",
+    "text": "타사 선례 벤치마킹은 공시 실무의 명시적 권장 관행이며, 수행 수단은 DART 공시통합검색(본문내용 검색, AND/OR/NOT/EXACT 지원) + 문서 개별 클릭 + Ctrl+F 수동 탐색에 머물러 있다. 금감원 스스로 '모범사례' 기재례를 제공해 사례 학습 모델을 공인. 병목은 검색이 아니라 검색 결과에서 원하는 문안 조각까지 도달하는 마지막 구간.",
+    "risk": "high",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "s2_src_01",
+      "s2_src_02",
+      "s2_src_03",
+      "s2_src_15",
+      "s2_src_10"
+    ],
+    "counter_search": "'선례 참고가 불필요하다'는 반증 미발견. 단 관행의 정량 빈도(얼마나 자주)는 미측정 — 1인칭 실무 서술 2건 + DART 공식 검색기능 사양 + 커뮤니티 질문 유형의 삼각확인에 근거하며, 이 한계를 본문에 명시함.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_011",
+    "text": "2026-05-01자 공시대상기업집단 102개(계열회사 3,538개, 전년 대비 +10개/+237개) 지정, 신규 11개 집단. 지정 즉시 공시의무가 적용되는데 그해 기업집단현황 연공시 마감이 5/31이라 신규 집단은 첫 연공시까지 1개월. 과태료 면제 요건에 '신규 지정 30일 특례'가 별도 존재한다는 것 자체가 신규 집단의 초기 실수가 구조적 현상임을 방증.",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s1_src_03",
+      "s1_src_13",
+      "s3_src_07"
+    ],
+    "counter_search": "공정위 보도자료 원문 PDF가 1차 소스. 뉴스핌 설명회 보도(102개 집단 대상)와 일치. 상충 없음.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_012",
+    "text": "공시담당자는 거래소 등록 의무가 있는 규제 직책이며 제재가 개인에게 귀속된다: 교육 미이수·불성실공시 시 거래소가 공시책임자·담당자 교체를 요구할 수 있고, 1개월 내 미교체 시 벌점 2점. 처벌 구조가 법인과 행위자(담당자)로 분리되어 개인 형사책임 방어가 별도로 필요. FKI 건의서도 위반 책임의 실무자 개인 귀속(인사평가 반영)을 명시.",
+    "risk": "high",
+    "claim_type": "legal",
+    "source_ids": [
+      "s5_src_05",
+      "s5_src_06",
+      "s5_src_10",
+      "s5_src_09",
+      "s1_src_04"
+    ],
+    "counter_search": "KRX 해설서(A등급) 규정 문언 기반으로 반박 여지 낮음. 단 실제 교체 요구 발동 건수·개인 문책 사례 통계는 미확인이므로 '제도 존재'까지만 주장.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_013",
+    "text": "공시 업무의 계절성: 3월(감사보고서·주총·사업보고서)과 5월(1분기보고서 5/15 + 기업집단현황 연공시 5/31)이 이중 피크. 공정위 매뉴얼은 5월 초 배포·설명회는 5월 중순이라 마감까지 4주 미만이며, 2023년에는 마감 7일 전 DART 편집기 양식 변경으로 3천여 개사가 재작성하는 사태 발생(FKI 건의서 기록).",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "s1_src_04",
+      "s3_src_05",
+      "s5_src_28",
+      "s5_src_30"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_014",
+    "text": "공시 담당 조직은 겸직 구조가 흔하다 — 중소형 상장사는 인사·총무·경영지원 또는 회계·재무 담당자가 공시·IR을 겸직하며, 담당자 회전(turnover)이 구조적이어서 의무교육 제도 자체가 담당자 교체를 전제로 설계되어 있다. 단 겸직 비율 등 정량 지표는 협회 실태조사 원문 미확보로 확인되지 않았다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "s5_src_01",
+      "s5_src_03",
+      "s2_src_26",
+      "s4_src_30"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": false,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_015",
+    "text": "반복 위반 집단이 고착화 — 최근 3년 연속 위반 상위: 한국앤컴퍼니그룹 28건·태영 24건·장금상선 21건·한화 13건. 2025년 장금상선 한 곳(13건, 2억 6,976만원)이 전체 과태료의 41%를 차지하며, 그 대부분이 상품·용역거래 미의결·지연 반복. 공정위 점검 방식은 DART 공시와 사전조사표·이사회의사록·매출매입원장의 교차 대조.",
+    "risk": "high",
+    "claim_type": "numeric",
+    "source_ids": [
+      "s1_src_01",
+      "s1_src_05",
+      "s5_src_13",
+      "s3_src_03",
+      "cs_src_02"
+    ],
+    "counter_search": "S5 에이전트가 '장금상선 2.69억이 2024년 현황공시 총액과 우연 일치해 추출 오류 의심'을 제기했으나, 반증 재검색에서 이데일리·서울파이낸스 등 독립 매체가 동일 수치를 보도해 오류 가능성 해소.",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_016",
+    "text": "작성 측 공시 워크플로에 공식 투입된 AI는 거래소-네이버클라우드 '공시 전용 AI 번역기'(2023-12, 영문공시 초벌 번역) 단 하나이며, 포지셔닝은 '초안까지, 판단은 사람'. 금융분야 AI 가이드라인(2026-06-22 시행)도 '보조수단성'을 7대 원칙으로 명문화. 사내 생성AI 공시 초안 작성 사례는 미확인이며, 기밀유출(삼성전자 2023) 우려로 클라우드 SaaS 진입 장벽이 존재.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "s2_src_21",
+      "s2_src_22",
+      "s2_src_24",
+      "s4_src_26",
+      "s4_src_27"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_017",
+    "text": "공시담당자 업무의 대표 트리거는 임원의 구두 질의다 — '김 과장, 이거 공시사항이야?', '자기자본 대비 5%가 얼마야?', '이번 주에 얼마짜리 계약 맺는데 공시 의무사항인가?' 형태로 상황이 주어지며, 지식iN에도 '① 특수관계인 거래 해당? ② 공시 의무? ③ 어디에? ④ 기한은?'을 한 번에 묻는 동일 구조의 질문이 올라온다. 판정 도구의 입력 UX가 맞춰야 할 질문 형태다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p1_src_02",
+      "p1_src_04",
+      "p2_src_23",
+      "p2_src_28"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_018",
+    "text": "타사 선례 참고는 임원 지시로도 내려온다 — '그런 사례로 공시한 회사 없는지 한 번 찾아봐'(브런치 실무 수기). 실무 워크플로에서는 보조 모니터에 '참고용 DSD'를 띄워 나란히 비교하는 관행이 팁으로 공유된다. 선례 검색·문안 참조가 개인 습관이 아니라 조직적 요구임을 보여준다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p1_src_06",
+      "p1_src_10"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_019",
+    "text": "범용 LLM의 환각은 이 도메인 실무자들이 이미 실측한 문제다 — 'DART편집기는 유저가 제한되다 보니 찾아도 나오는 정보가 너무 없고 gpt도 이상한 말만 해서'(2025-03), '벌점 기준을 GPT에 물어봤는데 근거규정이나 정리가 사실과 좀 달라서 직접 찾아봤다'(2025-04). 서로 다른 두 실무자의 독립 증언이며, 법률 도메인 생성AI의 환각 위험은 학술 문헌으로도 지적된다. 근거 조문·원천 데이터 동봉 설계의 직접적 근거.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p1_src_09",
+      "p1_src_16",
+      "s4_src_25"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_020",
+    "text": "공시 담당자는 준비 없이 배치되고 물어볼 곳이 없다 — 총무→공시, 경리→공시, 재무→IR '발령' 경로가 반복 관찰되고, 공정위 공시 질문은 조회 수백에 댓글 0(393뷰/0댓글 등)이 반복되며, '공시 교육 어디서 받나' 질문이 2006→2021→2025년까지 20년째 동일하게 반복된다. 전임자 퇴사가 담당자가 되는 단골 사유라 '맨땅에 헤딩'으로 시작한다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p2_src_04",
+      "p2_src_22",
+      "p2_src_02",
+      "p2_src_30",
+      "p1_src_07",
+      "p1_src_01"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_021",
+    "text": "공시 실수의 책임이 개인에게 간다는 것은 커뮤니티의 통용 상식이다 — 예약게시 오조작 글의 제목이 곧바로 'ASML 공시담당 직원 잘리겠는데?', 숨은 문구 발견 글의 최다공감 댓글이 '담당자 조땜', 공시담당자 채용글의 첫 댓글이 '욕받이인가요? 주담인가요??'. 현대차증권 담당자가 공시 서류 안에 흰 글씨로 '공시업무 지겨워'를 숨겼고 1년 6개월간 아무도 발견하지 못했다(제출 전 검증 부재의 극단 사례).",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p2_src_07",
+      "p2_src_06",
+      "p2_src_09",
+      "p2_src_32"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_022",
+    "text": "공정위 기업집단 공시는 공시 커리어의 표준 정의 밖 사각지대다 — 5년차 상장사 공시 베테랑이 '곁눈질은 해봤어도 직접 일해본 적이 없다', '그건 나도 안 해봤다'고 쓰고, 지식iN의 '공시 경력 티어' 답변(정기·수시·지분·발행·주요사항 5개 영역)에 공정위 공시가 아예 없으며, 블라인드의 공정위 공시 직무 질문은 댓글 0으로 남는다. 경험자 풀 자체가 얇아 정보 교환이 성립하지 않는다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p1_src_07",
+      "p1_src_08",
+      "p2_src_25",
+      "p2_src_02"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_023",
+    "text": "기업집단현황공시(J004)의 실무 리스크는 정합성 대사다 — 대표회사 취합 수치와 개별회사 DART 제출 수치가 '1원 단위까지 일치'해야 하고, 계열사 간 상품·용역 매출·매입이 상호 매칭되어야 하며, 단위 변환(원/천원/백만원) 오류·오타도 과태료 대상이다. 5/31 당일은 DART 트래픽 폭주로 2~3일 전 제출이 권장되며, '내부거래 3개년치 어떻게 작성해?'라는 비명이 커뮤니티에 남아 있다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p1_src_11",
+      "p1_src_12",
+      "p2_src_01"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  },
+  {
+    "claim_id": "clm_024",
+    "text": "DART 공시 원문의 비정형성은 개인 역량 문제가 아니라 구조적 사실이다 — 개발자 커뮤니티(클리앙, 조회 15,093)에서 'HTML 태그로는 내용의 의미를 알 수 없다', '기업마다 재무제표 섹션명·용어·표 형식이 상이하다'는 크롤링 포기 경험담이 독립적으로 문서화되어 있고, OpenDART API는 텍스트·주석 데이터를 제공하지 않아 원문 ZIP을 직접 파싱해야 한다.",
+    "risk": "normal",
+    "claim_type": "descriptive",
+    "source_ids": [
+      "p2_src_31",
+      "s4_src_08"
+    ],
+    "counter_search": "",
+    "counter_refuted": false,
+    "conflicting": false,
+    "primary_source": true,
+    "status": "verified",
+    "status_reason": "ok"
+  }
+]

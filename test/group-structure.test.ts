@@ -1,0 +1,268 @@
+/**
+ * get_group_structure 순수 로직 테스트.
+ * 포털 API 결합 경로는 실서버 스모크로 검증한다.
+ */
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { isGroupCode, toWon } from '../src/tools/get-group-structure.js';
+import { inferYearMonth } from '../src/tools/resolve-entity.js';
+import { EgroupClient, describeFetchFailure, parsePortalXml } from '../src/clients/egroup.js';
+import { useMemoryStore } from './helpers/store.js';
+import type { ToolError } from '../src/lib/errors.js';
+
+describe('기업집단포털 XML 파싱 (실측 응답 형태)', () => {
+  it('항목 태그는 서비스명에서 List 를 뗀 이름이다 — <item> 이 아니다', () => {
+    // 2026-07-31 실응답 축약본
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><appnGroupSttusList>' +
+      '<numOfRows>200</numOfRows><pageNo>1</pageNo><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>102</totalCount>' +
+      '<appnGroupSttus><unityGrupNm>삼성</unityGrupNm><unityGrupCode>K1000032</unityGrupCode>' +
+      '<smerNm>이재용</smerNm><repreCmpny>삼성전자(주)</repreCmpny><sumCmpnyCo>67</sumCmpnyCo>' +
+      '<invstmntLmtt>상호출자제한집단</invstmntLmtt></appnGroupSttus>' +
+      '<appnGroupSttus><unityGrupNm>에스케이</unityGrupNm><unityGrupCode>K1000050</unityGrupCode>' +
+      '<smerNm>최태원</smerNm><repreCmpny>에스케이(주)</repreCmpny><sumCmpnyCo>151</sumCmpnyCo>' +
+      '<invstmntLmtt>상호출자제한집단</invstmntLmtt></appnGroupSttus></appnGroupSttusList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'appnGroupSttusList');
+    expect(r.resultCode).toBe('00');
+    expect(r.totalCount).toBe(102);
+    expect(r.items.length).toBe(2);
+    expect(r.items[0]!['unityGrupNm']).toBe('삼성');
+    expect(r.items[1]!['unityGrupCode']).toBe('K1000050');
+  });
+
+  it('오류 응답(resultCode 97)을 항목 없이 코드·메시지로 돌려준다', () => {
+    // pageNo 를 빼면 실제로 이렇게 온다 — 빈 배열로 삼키면 "집단 없음"으로 오진한다
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><appnGroupSttusList>' +
+      '<resultCode>97</resultCode><resultMsg>pageNo :::  :::not current!!</resultMsg></appnGroupSttusList>';
+    const r = parsePortalXml(xml, 'appnGroupSttusList');
+    expect(r.resultCode).toBe('97');
+    expect(r.resultMsg).toContain('pageNo');
+    expect(r.items.length).toBe(0);
+  });
+
+  it('publicYmList 도 같은 태그 규칙이다 — <publicYm> (2026-08-03 실응답)', () => {
+    // ⚠️ 이 API 는 pageNo 에 더해 numOfRows 도 필수다 (빼면 resultCode 97)
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><publicYmList>' +
+      '<numOfRows>100</numOfRows><pageNo>1</pageNo><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>1</totalCount>' +
+      '<publicYm><othbcYm>202605</othbcYm><jobSeCode>0001</jobSeCode></publicYm></publicYmList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'publicYmList');
+    expect(r.resultCode).toBe('00');
+    expect(r.items.length).toBe(1);
+    expect(r.items[0]!['othbcYm']).toBe('202605');
+  });
+
+  it('financeCompSttusList 도 같은 태그 규칙이다 — <financeCompSttus> (2026-08-03 실응답)', () => {
+    const xml =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><financeCompSttusList>' +
+      '<numOfRows>2</numOfRows><pageNo>1</pageNo><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>67</totalCount>' +
+      '<financeCompSttus><entrprsNm>(주)멀티캠퍼스</entrprsNm><jurirno>1101111960792</jurirno>' +
+      '<bizrno>1048153114</bizrno><assetsTotamt>296325000000</assetsTotamt>' +
+      '<caplTotamt>213707000000</caplTotamt><caplAmount>2963000000</caplAmount>' +
+      '<stacntDudt>20251231</stacntDudt></financeCompSttus></financeCompSttusList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'financeCompSttusList');
+    expect(r.resultCode).toBe('00');
+    expect(r.totalCount).toBe(67);
+    expect(r.items[0]!['jurirno']).toBe('1101111960792');
+    expect(r.items[0]!['caplTotamt']).toBe('213707000000'); // 단위: 원
+  });
+
+  it('태그 규칙이 깨지면 totalCount>0 인데 항목 0건이 된다 — callPage 가드의 전제', () => {
+    // 성공 응답이 빈 배열로 둔갑하는 "이중 삼킴" 시나리오. 클라이언트는 이걸 egroup_parse_error 로 던진다.
+    const xml =
+      '<unknownWrapList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg><totalCount>5</totalCount>' +
+      '<somethingElse><a>1</a></somethingElse></unknownWrapList>';
+    const r = parsePortalXml(xml, 'appnGroupSttusList');
+    expect(r.resultCode).toBe('00');
+    expect(r.totalCount).toBe(5);
+    expect(r.items.length).toBe(0);
+  });
+
+  it('XML 엔티티를 되돌린다 (삼성E&amp;A 류)', () => {
+    const xml =
+      '<appnGroupAffiList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg><totalCount>1</totalCount>' +
+      '<appnGroupAffi><entrprsNm>삼성E&amp;A(주)</entrprsNm><jurirno>1101110012345</jurirno></appnGroupAffi>' +
+      '</appnGroupAffiList>';
+    const r = parsePortalXml<Record<string, string>>(xml, 'appnGroupAffiList');
+    expect(r.items[0]!['entrprsNm']).toBe('삼성E&A(주)');
+  });
+});
+
+describe('EgroupClient — 파싱 실패 가드 (Codex 3차 백로그)', () => {
+  useMemoryStore();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resultCode 00 + totalCount>0 인데 항목 0건이면 빈 배열 대신 egroup_parse_error 를 던진다', async () => {
+    // 태그 규칙이 바뀌면(포털 개편 등) 성공 응답이 빈 배열로 둔갑해 "집단 없음" 오진이 재발한다
+    const xml =
+      '<appnGroupSttusList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+      '<totalCount>102</totalCount><renamedTag><unityGrupNm>삼성</unityGrupNm></renamedTag></appnGroupSttusList>';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(xml, { status: 200 })),
+    );
+    const client = new EgroupClient('test-key');
+    await expect(client.groups('202605')).rejects.toMatchObject({ code: 'egroup_parse_error' });
+  });
+});
+
+describe('EgroupClient — 수집 완전성 (부분 목록을 성공으로 돌려주지 않는다)', () => {
+  useMemoryStore();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** pageNo → 그 페이지의 항목 수를 주면 그대로 응답하는 포털 스텁 */
+  function stubAffiliatePages(totalCount: number, itemsOnPage: (pageNo: number) => number) {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const pageNo = Number(new URL(String(url)).searchParams.get('pageNo'));
+      const items = Array.from(
+        { length: itemsOnPage(pageNo) },
+        (_, i) =>
+          `<appnGroupAffi><entrprsNm>회사${pageNo}-${i}</entrprsNm>` +
+          `<jurirno>11011100${pageNo}${i}</jurirno></appnGroupAffi>`,
+      ).join('');
+      return new Response(
+        '<appnGroupAffiList><resultCode>00</resultCode><resultMsg>SUCCESS</resultMsg>' +
+          `<totalCount>${totalCount}</totalCount>${items}</appnGroupAffiList>`,
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('중간 페이지가 빈 응답이면 받은 만큼을 성공으로 돌려주지 않는다', async () => {
+    // 부분 목록이 반환되면 호출부가 연 단위 캐시에 넣어 모집단이 1년간 줄어든다
+    const fetchMock = stubAffiliatePages(5, (p) => (p === 1 ? 2 : 0));
+    const client = new EgroupClient('test-key');
+    const err = (await client
+      .affiliates('202605', 'K1000032')
+      .catch((e: unknown) => e)) as ToolError;
+    expect(err).toMatchObject({
+      code: 'egroup_incomplete_collection',
+      details: {
+        service: 'appnGroupAffiList',
+        received: 2,
+        total_count: 5,
+        stopped_by: 'empty_page',
+      },
+    });
+    // 인증키·URL 은 메시지에 담지 않는다
+    expect(err.message).not.toContain('test-key');
+    expect(err.message).not.toContain('apis.data.go.kr');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('페이지 상한에 닿아도 조용히 끝내지 않는다', async () => {
+    const fetchMock = stubAffiliatePages(100, () => 1);
+    const client = new EgroupClient('test-key');
+    await expect(client.affiliates('202605', 'K1000032')).rejects.toMatchObject({
+      code: 'egroup_incomplete_collection',
+      details: { received: 20, total_count: 100, stopped_by: 'page_limit' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(20); // 상한 초과 페이지는 부르지 않는다
+  });
+
+  it('정상 다중 페이지는 전 페이지를 이어 붙여 돌려준다 (종전 동작)', async () => {
+    const fetchMock = stubAffiliatePages(3, (p) => (p === 1 ? 2 : p === 2 ? 1 : 0));
+    const client = new EgroupClient('test-key');
+    const rows = await client.affiliates('202605', 'K1000032');
+    expect(rows.map((r) => r.entrprsNm)).toEqual(['회사1-0', '회사1-1', '회사2-0']);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // 완주하면 3페이지는 부르지 않는다
+  });
+
+  it('단일 페이지 정상은 한 번만 호출한다 (종전 동작)', async () => {
+    const fetchMock = stubAffiliatePages(2, (p) => (p === 1 ? 2 : 0));
+    const client = new EgroupClient('test-key');
+    const rows = await client.affiliates('202605', 'K1000032');
+    expect(rows.length).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('totalCount 0 인 빈 목록은 완주로 본다 — 빈 목록 처리는 호출부 몫이다', async () => {
+    // 이 경로가 에러가 되면 resolve_entity 의 "빈 목록 미캐시·미소속 단정 금지" 판정이 바뀐다
+    const fetchMock = stubAffiliatePages(0, () => 0);
+    const client = new EgroupClient('test-key');
+    await expect(client.affiliates('202605', 'K1000032')).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('기업집단 구조 — 순수 로직', () => {
+  it('집단코드 형식을 판정한다', () => {
+    expect(isGroupCode('K1000032')).toBe(true); // 삼성
+    expect(isGroupCode('K3000027')).toBe(true); // 현대차
+    expect(isGroupCode('삼성')).toBe(false);
+    expect(isGroupCode('K100003')).toBe(false); // 7자리 미달
+    expect(isGroupCode('00126380')).toBe(false); // corp_code
+  });
+
+  it('포털 금액 문자열을 원 단위 숫자로 바꾼다', () => {
+    expect(toWon('123456789')).toBe(123_456_789);
+    expect(toWon('1,234,567')).toBe(1_234_567);
+    expect(toWon('')).toBeNull();
+    expect(toWon(undefined)).toBeNull();
+    expect(toWon('비공개')).toBe('비공개'); // 파싱 불가는 원문 유지
+  });
+
+  it('공개년월 추정 — 5월 지정 발표 전이면 전년도 기준', () => {
+    expect(inferYearMonth(new Date('2026-07-31'))).toBe('202605');
+    expect(inferYearMonth(new Date('2026-03-01'))).toBe('202505');
+    expect(inferYearMonth(new Date('2026-05-01'))).toBe('202605');
+    // KST 5월 1일 08:00 = UTC 4월 30일 23:00 — 서버 시간대와 무관하게 한국 날짜로 본다
+    expect(inferYearMonth(new Date('2026-04-30T23:00:00Z'))).toBe('202605');
+  });
+});
+
+/**
+ * fetch 실패 원인 보존 — `err.name` 만 남기면 "TypeError" 넉 자뿐이라 키 문제·방화벽·포털
+ * 장애를 가를 수 없다 (실측 2026-09-06: apis.data.go.kr 연결 불가 상태에서 원인 규명에 시간을 썼다).
+ */
+describe('포털 요청 실패 원인 (describeFetchFailure)', () => {
+  it('undici 의 cause.code 를 함께 담는다 — 연결 타임아웃을 구분할 수 있다', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = Object.assign(new Error('Connect Timeout Error'), {
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+    const r = describeFetchFailure(err);
+    expect(r.code).toBe('UND_ERR_CONNECT_TIMEOUT');
+    expect(r.text).toBe('TypeError: fetch failed — UND_ERR_CONNECT_TIMEOUT');
+  });
+
+  it('AbortSignal.timeout 의 TimeoutError 는 이름·메시지만으로 읽힌다', () => {
+    const err = new Error('The operation was aborted due to timeout');
+    err.name = 'TimeoutError';
+    const r = describeFetchFailure(err);
+    expect(r.code).toBeUndefined();
+    expect(r.text).toBe('TimeoutError: The operation was aborted due to timeout');
+  });
+
+  it('code 가 없는 cause 는 메시지를 쓴다', () => {
+    const err = new TypeError('fetch failed');
+    (err as { cause?: unknown }).cause = new Error('getaddrinfo ENOTFOUND apis.data.go.kr');
+    const r = describeFetchFailure(err);
+    expect(r.code).toBe('getaddrinfo ENOTFOUND apis.data.go.kr');
+  });
+
+  it('원인 문자열에 키가 섞여 있어도 마스킹한다 (이 프로젝트는 실제 키 유출을 겪었다)', () => {
+    const key = 'a'.repeat(40);
+    const err = new TypeError(`fetch failed serviceKey=${key}`);
+    (err as { cause?: unknown }).cause = new Error(`bad key ${key}`);
+    const r = describeFetchFailure(err);
+    expect(r.text).not.toContain(key);
+    expect(String(r.code)).not.toContain(key);
+  });
+
+  it('Error 가 아니면 단정하지 않는다', () => {
+    expect(describeFetchFailure('그냥 문자열')).toEqual({ text: '알 수 없는 오류' });
+  });
+});

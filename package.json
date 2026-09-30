@@ -1,0 +1,67 @@
+{
+  "name": "gongsi-mcp",
+  "version": "0.3.2",
+  "description": "공정거래위원회 기업집단 공시 특화 MCP 서버 — DART 전자공시 + 기업집단포털",
+  "type": "module",
+  "bin": {
+    "gongsi-mcp": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "data/holidays.json",
+    "data/ftc-qna.json",
+    "data/ftc-manual.json",
+    "data/penalty-ratios.json",
+    "data/periodic-disclosures.json"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "secretscan": "node scripts/check-secrets.mjs",
+    "prepublishOnly": "node scripts/check-secrets.mjs && npm run typecheck && npm run test && npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "dart",
+    "opendart",
+    "전자공시",
+    "공시",
+    "공시담당자",
+    "금융감독원",
+    "공정거래위원회",
+    "공정위",
+    "기업집단",
+    "대규모내부거래",
+    "기업집단현황공시",
+    "과태료",
+    "disclosure",
+    "compliance",
+    "korea",
+    "claude"
+  ],
+  "license": "MIT",
+  "author": "dolseom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dolseom/gongsi-mcp.git"
+  },
+  "homepage": "https://github.com/dolseom/gongsi-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/dolseom/gongsi-mcp/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}
