@@ -171,17 +171,37 @@ export class AmbiguousCorpError extends ToolError {
  * MCP 클라이언트는 약 60초에 호출을 끊으므로, 서버가 미리 판단해 분할 방법을 안내한다.
  * (docs/absorbed-from-dart-mcp.md §2-1)
  */
+/**
+ * 한 번에 제안하는 분할 구간 수 상한.
+ * ★ 제한이 없으면 수십 개 구간을 받은 모델이 연달아 호출해 OpenDART 과호출을 부른다(외부 검토 2026-09-30 §3-1).
+ *   그렇다고 조용히 자르면 남은 기간이 **조회되지 않은 채** 끝난다 — 그래서 자르되 총 구간 수와 남은 범위를 함께 준다.
+ */
+export const MAX_SUGGESTED_SPLITS = 6;
+
 export class RangeTooLargeError extends ToolError {
   constructor(
     what: string,
     estimatedSeconds: number,
     suggestedSplits: Array<{ from: string; to: string }>,
   ) {
+    const total = suggestedSplits.length;
+    const shown = suggestedSplits.slice(0, MAX_SUGGESTED_SPLITS);
+    const rest = suggestedSplits.slice(MAX_SUGGESTED_SPLITS);
+    const remainingRange = rest.length ? { from: rest[0]!.from, to: rest[rest.length - 1]!.to } : undefined;
     super(
       'range_too_large',
       `${what} 은(는) 한 번에 처리할 수 없습니다 (예상 ${estimatedSeconds}초, 클라이언트 제한 약 60초). ` +
-        `아래 구간으로 나누어 호출하세요.`,
-      { estimatedSeconds, suggestedSplits },
+        (remainingRange
+          ? `전체 ${total}개 구간 중 처음 ${shown.length}개를 제안합니다 — 이 구간들을 처리한 뒤 ` +
+            `remainingRange(${remainingRange.from}~${remainingRange.to})로 다시 호출하면 다음 구간을 제안합니다. ` +
+            '남은 범위를 호출하지 않으면 그 기간은 **조회되지 않은 것**입니다.'
+          : '아래 구간으로 나누어 호출하세요.'),
+      {
+        estimatedSeconds,
+        suggestedSplits: shown,
+        totalSplits: total,
+        ...(remainingRange ? { remainingRange } : {}),
+      },
     );
   }
 }
