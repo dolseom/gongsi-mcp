@@ -380,3 +380,31 @@ describe('공휴일 데이터 없는 연도 경고 전파 (외부 검토 2026-09
     expect(r.notes.join('\n')).not.toContain('지연으로 잡혔을 수 있습니다');
   });
 });
+
+describe('목록 수집 실패 구간 노출 (Fable 적대적 검토 2026-10-04)', () => {
+  it('실패한 청크 구간을 coverage.list_gaps 와 notes 에 올리고 list_complete:false', async () => {
+    const deps = makeDeps([], {});
+    deps.collectList = async () => {
+      const b = batchOf([]);
+      b.diagnostics.date_chunks = [
+        { from: '20260701', to: '20260720', count: 10, pages: 1, truncated: false },
+        { from: '20260721', to: '20260810', count: -1, error: '청크 수집이 50초를 넘겨 중단했습니다.' },
+      ];
+      b.diagnostics.chunks_failed = 1;
+      b.diagnostics.partial_results = true;
+      return b;
+    };
+    const r = (await auditGroupDisclosures(BASE_INPUT, deps)) as Record<string, any>;
+    expect(r.coverage.list_complete).toBe(false);
+    expect(r.coverage.list_gaps).toEqual([
+      { from: '20260721', to: '20260810', reason: '청크 수집이 50초를 넘겨 중단했습니다.' },
+    ]);
+    expect(r.notes.some((n: string) => n.includes('20260721~20260810'))).toBe(true);
+  });
+
+  it('완전 수집이면 list_complete:true, list_gaps 없음', async () => {
+    const r = (await auditGroupDisclosures(BASE_INPUT, makeDeps([], {}))) as Record<string, any>;
+    expect(r.coverage.list_complete).toBe(true);
+    expect(r.coverage.list_gaps).toBeUndefined();
+  });
+});

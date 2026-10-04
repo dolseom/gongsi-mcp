@@ -278,6 +278,8 @@ export async function auditPeriodicDisclosures(
   const yearMonth = input.year_month ?? `${input.year}05`;
   const yearMonthDefaulted = !input.year_month;
 
+  // 시간 예산은 모집단 해석(법인코드 인덱스 갱신·포털 조회)부터 센다 — 뒤에서 시작하면 그 시간이 60초 벽 계산에서 빠진다
+  const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
   const population: Population = await resolvePopulation({
     ...(input.group ? { group: input.group, year_month: yearMonth } : {}),
     ...(input.companies ? { companies: input.companies } : {}),
@@ -302,7 +304,6 @@ export async function auditPeriodicDisclosures(
     );
   }
 
-  const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
   const deps = depsOverride ?? realDeps(new DartClient(undefined, { deadline: budget }));
 
   // 수집 구간.
@@ -354,6 +355,21 @@ export async function auditPeriodicDisclosures(
             (typeof d['measure_failures'] === 'number' && d['measure_failures'] > 0)
           ) {
             partial = true;
+            // ★ collectAdaptive 는 청크 실패·시간초과·예산 소진을 던지지 않고 rows 를 덜 채워 돌려준다.
+            //   throw 만 보고 미확인 처리하면 조회 실패 회사가 "접수 0건" → 미제출 후보가 된다
+            //   (Fable 적대적 검토 2026-10-04). 불완전 수집은 이 회사·유형을 미확인으로 둔다.
+            const chunkErrors = r.diagnostics.date_chunks
+              .map((c) => c.error)
+              .filter((x): x is string => !!x);
+            const reason =
+              `목록 수집 불완전: ` +
+              (chunkErrors.length
+                ? [...new Set(chunkErrors)].slice(0, 2).join(' / ')
+                : r.diagnostics.truncated
+                  ? '페이지 상한으로 잘림'
+                  : '측정 실패 또는 일부 구간 누락');
+            listErrors.push({ corp_name: corpName, corp_code: corpCode, error: reason });
+            markUnchecked(corpCode, ty, reason);
           }
           for (const row of r.rows) {
             // J009 는 조회 유형으로 이미 좁혀졌다 — 보고서명 추정에 기대지 않는다
@@ -498,6 +514,13 @@ export async function auditPeriodicDisclosures(
           rcept_dt: earliest.rcept_dt,
           ...(prevUnfiled ? { ambiguous_assignment: true } : {}),
         });
+      } else if (uncheckedReason) {
+        // 수집이 불완전하면 더 이른 원본 접수분이 빠졌을 수 있다 — 지연으로 단정하지 않는다
+        notChecked.push({
+          corp_name: corpName,
+          corp_code: corpCode,
+          reason: `${uncheckedReason} (찾은 가장 이른 접수 ${earliest.rcept_dt} 는 기한 뒤지만 그 전 접수분이 누락됐을 수 있음)`,
+        });
       } else {
         late.push({
           corp_name: corpName,
@@ -533,7 +556,8 @@ export async function auditPeriodicDisclosures(
       ...(notChecked.length ? { not_checked: notChecked } : {}),
       out_of_scope: outOfScope,
       representative_filings: repFilings,
-      ...(due && rows.length === 0 && population.corpCodes.size > 1
+      // 조회하지 못한 회사의 0건은 "전부 안 냈다"의 근거가 아니다 — 실제로 조회된 회사가 둘 이상일 때만
+      ...(due && rows.length === 0 && population.corpCodes.size - notChecked.length > 1
         ? { likely_out_of_scope: true }
         : {}),
     };
@@ -614,7 +638,7 @@ export async function auditPeriodicDisclosures(
   if (reports.some((r) => r.likely_out_of_scope)) {
     const which = reports.filter((r) => r.likely_out_of_scope).map((r) => r.period);
     notes.push(
-      `🚨 모집단 ${population.corpCodes.size}개사 전부가 한 건도 내지 않은 기한이 있습니다 (${which.join(', ')}). ` +
+      `🚨 모집단 ${population.corpCodes.size}개사 중 조회된 회사 전부가 한 건도 내지 않은 기한이 있습니다 (${which.join(', ')}). ` +
         '이건 "집단 전체가 위반"보다 **그 시점에 이 집단이 아직 공시대상기업집단으로 지정되지 않았거나 ' +
         '조회 범위가 잘못됐다**는 신호일 가능성이 훨씬 높습니다 — 지정 시점을 먼저 확인하세요.',
     );

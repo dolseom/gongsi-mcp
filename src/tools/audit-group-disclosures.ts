@@ -39,7 +39,7 @@ import { litDeadline, evaluateCompliance } from '../rules/deadlines.js';
 import { selfCorrectionWindow } from '../rules/self-correction.js';
 import { estimatePenalty } from '../rules/penalties.js';
 import type { PenaltyResult } from '../rules/types.js';
-import { todayKstYMD } from '../rules/business-days.js';
+import { addCalendarDays, todayKstYMD } from '../rules/business-days.js';
 import { Deadline, type DeadlineLike } from '../lib/deadline.js';
 import { TIME_BUDGET_MS } from './detect/budget.js';
 
@@ -311,8 +311,10 @@ export function suggestDocSplits(
   let lastDate = from;
   for (const d of sorted) {
     if (count >= docsPerCall && d !== lastDate) {
-      splits.push({ from: start, to: lastDate });
-      start = d < to ? d : to;
+      // 뒤 구간 시작 전날까지 채운다 — 사이 날짜가 빠지면 그날의 캐시된 원문은 어느 재호출에서도 판정되지 않는다
+      const next = d < to ? d : to;
+      splits.push({ from: start, to: addCalendarDays(next, -1) });
+      start = next;
       count = 0;
     }
     count++;
@@ -594,8 +596,22 @@ export async function auditGroupDisclosures(
         '해당 회사들을 조회해 법인등록번호 캐시를 채운 뒤 재감사하세요.',
     );
   }
+  // 실패한 수집 구간 — 그 기간의 접수분은 판정 대상에 아예 오르지 않아 not_judged 로도 셀 수 없다.
+  // generic 경고만 두면 "지연 0건"과 함께 안심으로 읽힌다 (Fable 적대적 검토 2026-10-04) — 구간을 구조화해 올린다.
+  const listGaps = batch.diagnostics.date_chunks
+    .filter((c) => c.error || c.truncated)
+    .map((c) => ({ from: c.from, to: c.to, reason: c.error ?? '페이지 상한으로 잘림' }));
   if (batch.diagnostics.partial_results || batch.diagnostics.truncated) {
-    notes.push('⚠️ 목록 수집이 불완전합니다 (diagnostics.list 참조) — 이 결과로 "누락 없음"을 결론내지 마세요.');
+    const gapText = listGaps.length
+      ? ` 수집 못 한 구간: ${listGaps
+          .slice(0, 5)
+          .map((g) => `${g.from}~${g.to}`)
+          .join(', ')}${listGaps.length > 5 ? ` 외 ${listGaps.length - 5}개` : ''} (coverage.list_gaps).`
+      : '';
+    notes.push(
+      `⚠️ 목록 수집이 불완전합니다.${gapText} 그 기간 접수분은 판정 대상에 오르지 않았습니다 — ` +
+        '이 결과로 "지연 없음·누락 없음"을 결론내지 말고 해당 구간을 다시 조회하세요.',
+    );
   }
   if (boardDateInvalid > 0) {
     notes.push(
@@ -692,6 +708,9 @@ export async function auditGroupDisclosures(
     ...(unparsable.length ? { unparsable } : {}),
     ...(timeBudgetSkipped.length ? { not_started_time_budget: timeBudgetSkipped } : {}),
     coverage: {
+      ...(listGaps.length || batch.diagnostics.partial_results || batch.diagnostics.truncated
+        ? { list_complete: false, list_gaps: listGaps }
+        : { list_complete: true }),
       companies_with_corp_code: population.corpCodes.size,
       companies_unjoined: population.unjoined,
       // 중첩 note 는 놓치기 쉽다 — 범위의 사각을 구조화 필드로도 노출한다
