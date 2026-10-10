@@ -12,6 +12,7 @@
 [![npm version](https://img.shields.io/npm/v/gongsi-mcp.svg)](https://www.npmjs.com/package/gongsi-mcp)
 [![Node 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-green)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-dolseom.com-1f5eff)](https://dolseom.com)
 
 > "이거 공시사항이야?"라는 전화를 받은 순간부터 점검을 통과할 때까지,
 > 물어볼 사람이 없어도 혼자서 확신을 가질 수 있도록.
