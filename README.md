@@ -14,6 +14,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-dolseom.com-1f5eff)](https://dolseom.com)
 
+> **English summary** — gongsi-mcp is an open-source MCP server that lets Claude answer Korea Fair Trade Commission (KFTC) conglomerate disclosure questions: whether a transaction must be disclosed, the filing deadline, and the expected fine if late. Every answer returns the provision, formula and inputs so a person can verify it, and unverified conditions are reported instead of hidden. 17 tools, 430 official KFTC Q&As. Duty, deadline and fine checks need no API key. Install: `claude mcp add gongsi-mcp -- npx -y gongsi-mcp`. More at [dolseom.com](https://dolseom.com).
+
 > "이거 공시사항이야?"라는 전화를 받은 순간부터 점검을 통과할 때까지,
 > 물어볼 사람이 없어도 혼자서 확신을 가질 수 있도록.
 
