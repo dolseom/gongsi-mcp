@@ -66,3 +66,25 @@ describe('GONGSI_TIME_BUDGET_MS', () => {
     expect(withEnv('999999')).toBe(TIME_BUDGET_MS);
   });
 });
+
+describe('GONGSI_HTTP_READ_TIMEOUT / GONGSI_PER_TASK_TIMEOUT 하한', () => {
+  afterEach(() => {
+    delete process.env['GONGSI_HTTP_READ_TIMEOUT'];
+    delete process.env['GONGSI_PER_TASK_TIMEOUT'];
+    __resetConfig();
+  });
+
+  it('0·음수는 1초로 올린다 — 모든 요청이 즉시 TimeoutError 가 되지 않게', () => {
+    process.env['GONGSI_HTTP_READ_TIMEOUT'] = '0';
+    process.env['GONGSI_PER_TASK_TIMEOUT'] = '-5';
+    __resetConfig();
+    expect(getConfig().readTimeoutMs).toBe(1000);
+    expect(getConfig().perTaskTimeoutMs).toBe(1000);
+  });
+
+  it('미설정이면 기본값 100초 / 180초', () => {
+    __resetConfig();
+    expect(getConfig().readTimeoutMs).toBe(100_000);
+    expect(getConfig().perTaskTimeoutMs).toBe(180_000);
+  });
+});

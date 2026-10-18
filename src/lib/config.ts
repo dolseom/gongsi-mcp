@@ -237,8 +237,10 @@ export function getConfig(): Config {
     dartMinIntervalMs: Math.max(0, envInt('GONGSI_DART_MIN_INTERVAL_MS', 200)),
     dartBreakerThreshold: Math.max(1, envInt('GONGSI_DART_BREAKER_THRESHOLD', 4)),
     dartBreakerCooldownMs: Math.max(0, envInt('GONGSI_DART_BREAKER_COOLDOWN', 60)) * 1000,
-    readTimeoutMs: envInt('GONGSI_HTTP_READ_TIMEOUT', 100) * 1000,
-    perTaskTimeoutMs: envInt('GONGSI_PER_TASK_TIMEOUT', 180) * 1000,
+    // 하한 1초 — 0·음수면 모든 요청이 즉시 TimeoutError 인데, 그 오류는 차단기에도 세지 않아
+    // 원인 없이 "3회 재시도 후 실패"만 반복된다 (korean-law-mcp parseIntegerLimit 대조에서 발견)
+    readTimeoutMs: Math.max(1, envInt('GONGSI_HTTP_READ_TIMEOUT', 100)) * 1000,
+    perTaskTimeoutMs: Math.max(1, envInt('GONGSI_PER_TASK_TIMEOUT', 180)) * 1000,
 
     maxPages: Math.max(1, envInt('GONGSI_MAX_PAGES', 100)),
     lastReportOnly: envBool('GONGSI_LAST_REPORT_ONLY', false),
