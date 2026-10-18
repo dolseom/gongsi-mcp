@@ -1298,6 +1298,7 @@ export function checkDisclosureDuty(
         disclosed: true,
         onTime: c.onTime,
         delayDays: c.delayDays,
+        deadline: deadline.deadline,
         // 거래금액별 적용비율(고시 Ⅵ.2)은 §26·§29 전용이다. 그 게이트는 estimatePenalty 안에 있으므로
         // 여기서는 그대로 넘긴다 — §27·§28(비상장사 중요사항·기업집단현황)에서는 무시된다.
         ...(dutyAmount !== undefined ? { transactionAmount: dutyAmount } : {}),
@@ -1363,6 +1364,7 @@ export function checkDisclosureDuty(
         capitalBase: capitalInputs.length > 0 ? Math.max(input.totalEquity ?? 0, input.paidInCapital ?? 0) : undefined,
         capitalBaseIncomplete: capitalInputs.length === 1,
         dateBased,
+        deadline: deadline?.deadline,
         dutyUnconfirmed: verdict === 'insufficient_data',
       });
       delayScenario = d.output;

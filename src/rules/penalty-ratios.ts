@@ -95,6 +95,20 @@ function load(): RatioFile {
 }
 
 /**
+ * 이 적용비율표(고시 개정분)의 시행일 — YYYYMMDD.
+ * 이보다 앞선 위반에 현행 표를 그대로 쓰면 "행위 시 법률" 원칙(질서위반행위규제법 §3①)과
+ * 어긋날 수 있다. 시행 전 표는 내장하지 않으므로 호출부가 caveat 로 알린다.
+ */
+export function ratioTableEffectiveFrom(): string {
+  const raw = load()._meta.effectiveFrom;
+  const ymd = raw.replace(/-/g, '');
+  if (!/^\d{8}$/.test(ymd)) {
+    throw new Error(`penalty-ratios.json 의 effectiveFrom 형식이 올바르지 않습니다: ${raw}`);
+  }
+  return ymd;
+}
+
+/**
  * 거래금액이 속한 구간을 돌려준다.
  *
  * 표는 100억원 이상을 100%로 두고 그 아래를 20억원 단위로 90/80/70/60/50% 로 낮춘다.

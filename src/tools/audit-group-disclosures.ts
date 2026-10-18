@@ -514,6 +514,7 @@ export async function auditGroupDisclosures(
           disclosed: true,
           onTime: false,
           delayDays: c.delayDays,
+          deadline: deadline.deadline,
         }),
         self_correction: {
           status: w.status,

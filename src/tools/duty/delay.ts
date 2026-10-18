@@ -44,6 +44,8 @@ export interface DelayScenarioInput {
   transactionAmount?: number | undefined;
   capitalBase?: number | undefined;
   capitalBaseIncomplete?: boolean;
+  /** 공시기한 (YYYYMMDD) — 알면 과태료 부과기준 시행일과 대조한다 */
+  deadline?: string | undefined;
   /** 날짜로 계산된 지연일수가 있으면 (달력일·영업일) — 충돌 검사용 */
   dateBased?: { calendarDays: number; businessDays: number; source: string } | undefined;
   /** 대상 판정이 미확정인지 — 금액을 "대상일 경우"로 한정한다 */
@@ -165,6 +167,7 @@ export function evaluateDelayScenario(i: DelayScenarioInput): { output: DelaySce
     ...(i.transactionAmount !== undefined ? { transactionAmount: i.transactionAmount } : {}),
     ...(i.capitalBase !== undefined ? { capitalBase: i.capitalBase } : {}),
     ...(i.capitalBaseIncomplete ? { capitalBaseIncomplete: true } : {}),
+    ...(i.deadline ? { deadline: i.deadline } : {}),
   };
   const scenarios: NonNullable<DelayScenarioOutput['scenarios']> = [];
   if (i.regime === 'art27_28' || i.boardRequired === false) {

@@ -9,7 +9,7 @@
  */
 
 import type { LegalRef, PenaltyResult } from './types.js';
-import { findRatioTier } from './penalty-ratios.js';
+import { findRatioTier, ratioTableEffectiveFrom } from './penalty-ratios.js';
 import { 억 } from './thresholds.js';
 
 const 만 = 10_000;
@@ -52,6 +52,12 @@ export interface ViolationInput {
    * 기준금액이 낮아진다(최저 50%). 미지정 시 비율을 적용하지 않아 산정값은 상한선이 된다.
    */
   transactionAmount?: number;
+  /**
+   * 공시기한 (YYYYMMDD). 위반 시점 대조용 — 현행 부과기준(거래금액별 적용비율 개정분)의
+   * 시행일보다 앞서면 "행위 시 법률" 원칙(질서위반행위규제법 §3) 검토 caveat 를 붙인다.
+   * 미지정이면 대조하지 않는다.
+   */
+  deadline?: string;
 
   // ── 가중 사유 ──
   /** 공시의무 회피 목적의 고의적 분할거래 */
@@ -372,6 +378,22 @@ function estimateCore(v: ViolationInput, mitigationDaysOverride?: number): Penal
           '이 산정값은 거래금액 100억원 이상 기준이며 사실상 상한선입니다. 거래금액이 100억원 미만이면 ' +
           '기준금액이 80억원 이상 90%, 60억원 이상 80%, 40억원 이상 70%, 20억원 이상 60%, 20억원 미만 50% 로 ' +
           '낮아지므로 실제 과태료는 이 값의 최저 절반까지 내려갑니다.',
+      );
+    }
+  }
+
+  // ── 위반 시점 대조 — 시행 전 기준표는 내장하지 않는다 ──
+  // 현행 표로 옛 위반을 산정하고 아무 말 없이 내보내면 확정 금액처럼 읽힌다.
+  if (v.regime === 'art26_29' && basicTotal > 0 && v.deadline && /^\d{8}$/.test(v.deadline)) {
+    const from = ratioTableEffectiveFrom();
+    if (v.deadline < from) {
+      caveats.push(
+        `⚠️ 공시기한(${v.deadline})이 이 산정에 쓴 현행 과태료 부과기준(거래금액별 적용비율 개정분, ` +
+          `${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6)} 시행)보다 앞섭니다. 질서위반행위규제법 제3조는 ` +
+          '"질서위반행위의 성립과 과태료 처분은 행위 시의 법률에 따른다"(①)고 하면서, "과태료가 변경되기 전의 ' +
+          '법률보다 가볍게 된 때에는 법률에 특별한 규정이 없는 한 변경된 법률을 적용한다"(②)고 정합니다. ' +
+          '이 도구는 시행 전 부과기준을 내장하지 않아 어느 기준이 적용되는지 판정하지 않았습니다 — 아래 금액은 ' +
+          '현행 기준 산정값이며, 위반 당시 부과기준과의 대조가 필요합니다.',
       );
     }
   }
