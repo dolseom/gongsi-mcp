@@ -53,8 +53,8 @@ export interface ViolationInput {
    */
   transactionAmount?: number;
   /**
-   * 공시기한 (YYYYMMDD). 위반 시점 대조용 — 현행 부과기준(거래금액별 적용비율 개정분)의
-   * 시행일보다 앞서면 "행위 시 법률" 원칙(질서위반행위규제법 §3) 검토 caveat 를 붙인다.
+   * 공시기한 (YYYYMMDD). 위반 시점 대조용 — 현행 부과기준(§26·§29 적용비율 개정분 / §27·§28 고시
+   * 제2024-19호)의 시행일보다 앞서면 "행위 시 법률" 원칙(질서위반행위규제법 §3) 검토 caveat 를 붙인다.
    * 미지정이면 대조하지 않는다.
    */
   deadline?: string;
@@ -90,6 +90,13 @@ export interface ViolationInput {
    */
   capitalBaseIncomplete?: boolean;
 }
+
+/**
+ * §27·§28 과태료 부과기준(행정규칙일련번호 2100000245326, 행정규칙ID 37710) 현행 개정분의 시행일.
+ * 부칙 <제2024-19호, 2024. 7. 10.> "이 기준은 2024년 8월 7일부터 시행한다." (법제처 원문 확인 2026-10-18)
+ * §26·§29 쪽은 data/penalty-ratios.json 의 effectiveFrom 을 쓴다.
+ */
+const ART27_28_STANDARD_EFFECTIVE_FROM = '20240807';
 
 const REF: Record<PenaltyRegime, LegalRef[]> = {
   art26_29: [
@@ -384,11 +391,15 @@ function estimateCore(v: ViolationInput, mitigationDaysOverride?: number): Penal
 
   // ── 위반 시점 대조 — 시행 전 기준표는 내장하지 않는다 ──
   // 현행 표로 옛 위반을 산정하고 아무 말 없이 내보내면 확정 금액처럼 읽힌다.
-  if (v.regime === 'art26_29' && basicTotal > 0 && v.deadline && /^\d{8}$/.test(v.deadline)) {
-    const from = ratioTableEffectiveFrom();
+  if (basicTotal > 0 && v.deadline && /^\d{8}$/.test(v.deadline)) {
+    const standard =
+      v.regime === 'art26_29'
+        ? { from: ratioTableEffectiveFrom(), label: '거래금액별 적용비율 개정분' }
+        : { from: ART27_28_STANDARD_EFFECTIVE_FROM, label: '공정거래위원회고시 제2024-19호' };
+    const { from } = standard;
     if (v.deadline < from) {
       caveats.push(
-        `⚠️ 공시기한(${v.deadline})이 이 산정에 쓴 현행 과태료 부과기준(거래금액별 적용비율 개정분, ` +
+        `⚠️ 공시기한(${v.deadline})이 이 산정에 쓴 현행 과태료 부과기준(${standard.label}, ` +
           `${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6)} 시행)보다 앞섭니다. 질서위반행위규제법 제3조는 ` +
           '"질서위반행위의 성립과 과태료 처분은 행위 시의 법률에 따른다"(①)고 하면서, "과태료가 변경되기 전의 ' +
           '법률보다 가볍게 된 때에는 법률에 특별한 규정이 없는 한 변경된 법률을 적용한다"(②)고 정합니다. ' +

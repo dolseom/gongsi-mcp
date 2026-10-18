@@ -27,9 +27,13 @@ describe('과태료 — 위반 시점이 현행 부과기준 시행일보다 앞
     expect(hasDateCaveat(estimatePenalty({ ...base }).caveats)).toBe(false);
   });
 
-  it('§27·§28 은 이 표의 적용 대상이 아니므로 대조하지 않는다', () => {
-    const r = estimatePenalty({ regime: 'art27_28', disclosed: true, onTime: false, delayDays: 5, deadline: '20200101' });
-    expect(hasDateCaveat(r.caveats)).toBe(false);
+  it('§27·§28 은 고시 제2024-19호 시행일(2024-08-07)과 대조한다 — 부칙 원문 확인 2026-10-18', () => {
+    const old = estimatePenalty({ regime: 'art27_28', disclosed: true, onTime: false, delayDays: 5, deadline: '20240806' });
+    const now = estimatePenalty({ regime: 'art27_28', disclosed: true, onTime: false, delayDays: 5, deadline: '20240807' });
+    expect(hasDateCaveat(old.caveats)).toBe(true);
+    expect(old.caveats.some((c) => c.includes('제2024-19호'))).toBe(true);
+    expect(hasDateCaveat(now.caveats)).toBe(false);
+    expect(old.amount).toBe(now.amount);
   });
 
   it('지연 시나리오 경로도 기한을 넘겨 caveat 가 붙는다', () => {
