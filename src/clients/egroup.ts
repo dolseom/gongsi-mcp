@@ -13,6 +13,7 @@
 import { getConfig, USER_AGENT } from '../lib/config.js';
 import { redact } from '../lib/logger.js';
 import { describeFetchFailure } from '../lib/fetch-failure.js';
+import { currentRequestContext } from '../lib/request-context.js';
 import { getStore } from '../lib/store.js';
 import { MissingApiKeyError, ToolError, UpstreamForbiddenError } from '../lib/errors.js';
 
@@ -25,6 +26,13 @@ const BASE = 'https://apis.data.go.kr/1130000';
  * 데이터 규모가 바뀐 것이므로 조용히 끊지 않고 실패로 알린다 (아래 `call`).
  */
 const MAX_PAGES = 20;
+
+/** 이보다 예산이 적게 남았으면 요청을 시작하지 않는다 — DartClient 와 같은 기준 */
+const MIN_REQUEST_MS = 1_000;
+
+function cancelled(service: string): ToolError {
+  return new ToolError('request_cancelled', '요청이 취소되어 기업집단포털 조회를 중단했습니다.', { service });
+}
 
 // 원인 추출은 DART 클라이언트와 공유한다 — 기존 import 경로(테스트)를 위해 다시 내보낸다
 export { describeFetchFailure };
@@ -130,14 +138,47 @@ export class EgroupClient {
     }
     const url = `${BASE}/${service}/${service}Api?${sp}`;
 
+    // 요청 맥락의 취소 신호·시간 예산을 따른다 (src/lib/request-context.ts) — 종전에는 100초 타임아웃
+    // 하나뿐이라 감사 도구의 50초 Deadline 을 모집단 조회 단계에서 우회해 60초 벽에 걸렸다.
+    const ctx = currentRequestContext();
+    const signal = ctx?.signal;
+    if (signal?.aborted) throw cancelled(service);
+    const remaining = ctx?.deadline?.remainingMs();
+    if (remaining !== undefined && remaining < MIN_REQUEST_MS) {
+      throw new ToolError(
+        'deadline_exceeded',
+        `남은 시간 예산(${remaining}ms)으로는 기업집단포털 요청을 끝낼 수 없어 시작하지 않았습니다 (60초 벽 대비).`,
+        { service, remaining_ms: remaining },
+      );
+    }
+    const timeoutMs = remaining === undefined ? cfg.readTimeoutMs : Math.min(cfg.readTimeoutMs, remaining);
+    const budgetBound = timeoutMs < cfg.readTimeoutMs;
+    // 우리 쪽 취소·예산 만료를 "네트워크 오류"로 적으면 원인을 바꿔 적는 것이다
+    const ownAbort = (err: unknown): ToolError | undefined => {
+      if (signal?.aborted) return cancelled(service);
+      if (budgetBound && err instanceof Error && err.name === 'TimeoutError') {
+        return new ToolError(
+          'deadline_exceeded',
+          `기업집단포털 응답이 남은 시간 예산(${timeoutMs}ms) 안에 오지 않아 중단했습니다 — 포털 지연이며 키 문제가 아닙니다.`,
+          { service, timeout_ms: timeoutMs },
+        );
+      }
+      return undefined;
+    };
+    const fetchSignal = signal
+      ? AbortSignal.any([AbortSignal.timeout(timeoutMs), signal])
+      : AbortSignal.timeout(timeoutMs);
+
     let res: Response;
     try {
       res = await fetch(url, {
         // ⚠️ 이 헤더가 없으면 403 이다. 지우지 말 것.
         headers: { 'User-Agent': USER_AGENT },
-        signal: AbortSignal.timeout(cfg.readTimeoutMs),
+        signal: fetchSignal,
       });
     } catch (err) {
+      const own = ownAbort(err);
+      if (own) throw own;
       // 응답 자체가 오지 않은 경우다 — 원인 코드를 반드시 함께 전달한다 (위 describeFetchFailure)
       const f = describeFetchFailure(err);
       throw new ToolError(
@@ -158,7 +199,18 @@ export class EgroupClient {
       });
     }
 
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      const own = ownAbort(err);
+      if (own) throw own;
+      const f = describeFetchFailure(err);
+      throw new ToolError('egroup_api_error', `기업집단포털 응답 본문을 읽다가 끊겼습니다 (${f.text}).`, {
+        service,
+        ...(f.code ? { cause: f.code } : {}),
+      });
+    }
     const parsed = parsePortalXml<T>(text, service);
     // 오류 응답을 빈 배열로 조용히 넘기면 "집단이 없다"로 오진한다 — 반드시 던진다
     if (parsed.resultCode !== '00') {

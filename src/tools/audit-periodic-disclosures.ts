@@ -32,6 +32,7 @@ import { getLogger } from '../lib/logger.js';
 import { ToolError } from '../lib/errors.js';
 import { countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 import { Deadline, type DeadlineLike } from '../lib/deadline.js';
+import { runWithRequestContext } from '../lib/request-context.js';
 import { TIME_BUDGET_MS } from './detect/budget.js';
 
 /**
@@ -280,10 +281,13 @@ export async function auditPeriodicDisclosures(
 
   // 시간 예산은 모집단 해석(법인코드 인덱스 갱신·포털 조회)부터 센다 — 뒤에서 시작하면 그 시간이 60초 벽 계산에서 빠진다
   const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
-  const population: Population = await resolvePopulation({
-    ...(input.group ? { group: input.group, year_month: yearMonth } : {}),
-    ...(input.companies ? { companies: input.companies } : {}),
-  });
+  // 모집단 조회(포털·인덱스 갱신)도 같은 예산 안에서 — 클라이언트가 요청 맥락에서 읽는다
+  const population: Population = await runWithRequestContext({ deadline: budget }, () =>
+    resolvePopulation({
+      ...(input.group ? { group: input.group, year_month: yearMonth } : {}),
+      ...(input.companies ? { companies: input.companies } : {}),
+    }),
+  );
 
   if (population.corpCodes.size > SPLIT_ADVICE_COMPANIES) {
     throw new ToolError(

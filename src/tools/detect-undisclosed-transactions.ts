@@ -58,6 +58,7 @@ import { CAP_100, formatWon } from '../rules/thresholds.js';
 import { getStore } from '../lib/store.js';
 import { getLogger } from '../lib/logger.js';
 import { Deadline } from '../lib/deadline.js';
+import { runWithRequestContext } from '../lib/request-context.js';
 import { getConfig } from '../lib/config.js';
 import { ToolError } from '../lib/errors.js';
 import { isValidYMD, todayKstYMD } from '../rules/business-days.js';
@@ -275,7 +276,8 @@ function realDeps(client: DartClient, budget: Deadline): DetectDeps {
           maxToolSeconds: Math.max(1, Math.floor(budget.remainingMs() / 1000)),
         },
       ),
-    resolvePop: (input) => resolvePopulation(input),
+    // 포털 조회도 시간 예산 안에서 — EgroupClient 는 요청 맥락의 예산을 읽는다
+    resolvePop: (input) => runWithRequestContext({ deadline: budget }, () => resolvePopulation(input)),
     findCorps: (name) =>
       getStore()
         .findCorpsByName(name)

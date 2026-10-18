@@ -11,6 +11,7 @@ import { loadDotEnv, getConfig, unknownEnvVars, VERSION } from './lib/config.js'
 import { getLogger } from './lib/logger.js';
 import { ToolError, toErrorResponse } from './lib/errors.js';
 import { oversizeError, serializeToolResult } from './lib/tool-output.js';
+import { runWithRequestContext } from './lib/request-context.js';
 import { SERVER_INSTRUCTIONS } from './server-instructions.js';
 import {
   checkDisclosureDuty,
@@ -104,7 +105,11 @@ function wrapWithContext<T>(
 ) {
   return async (input: T, extra?: ToolCallContext) => {
     try {
-      const result = await fn(input, extra?.signal ? { signal: extra.signal } : {});
+      // 취소 신호는 모든 도구의 상류 클라이언트까지 맥락으로 닿는다 — 종전에는 detect 만 받았다
+      const signal = extra?.signal;
+      const result = await runWithRequestContext(signal ? { signal } : {}, () =>
+        fn(input, signal ? { signal } : {}),
+      );
       // 직렬화는 **한 함수**로만 한다 — 어댑터·상세 읽기 도구가 재는 바이트와 실제 전송
       // 문자열이 달라지면 크기 예산이 무의미해진다 (src/lib/tool-output.ts).
       const text = serializeToolResult(result);

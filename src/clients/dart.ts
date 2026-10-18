@@ -12,6 +12,7 @@ import { getConfig, USER_AGENT } from '../lib/config.js';
 import type { DeadlineLike } from '../lib/deadline.js';
 import { getLogger } from '../lib/logger.js';
 import { describeFetchFailure } from '../lib/fetch-failure.js';
+import { currentRequestContext, withContextSignal } from '../lib/request-context.js';
 import { getStore, nextKstMidnightIso } from '../lib/store.js';
 import {
   DartApiError,
@@ -232,7 +233,12 @@ function parseRetryAfter(v: string | null): number | undefined {
 export class DartClient {
   private readonly apiKey: string;
   private readonly store = getStore();
-  private readonly deadline: DeadlineLike | undefined;
+  private readonly ownDeadline: DeadlineLike | undefined;
+
+  /** 명시 예산이 우선, 없으면 요청 맥락의 예산 — 요청 시점에 읽는다 (src/lib/request-context.ts) */
+  private get deadline(): DeadlineLike | undefined {
+    return this.ownDeadline ?? currentRequestContext()?.deadline;
+  }
 
   constructor(apiKey?: string, opts?: DartClientOptions) {
     const key = apiKey ?? getConfig().dartApiKey;
@@ -240,7 +246,7 @@ export class DartClient {
       throw new MissingApiKeyError('DART_API_KEY', 'DART 전자공시 조회에 필요합니다.');
     }
     this.apiKey = key;
-    this.deadline = opts?.deadline;
+    this.ownDeadline = opts?.deadline;
   }
 
   /** 오늘 사용한 호출 수 */
@@ -290,8 +296,9 @@ export class DartClient {
   private async request(
     path: string,
     params: Record<string, unknown>,
-    signal?: AbortSignal,
+    explicitSignal?: AbortSignal,
   ): Promise<{ status: number; contentType: string; bytes: Uint8Array }> {
+    const signal = withContextSignal(explicitSignal);
     const cfg = getConfig();
     const url = this.buildUrl(path, params);
     let lastErrName = '';
@@ -526,7 +533,8 @@ export class DartClient {
    * 상한에 걸리면 `truncated: true` 와 실제 `totalPage` 를 함께 돌려준다.
    */
   /** @param signal 호출부 취소 신호 — 끊기면 다음 페이지를 요청하지 않고 진행 중 요청도 끊는다 */
-  async collect(p: ListParams, maxPages?: number, signal?: AbortSignal): Promise<CollectResult> {
+  async collect(p: ListParams, maxPages?: number, explicitSignal?: AbortSignal): Promise<CollectResult> {
+    const signal = withContextSignal(explicitSignal);
     const limit = Math.max(1, maxPages ?? getConfig().maxPages);
     const rows: Disclosure[] = [];
     let pageNo = 1;

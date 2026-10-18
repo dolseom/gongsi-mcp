@@ -41,6 +41,7 @@ import { estimatePenalty } from '../rules/penalties.js';
 import type { PenaltyResult } from '../rules/types.js';
 import { addCalendarDays, todayKstYMD } from '../rules/business-days.js';
 import { Deadline, type DeadlineLike } from '../lib/deadline.js';
+import { runWithRequestContext } from '../lib/request-context.js';
 import { TIME_BUDGET_MS } from './detect/budget.js';
 
 const log = getLogger('audit');
@@ -357,7 +358,8 @@ export async function auditGroupDisclosures(
   const startedAt = Date.now();
 
   const budget = opts.deadline ?? new Deadline(TIME_BUDGET_MS);
-  const population = await resolvePopulation(input);
+  // 모집단 조회(포털·인덱스 갱신)도 같은 예산 안에서 — 종전에는 이 단계가 예산 밖이라 포털 지연이 60초 벽을 넘겼다
+  const population = await runWithRequestContext({ deadline: budget }, () => resolvePopulation(input));
   const deps = depsOverride ?? realDeps(new DartClient(undefined, { deadline: budget }));
 
   // ── 목록 수집 ──

@@ -115,6 +115,8 @@ export async function verifyYearMonth(
             '(포털은 연 1회 갱신, 공표 월은 해마다 다를 수 있습니다).',
     };
   } catch (err) {
+    // 시간 예산 만료·취소는 "확인 실패"가 아니다 — 추정값으로 다음 조회를 시작하지 않는다
+    if (err instanceof ToolError && (err.code === 'deadline_exceeded' || err.code === 'request_cancelled')) throw err;
     log.warn('공개년월 목록 확인 실패 — 추정값을 유지한다', {
       inferred,
       error: err instanceof Error ? err.message : String(err),
