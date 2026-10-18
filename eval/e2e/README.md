@@ -40,6 +40,21 @@ node scripts/eval-e2e.mjs --only anonymous-duty-no-date,deadline-without-capital
   maximum allowed tokens`). ⚠️ 이 경우 `is_error` 가 붙지 않는다(2026-09-08 m07 실측).
 - `blocked_tool_attempted` — 권한 단계에서 거부된 시도(`permission_denials`).
 
+## 근거 대조 (측정 — 통과·실패에 넣지 않는다)
+```bash
+node scripts/eval-grounding.mjs                                   # 가장 최근 실행
+node scripts/eval-grounding.mjs eval/e2e/results/eval-20261004-224232
+```
+저장된 스트림 원본을 다시 읽어, 답변 속 **인용(따옴표·「」 15자 이상)·금액(억·만원)·비율(%)·조문(제N조)**이
+그 실행의 우리 서버 도구 출력에 있었는지 센다. API 호출 없음. 규칙은 `eval/e2e/grounding.mjs`
+(`test/eval-e2e-grounding.test.mjs` 로 고정). 금액은 값으로 비교한다 — 도구의 `50000000` 과 답변의 "5,000만원" 은 같다.
+
+- 서버 지침의 "법령 수치·조문은 도구 출력만" · "정의는 도구 문장을 그대로 인용" 위반을 문항과 무관하게 센다.
+- ⚠️ "근거 없음" 은 틀렸다는 뜻이 아니다 — 계산 결과·질문 속 숫자일 수 있다. 목록을 사람이 본다.
+  실제로 잡힌 유형: **도구 설명문**에서 가져온 금액("기본금액은 5,000만~7,000만원(도구 안내 기준)"),
+  기억으로 덧붙인 조문("비상장사 중요사항 공시(법 제27조)").
+- 기준선(2026-10-18 재계산): 0925 실행 87.8% (222건) → 1004 실행 93.5% (367건).
+
 ## 상태 — `pass` 만 통과다
 | 상태 | 뜻 | 제품 실패인가 |
 |---|---|---|
