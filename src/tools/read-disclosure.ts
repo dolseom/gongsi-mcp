@@ -60,6 +60,8 @@ export interface DocMeta {
   pickedEntry: string | null;
   /** 본문으로 채택되지 않은 나머지 텍스트 항목들 (P2-나 8). 구 캐시 메타에는 없다 */
   otherTextEntries?: string[];
+  /** 본문의 이미지 수 (텍스트로 오지 않음). 2026-10-18 이전 캐시 메타에는 없다 */
+  imageCount?: number;
 }
 
 /**
@@ -131,6 +133,7 @@ export async function loadDocument(
     boardDateStatus: boardDate.status,
     pickedEntry: picked.name,
     otherTextEntries: picked.otherTexts,
+    imageCount: parsed.imageCount,
   };
   store.storeBody(rceptNo, parsed.markdown);
   store.set(metaKey, JSON.stringify(meta));
@@ -191,6 +194,19 @@ export async function readDisclosure(input: ReadDisclosureInput): Promise<unknow
   const boardDateNote =
     meta.boardDate === null && meta.boardDateStatus ? BOARD_DATE_NOTES[meta.boardDateStatus] : null;
 
+  // 이미지 자리 — 내용이 빠진 곳을 알리지 않으면 "본문이 전부"로 읽힌다.
+  // 표시 도입 전 캐시는 개수를 모른다: 파일명 흔적이 남아 있을 때만 미확인임을 밝힌다(J공시 캐시는 대개 해당 없음)
+  const imageNote =
+    meta.imageCount !== undefined
+      ? meta.imageCount > 0
+        ? `원문에 이미지 ${meta.imageCount}개가 있으나 텍스트로 제공되지 않습니다 (본문의 "[이미지 생략…]" 자리). ` +
+          '이미지 속 표·수치를 추측하지 말고 viewer_url 에서 확인하세요.'
+        : null
+      : /\S\.(?:jpe?g|gif|png|bmp)\b/i.test(markdown)
+        ? '이미지 표시 도입 전 캐시라 이미지 자리가 표시되지 않았습니다 — 본문의 이미지 파일명 자리는 내용이 ' +
+          '빠진 곳입니다. force_refresh:true 로 재생성하면 표시됩니다.'
+        : null;
+
   return {
     rcept_no: input.rcept_no,
     viewer_url: viewerUrl(input.rcept_no),
@@ -223,6 +239,8 @@ export async function readDisclosure(input: ReadDisclosureInput): Promise<unknow
     submitter_corp_code: meta.aregcik,
     encoding: meta.encoding,
     attachments: meta.attachments,
+    ...(meta.imageCount ? { images_omitted: meta.imageCount } : {}),
+    ...(imageNote ? { images_note: imageNote } : {}),
     cached,
     total_chars: body.length,
     truncated,

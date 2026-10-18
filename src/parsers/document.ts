@@ -22,6 +22,8 @@ export interface ParsedDocument {
   /** 제출자 corp_code */
   aregcik: string | null;
   formulaVersion: string | null;
+  /** 본문에 들어 있던 이미지 수 — 이미지 파일은 ZIP 에 없어 내용이 텍스트로 오지 않는다 */
+  imageCount: number;
 }
 
 /** 바이트 → 문자열. UTF-8 을 엄격 모드로 먼저 시도하고 실패하면 EUC-KR. */
@@ -171,9 +173,34 @@ function stripCommentsAndCdata(xml: string): string {
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
 }
 
+/**
+ * 이미지 블록을 표시 문구로 바꾼다.
+ *
+ * DART 원문은 `<IMAGE><IMG …>파일명.jpg</IMG><IMG-CAPTION>캡션</IMG-CAPTION></IMAGE>` 로 이미지를 싣는데,
+ * 이미지 파일 자체는 document.xml ZIP 에 들어 있지 않다. 태그만 지우면 파일명·캡션이 평범한 문장처럼
+ * 남아 **그 자리의 표·그림 내용이 빠졌다는 사실**이 사라진다 (실측 2026-10-18: 정기·주요사항·증권신고서
+ * 24건 중 17건에 136개, J공시 40건에는 0개). korean-law-mcp image-only-body 에서 착안.
+ */
+function markImages(xml: string): { xml: string; count: number } {
+  let count = 0;
+  const marker = (caption: string) => {
+    count++;
+    const c = cellText(caption).slice(0, 80);
+    return ` [이미지 생략${c ? `: ${c}` : ''} — 텍스트로 제공되지 않음, 내용·수치는 원문 뷰어에서 확인] `;
+  };
+  const out = xml
+    .replace(/<IMAGE(?=[\s>])[^>]*>([\s\S]*?)<\/IMAGE>/gi, (_, inner: string) =>
+      marker(/<IMG-CAPTION[^>]*>([\s\S]*?)<\/IMG-CAPTION>/i.exec(inner)?.[1] ?? ''),
+    )
+    // IMAGE 로 감싸지 않은 단독 IMG (서식 변형 대비) — 캡션이 없으니 파일명은 버린다
+    .replace(/<IMG(?=[\s>])[^>]*>[\s\S]*?<\/IMG>/gi, () => marker(''));
+  return { xml: out, count };
+}
+
 /** 본문 XML → 마크다운 + 평문 */
 export function parseDocument(rawXml: string): ParsedDocument {
-  const xml = stripCommentsAndCdata(rawXml);
+  const marked = markImages(stripCommentsAndCdata(rawXml));
+  const xml = marked.xml;
   const acode = /ACODE\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
   const aregcik = /AREGCIK\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
   const formulaVersion = /FORMULA-VERSION\s*=\s*"([^"]+)"/.exec(xml)?.[1] ?? null;
@@ -203,7 +230,7 @@ export function parseDocument(rawXml: string): ParsedDocument {
   const markdown = parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
   const plainText = decodeEntities(xml.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 
-  return { markdown, plainText, acode, aregcik, formulaVersion };
+  return { markdown, plainText, acode, aregcik, formulaVersion, imageCount: marked.count };
 }
 
 /**
