@@ -119,6 +119,29 @@ export class RateLimitError extends ToolError {
   }
 }
 
+/**
+ * 실패 원인이 **개별 대상이 아니라 실행 환경**(시간 예산·취소·차단기·일일 한도·키·통신)인가.
+ *
+ * ★ 보조 조회나 후보 순회의 catch 가 이런 실패를 "이 건만 건너뜀"으로 삼키면, 뒤이은
+ *   "찾지 못했다"·"파싱할 수 없다"·"오타 코드" 같은 결론이 **원인을 바꿔 적는다**.
+ *   이 판별에 걸리면 순회를 멈추고 원인을 그대로 올려야 한다.
+ *   (korean-law-mcp `rethrowIfFatal` 에서 착안 — 2026-10-18)
+ */
+const ENVIRONMENTAL_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  'deadline_exceeded',
+  'request_cancelled',
+  'upstream_unavailable',
+  'rate_limit',
+  'missing_api_key',
+]);
+
+export function isEnvironmentalFailure(err: unknown): err is ToolError {
+  if (!(err instanceof ToolError)) return false;
+  if (ENVIRONMENTAL_CODES.has(err.code)) return true;
+  // 재시도 소진한 통신 실패·429 는 dart_api_error 로 나오므로 details 로 가린다
+  return err.details?.['transport_failure'] === true || err.details?.['status'] === 429;
+}
+
 /** DART API 가 비정상 status 를 반환한 경우 */
 export class DartApiError extends ToolError {
   constructor(status: string, apiMessage: string, hint?: string) {

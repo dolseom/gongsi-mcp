@@ -11,6 +11,7 @@
 import { getConfig, USER_AGENT } from '../lib/config.js';
 import type { DeadlineLike } from '../lib/deadline.js';
 import { getLogger } from '../lib/logger.js';
+import { describeFetchFailure } from '../lib/fetch-failure.js';
 import { getStore, nextKstMidnightIso } from '../lib/store.js';
 import {
   DartApiError,
@@ -294,6 +295,10 @@ export class DartClient {
     const cfg = getConfig();
     const url = this.buildUrl(path, params);
     let lastErrName = '';
+    // 응답 없이 끊긴 실패의 실제 원인(undici cause.code 등) — "TypeError" 넉 자로는 IP 차단·DNS·TLS 를 못 가른다
+    let lastCause: { text: string; code?: string } | undefined;
+    // 마지막 시도가 상태코드(429·5xx)로 끝났으면 그 값 — 원인은 "마지막 시도" 기준으로만 적는다
+    let lastStatus: number | undefined;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       // 마지막 시도가 실패하면 기다리지 않고 바로 던진다 — 다음 시도가 없는데 백오프로
@@ -329,6 +334,9 @@ export class DartClient {
 
         if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
           log.warn('재시도 가능한 상태코드', { path, status: res.status, attempt: attempt + 1 });
+          lastErrName = `HTTP ${res.status}`;
+          lastCause = undefined;
+          lastStatus = res.status;
           // Retry-After 는 이 요청만이 아니라 대기열 전체에 건다 — 마지막 시도여도 기록한다
           const retryAfterMs = res.status === 429 ? parseRetryAfter(res.headers.get('retry-after')) : undefined;
           if (retryAfterMs !== undefined) {
@@ -361,7 +369,9 @@ export class DartClient {
         // 호출부 취소는 실패가 아니다 — 재시도·차단기 집계 없이 끝낸다
         if (signal?.aborted) throw cancelledError(path);
         lastErrName = err instanceof Error ? err.name : 'UnknownError';
-        log.warn('요청 실패', { path, error: lastErrName, attempt: attempt + 1 });
+        lastCause = describeFetchFailure(err);
+        lastStatus = undefined;
+        log.warn('요청 실패', { path, error: lastErrName, cause: lastCause.code, attempt: attempt + 1 });
         // 시간초과(우리 예산·읽기 타임아웃)는 느린 망에서도 난다 — 세면 정상 예산 만료가 프로세스 전체를 막는다
         if (!gotResponse && lastErrName !== 'TimeoutError' && lastErrName !== 'AbortError') {
           this.recordNetFailure(path, lastErrName);
@@ -370,15 +380,22 @@ export class DartClient {
         if (!(await this.backoff(attempt, path, signal))) {
           throw new ToolError(
             'deadline_exceeded',
-            `DART 요청이 실패했고(${lastErrName}) 남은 시간 예산으로는 재시도할 수 없어 중단했습니다.`,
-            { path },
+            `DART 요청이 실패했고(${lastCause?.text ?? lastErrName}) 남은 시간 예산으로는 재시도할 수 없어 중단했습니다.`,
+            { path, ...(lastCause?.code ? { cause: lastCause.code } : {}) },
           );
         }
       }
     }
-    throw new ToolError('dart_api_error', `DART 요청이 ${MAX_ATTEMPTS}회 재시도 후에도 실패했습니다 (${lastErrName || 'HTTP 오류'}).`, {
-      path,
-    });
+    throw new ToolError(
+      'dart_api_error',
+      `DART 요청이 ${MAX_ATTEMPTS}회 재시도 후에도 실패했습니다 (${lastCause?.text ?? (lastErrName || 'HTTP 오류')}).`,
+      {
+        path,
+        ...(lastCause ? { transport_failure: true } : {}),
+        ...(lastStatus !== undefined ? { status: lastStatus } : {}),
+        ...(lastCause?.code ? { cause: lastCause.code } : {}),
+      },
+    );
   }
 
   /**

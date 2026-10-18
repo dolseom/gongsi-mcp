@@ -254,6 +254,7 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
     const t = q.trim();
     if (/^\d{8}$/.test(t)) {
       let rec = store.getCorpByCode(t);
+      let refreshError: unknown;
       if (!rec && canValidateCodes && corpIndexIsStale()) {
         // 로컬 인덱스는 자동 갱신되지 않는다 (Opus 7차 중간 2: 실측 11일에 신규 125건) —
         // 신규 등록 법인을 "오타"로 거부하는 회귀를 막기 위해, 낡았으면 1회 갱신 후 재조회한다.
@@ -261,10 +262,22 @@ export async function resolvePopulation(input: PopulationInput): Promise<Populat
           await loadCorpIndex(new DartClient());
           rec = store.getCorpByCode(t);
         } catch (err) {
+          refreshError = err;
           log.warn('법인코드 인덱스 갱신 실패 — 기존 인덱스로 판단', {
             error: err instanceof Error ? err.name : String(err),
           });
         }
+      }
+      if (!rec && refreshError !== undefined) {
+        // 갱신이 실패했는데 "오타·폐지 코드" 라고 하면 원인을 바꿔 적는 것이다 — 신규 법인인지 확인하지 못했다고 밝힌다
+        const cause = refreshError instanceof ToolError ? refreshError : undefined;
+        throw new ToolError(
+          cause?.code ?? 'internal_error',
+          `corp_code '${t}' 가 로컬 법인코드 인덱스(낡음)에 없고, 인덱스 갱신이 실패해 신규 등록 법인인지 확인하지 ` +
+            `못했습니다 (${cause ? cause.message : refreshError instanceof Error ? refreshError.name : '알 수 없는 오류'}). ` +
+            '오타 코드로 단정하지 마세요 — 잠시 뒤 다시 시도하거나 회사명으로 지정하세요.',
+          { ...(cause?.details ?? {}), corp_code: t, corp_index_refresh_failed: true },
+        );
       }
       if (!rec) {
         // 이름 경로는 CorpNotFoundError 를 던지는데 코드 경로만 무검증이었다 (P2-마 20) —

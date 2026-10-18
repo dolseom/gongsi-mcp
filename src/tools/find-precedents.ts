@@ -31,7 +31,7 @@ import { DartClient, viewerUrl, type Disclosure } from '../clients/dart.js';
 import { resolveCorp } from '../resolver/corp-index.js';
 import { readDisclosure } from './read-disclosure.js';
 import { PRESETS, PRESET_NAMES, type PresetSpec } from '../search/presets.js';
-import { ToolError } from '../lib/errors.js';
+import { isEnvironmentalFailure, ToolError } from '../lib/errors.js';
 import { getLogger } from '../lib/logger.js';
 import { addCalendarDays as addDays, countCalendarDays, todayKstYMD } from '../rules/business-days.js';
 
@@ -257,6 +257,8 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   const precedents: Array<Record<string, unknown>> = [];
   const skipped: Array<{ rcept_no: string; corp_name: string; reason: string }> = [];
   let bodyCalls = 0;
+  // 시간·취소·차단기·한도·통신 실패는 "이 건만 건너뜀"이 아니다 — 순회를 멈추고 원인을 그대로 알린다
+  let stoppedBy: ToolError | undefined;
   for (const c of candidates) {
     if (precedents.length >= count) break;
     try {
@@ -279,12 +281,28 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
         body: doc['body'],
       });
     } catch (err) {
+      if (isEnvironmentalFailure(err)) {
+        stoppedBy = err;
+        break;
+      }
       const reason = err instanceof ToolError ? err.code : 'unknown';
       skipped.push({ rcept_no: c.rcept_no, corp_name: c.corp_name, reason });
       log.warn('선례 원문 수집 실패, 다음 후보로', { rcept_no: c.rcept_no, reason });
     }
   }
 
+  if (precedents.length === 0 && stoppedBy) {
+    throw new ToolError(
+      stoppedBy.code,
+      `'${keyword}' 선례 후보 ${candidates.length}건을 찾았으나 원문 수집이 중단됐습니다 — ${stoppedBy.message} ` +
+        '원문 형식 문제가 아니므로 잠시 뒤 다시 시도하거나 viewer_url 로 직접 확인하세요.',
+      {
+        ...(stoppedBy.details ?? {}),
+        candidates: candidates.slice(0, 5).map((c) => ({ rcept_no: c.rcept_no, corp_name: c.corp_name, viewer_url: viewerUrl(c.rcept_no) })),
+        coverage,
+      },
+    );
+  }
   if (precedents.length === 0) {
     throw new ToolError(
       'body_unparsable',
@@ -299,6 +317,12 @@ export async function findPrecedents(input: FindPrecedentsInput): Promise<unknow
   }
 
   const notes: string[] = [];
+  if (stoppedBy) {
+    notes.push(
+      `⚠️ 원문 수집이 ${precedents.length}건에서 중단됐습니다 (${stoppedBy.code}: ${stoppedBy.message}) — ` +
+        '남은 후보는 원문을 보지 못했을 뿐 선례가 아닌 것이 아닙니다.',
+    );
+  }
   if (precedents.length < count) {
     notes.push(
       `요청 ${count}건 중 ${precedents.length}건만 확보했습니다. lookback_days 를 늘리거나 키워드를 넓혀보세요.`,
