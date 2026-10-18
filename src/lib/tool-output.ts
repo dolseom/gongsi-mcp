@@ -23,6 +23,45 @@ export function serializeToolResult(value: unknown): string {
  */
 export const TOOL_RESULT_BYTE_BUDGET = 24_576;
 
+/**
+ * 모든 도구 응답의 **최종 상한** (UTF-8 바이트) — 이보다 크면 보내지 않고 `response_too_large` 로 바꾼다.
+ *
+ * 근거는 실측 한 점뿐이다: 282,903바이트 응답이 호스트에서 "exceeds maximum allowed tokens" 로
+ * 거부됐다(위 TOOL_RESULT_BYTE_BUDGET 주석). 34,929바이트는 통과했다. 그 사이의 실제 한도는
+ * 정보 부족이라, **거부가 확인된 크기대만** 막도록 256KiB 로 둔다 — 더 낮추면 지금 통과하는
+ * 응답을 깨뜨릴 수 있다. read_disclosure(max_chars 최대 20만 자)·search_disclosures(limit 최대
+ * 2000행)는 인자만으로 이 크기를 넘길 수 있다. (korean-law-mcp finalizeText 대조에서 발견)
+ */
+export const TOOL_RESULT_HARD_LIMIT_BYTES = 262_144;
+
+/** 도구별로 응답을 줄이는 인자 — 상한 초과 오류에 그대로 싣는다 */
+const SHRINK_HINT: Record<string, string> = {
+  read_disclosure: 'max_chars 를 줄여(예: 20000) 다시 호출하세요',
+  search_disclosures: 'limit 을 줄이거나 기간을 나눠 다시 호출하세요',
+  find_precedents: 'count 나 max_chars_per_doc 를 줄여 다시 호출하세요',
+};
+
+/**
+ * 직렬화한 응답이 상한을 넘으면 대신 보낼 오류 객체, 아니면 undefined.
+ * ⚠️ JSON 을 중간에서 자르지 않는다 — 깨진 JSON 은 모델이 부분을 결과 전체로 오독한다.
+ */
+export function oversizeError(
+  toolName: string,
+  serialized: string,
+): { error: 'response_too_large'; message: string; details: Record<string, unknown> } | undefined {
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  if (bytes <= TOOL_RESULT_HARD_LIMIT_BYTES) return undefined;
+  const hint = SHRINK_HINT[toolName] ?? '조회 범위를 줄여 다시 호출하세요';
+  return {
+    error: 'response_too_large',
+    message:
+      `${toolName} 응답이 ${bytes.toLocaleString()}바이트로, 호스트가 거부한 실측 크기대(상한 ` +
+      `${TOOL_RESULT_HARD_LIMIT_BYTES.toLocaleString()}바이트)를 넘어 보내지 않았습니다 — ${hint}. ` +
+      '조회 자체는 성공했으므로 같은 인자로 재시도하지 마세요.',
+    details: { tool: toolName, bytes, limit_bytes: TOOL_RESULT_HARD_LIMIT_BYTES },
+  };
+}
+
 /** 직렬화한 최종 문자열의 UTF-8 바이트 수 */
 export function toolResultBytes(value: unknown): number {
   return Buffer.byteLength(serializeToolResult(value), 'utf8');

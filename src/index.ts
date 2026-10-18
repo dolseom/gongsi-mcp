@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { loadDotEnv, getConfig, unknownEnvVars, VERSION } from './lib/config.js';
 import { getLogger } from './lib/logger.js';
 import { ToolError, toErrorResponse } from './lib/errors.js';
-import { serializeToolResult } from './lib/tool-output.js';
+import { oversizeError, serializeToolResult } from './lib/tool-output.js';
 import { SERVER_INSTRUCTIONS } from './server-instructions.js';
 import {
   checkDisclosureDuty,
@@ -107,7 +107,13 @@ function wrapWithContext<T>(
       const result = await fn(input, extra?.signal ? { signal: extra.signal } : {});
       // 직렬화는 **한 함수**로만 한다 — 어댑터·상세 읽기 도구가 재는 바이트와 실제 전송
       // 문자열이 달라지면 크기 예산이 무의미해진다 (src/lib/tool-output.ts).
-      return { content: [{ type: 'text' as const, text: serializeToolResult(result) }] };
+      const text = serializeToolResult(result);
+      const oversize = oversizeError(name, text);
+      if (oversize) {
+        log.warn(`${name}: response_too_large`, oversize.message);
+        return { content: [{ type: 'text' as const, text: serializeToolResult(oversize) }], isError: true };
+      }
+      return { content: [{ type: 'text' as const, text }] };
     } catch (err) {
       // 도메인 에러(회사 없음·한도 도달 등)는 예상된 흐름이다 — 스택 없이 짧게 남긴다.
       // 스택트레이스는 진짜 예상 밖 예외에만 쓴다.

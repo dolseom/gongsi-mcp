@@ -55,6 +55,12 @@ export type ErrorCode =
    */
   | 'resource_limit'
   /**
+   * 직렬화한 응답이 호스트가 거부한 실측 크기대에 들어 **보내지 않았다** (src/lib/tool-output.ts).
+   * 호스트가 "exceeds maximum allowed tokens" 로 버리면 모델은 무엇을 줄여야 하는지 모른다 —
+   * 줄일 인자를 담아 규격 오류로 바꾼다.
+   */
+  | 'response_too_large'
+  /**
    * `result_id` 로 보관된 상세가 없다 — 수명(30분) 만료·개수 상한 회수·서버 재시작 중 하나다.
    * 서버는 세 경우를 구분할 수 없으므로 한 어휘로 알리고 **다시 탐지하라**고 안내한다.
    * 조용히 다른 snapshot 을 돌려주지 않는다.
